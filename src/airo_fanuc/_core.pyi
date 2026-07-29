@@ -175,6 +175,20 @@ class StreamCore:
         force-guard; ``deadman_s`` arms the caller-fed watchdog (kick())."""
 
     def submit_servo(self, q: list[float], duration: float) -> int: ...
+    def submit_servo_ff(
+        self,
+        q: list[float],
+        qd: list[float],
+        qdd: list[float],
+        duration: float,
+    ) -> int:
+        """Feed-forward servo: as :meth:`submit_servo`, but seeded with the caller's
+        target velocity and acceleration instead of inferring them. All three vectors
+        are length-6 radians (rad, rad/s, rad/s²). Seeding the derivatives lets the
+        online generator start from the caller's intended motion rather than
+        re-deriving it from successive positions, which removes the lag a
+        position-only servo shows when the caller already knows its own velocity."""
+
     def submit_brake(self) -> int: ...
     def submit_hold(self) -> int: ...
     def stop_j(self) -> None:

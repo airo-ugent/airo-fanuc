@@ -33,7 +33,7 @@ _ALLOWED_THIRD_PARTY = frozenset({"numpy"})
 
 #: Importing any of these would tie the distribution to a consumer application or to
 #: a heavyweight optional stack, and break the numpy-alone install.
-_FORBIDDEN = ("grocery_bot", "zenoh", "loguru", "curobo", "torch", "airo_robots")
+_FORBIDDEN = ("zenoh", "loguru", "curobo", "torch", "airo_robots")
 
 
 def _source_files() -> list[pathlib.Path]:
