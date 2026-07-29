@@ -1,0 +1,151 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# CI for airo-fanuc. Two jobs, because the repo has two test suites built by
+# different toolchains:
+#
+#   python — builds the wheel (which compiles the pybind11 `_core` extension),
+#            then lints, type-checks and runs the hardware-free pytest suite.
+#   cpp    — configures the project standalone with AIRO_FANUC_BUILD_TESTS=ON
+#            and runs the gtest suite. The wheel build pins that option OFF
+#            (pyproject.toml, [tool.scikit-build.cmake.define]), so tests/cpp is
+#            compiled by nothing else in CI.
+#
+# Both jobs check out vendor/fanuc_driver, without which nothing builds at all.
+name: CI
+
+on:
+  # pull_request already covers every commit on a branch that has an open PR;
+  # limiting push to the long-lived branches keeps PRs from running CI twice.
+  push:
+    branches: [main, dev]
+  pull_request:
+
+# One run per ref: a new push supersedes the in-flight run for the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python (ruff, mypy, pytest)
+    # Pinned image rather than ubuntu-latest so the compiler and CMake version
+    # under the caches below do not shift without a commit.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # vendor/fanuc_driver is a build dependency, not reference material:
+          # CMakeLists.txt reads stream_motion/packets.hpp and byte_ops.hpp from
+          # it (and greps them for Eigen), raising a configure-time FATAL_ERROR
+          # when they are missing. A checkout without the submodule cannot build
+          # the extension, so `recursive` is mandatory here.
+          submodules: recursive
+
+      - name: Check the vendored Stream Motion codec is present
+        # Reports a missing/unfetchable submodule in one line here instead of as
+        # a CMake error buried in the build log of the next step.
+        run: test -f vendor/fanuc_driver/fanuc_libs/stream_motion/include/stream_motion/packets.hpp
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          # Caches uv's downloaded wheels, keyed on uv.lock (the action's
+          # default cache-dependency-glob).
+          enable-cache: true
+          # requires-python is >=3.10, so uv would otherwise be free to pick any
+          # interpreter; pin one so dependency resolution — and with it the numpy
+          # version whose stubs mypy reads — is reproducible run to run.
+          python-version: "3.13"
+
+      - name: Install project and dev tools
+        # --extra dev is required: pytest, pytest-timeout, mypy and ruff are
+        # declared in [project.optional-dependencies], i.e. as an extra, not as a
+        # dependency group. A plain `uv sync` installs none of them and the steps
+        # below then fail with "Failed to spawn: pytest".
+        #
+        # This step also compiles the C++ extension via scikit-build-core, and
+        # pybind11 + ruckig are pulled in by CMake FetchContent, so it needs
+        # network access. The build tree is deliberately not cached: rebuilding
+        # from scratch is what proves a clean checkout (submodule headers
+        # included) still compiles.
+        run: uv sync --extra dev
+
+      - name: Import the compiled extension
+        # The pytest suite is pure Python (tests/conftest.py puts src/ on
+        # sys.path and the tests import only pure-Python modules), so nothing
+        # else here would notice a wheel whose _core built but does not load.
+        run: uv run python -c "import airo_fanuc._core as c; print(c.__version__)"
+
+      - name: Lint (ruff)
+        # Config lives in [tool.ruff] in pyproject.toml; --output-format=github
+        # turns findings into inline annotations on the diff.
+        run: uv run ruff check --output-format=github src tests
+
+      - name: Type check (mypy)
+        # Packages, mypy_path and python_version all come from [tool.mypy].
+        run: uv run mypy
+
+      - name: Tests (pytest)
+        # Hardware-free: an in-process fake controller stands in for the robot,
+        # so no CRX and no network peer is needed. Roughly 90 s. pytest-timeout
+        # backs the @pytest.mark.timeout guards (including a self-deadlock
+        # guard), which are silently inert if the plugin is not installed.
+        run: uv run pytest
+
+  cpp:
+    name: C++ (gtest)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Same reason as the python job: the configure step below reads the
+          # vendored Stream Motion headers and hard-fails without them.
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          # The project always defines the pybind11 `_core` target, so even this
+          # test-only configure needs an interpreter with development headers.
+          python-version: "3.13"
+
+      - name: Cache CMake FetchContent sources
+        uses: actions/cache@v4
+        with:
+          # Only the fetched sources and the populate stamps. The compiled
+          # dependency objects live in <name>-build, which is left out on
+          # purpose: a cache hit can then skip the clones but can never link a
+          # stale googletest/ruckig/pybind11 build.
+          #
+          # Keyed on CMakeLists.txt because the dependency tags and the compile
+          # options are pinned there; anything else is a cache miss that simply
+          # re-clones. No restore-keys, for the same reason.
+          path: |
+            build/cpp-deps/*-src
+            build/cpp-deps/*-subbuild
+          key: cmake-deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        # AIRO_FANUC_BUILD_TESTS is ON by default for a standalone configure, but
+        # spelled out because it is the whole point of this job. FETCHCONTENT_BASE_DIR
+        # moves the fetched dependencies out of the build tree so the cache above
+        # can cover them while the build tree itself stays throwaway.
+        run: >
+          cmake -S . -B build/cpp
+          -DCMAKE_BUILD_TYPE=Release
+          -DAIRO_FANUC_BUILD_TESTS=ON
+          -DFETCHCONTENT_BASE_DIR=${{ github.workspace }}/build/cpp-deps
+          -DPython_EXECUTABLE="$(which python)"
+
+      - name: Build
+        run: cmake --build build/cpp --parallel "$(nproc)"
+
+      - name: Test (ctest)
+        # Serial on purpose: the PLL/RT-core and UDP-loopback tests assert on
+        # wall-clock timing, which concurrent test processes on a shared runner
+        # perturb. SCHED_FIFO and mlockall are requested but tolerate EPERM, so
+        # the RT tests need no privileges.
+        run: ctest --test-dir build/cpp --output-on-failure
