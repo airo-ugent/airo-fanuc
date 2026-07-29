@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validation step 2: continuous multi-joint tracking, and the protective stop.
 
+WRITTEN FOR ONE SPECIFIC ROBOT: a FANUC CRX-10iA/L on an R-30iB-class controller
+negotiating Stream Motion v3 at an 8 ms interpolation period. The joint-limit guard
+below carries that arm's measured soft limits, and it is the only thing standing
+between an ``--amplitude-deg`` argument and a soft-limit hit — so on a different
+FANUC it must be replaced, not merely reviewed. See ``examples/README.md``.
+
 Where ``move_joints.py`` proves the stack connects and executes a move, this proves
 it *tracks*: every selected joint oscillates ``±amplitude`` degrees about its
 CURRENT pose as a slow sine, for a whole number of cycles, so the trajectory both
@@ -36,6 +42,7 @@ from _common import (
     NDOF,
     add_connection_args,
     build_policy,
+    close_driver,
     confirm,
     degrees,
     open_target,
@@ -49,8 +56,11 @@ from _common import (
 from airo_fanuc import FanucDriver, MotionResult
 from airo_fanuc import controller_facts as cf
 
-# CRX-10iA/L active joint limits (deg), measured on the controller and recorded in
-# docs/controller-notes.md §1.1. Used only as a safety guard for this all-joints exercise.
+# CRX-10iA/L active joint limits (deg), measured on OUR controller and recorded in
+# docs/controller-notes.md §1.1 — not read from the robot, so they are only true for that
+# arm. Used as the pre-motion safety guard for this all-joints exercise. §1.1 also records
+# that the vendored URDF's J6 (±190) is narrower than the controller's own (±225): the
+# controller's values are the authoritative ones and are what is used here.
 _LIMIT_LOWER_DEG = np.array([-180.0, -180.0, -270.0, -190.0, -180.0, -225.0])
 _LIMIT_UPPER_DEG = np.array([180.0, 180.0, 270.0, 190.0, 180.0, 225.0])
 
@@ -142,6 +152,11 @@ def main() -> int:
     checks: list[tuple[str, bool]] = []
     try:
         driver = FanucDriver(target.ip, policy)
+    except KeyboardInterrupt:
+        # The constructor's own cleanup already released the lock and stopped the core.
+        print("\naborted during bring-up")
+        target.close()
+        return 1
     except Exception as exc:
         print(f"\nbring-up FAILED: {type(exc).__name__}: {exc}")
         target.close()
@@ -165,12 +180,12 @@ def main() -> int:
             for b in bad:
                 print(f"    {b}")
             checks.append(("sine stays inside the joint limits", False))
-            return verdict("sine_wave", checks)
+            return verdict("sine_wave", checks, driver)
 
         if not _wait_streaming(driver):
             print("  driver did not reach stable streaming — aborting the move (no motion issued).")
             checks.append(("driver reached stable streaming", False))
-            return verdict("sine_wave", checks)
+            return verdict("sine_wave", checks, driver)
         checks.append(("driver reached stable streaming", True))
 
         times_ns, q, qd = _build_sine(q_start, joint_idx, amp_rad, args.period, args.cycles, args.knot_dt)
@@ -218,9 +233,18 @@ def main() -> int:
             checks.append(("stop_j() brought the arm to standstill", w.brake_s is not None))
 
         checks.append(("rt loop held its deadline", report_rt_health(driver, target.config)))
-        return verdict("sine_wave", checks)
+        return verdict("sine_wave", checks, driver)
+    except KeyboardInterrupt:
+        # Ctrl-C mid-sine: brake first (stop_j is callable from any thread, takes effect
+        # within one tick and never raises), then shut down and still report.
+        print("\ninterrupted — braking, then shutting down")
+        driver.stop_j()
+        checks.append(("interrupted by the operator", False))
+        return verdict("sine_wave", checks, driver)
     finally:
-        driver.close()
+        # Belt and braces: close_driver() is idempotent, so this only does anything on
+        # a path that never reached a verdict (an unexpected exception).
+        close_driver(driver)
         target.close()
 
 

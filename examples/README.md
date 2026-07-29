@@ -1,5 +1,12 @@
 # Validating this driver on a real CRX
 
+> **These scripts are written for one specific robot: a FANUC CRX-10iA/L on an
+> R-30iB-class controller negotiating Stream Motion v3 at an 8 ms interpolation
+> period.** That is the arm this package was developed against and the only one any
+> of it has been measured on. Nothing here auto-detects the arm, so on a different
+> FANUC every assumption below is yours to check first — see
+> [What is specific to this arm](#what-is-specific-to-this-arm).
+
 Two runnable scripts, meant to be run in order. Each one connects, prints what the
 controller told it, moves a little, and ends in an explicit `PASS`/`FAIL` verdict —
 so a run is something you can read rather than something you have to interpret.
@@ -113,11 +120,22 @@ No script for this one: press the E-stop during step 3 or 4, while it is moving.
 
 What should happen: the arm stops, the sample line reports `fault=e_stop` with the
 operator instruction that goes with it, the motion resolves `FAULTED` (so the verdict
-fails — correct, the motion did not complete), and the script closes down cleanly
-rather than hanging or leaving the controller wedged. Then release the E-stop, press
-`RESET` on the pendant, and re-run step 1: it should come back up. If it does not,
-that is the recovery ladder having something real to say, and the printed operator
-hint is where to start.
+fails — correct, the motion did not complete), and the `shutdown` block reports
+`closed cleanly`. Then release the E-stop, press `RESET` on the pendant, and re-run
+step 1: it should come back up. If it does not, that is the recovery ladder having
+something real to say, and the printed operator hint is where to start.
+
+**Shutting down is itself a check** (`driver shut down cleanly`), because an E-stop is
+exactly when teardown gets interesting: it lands mid-trajectory, the controller is
+latched, and auto-recovery is armed, so the shutdown runs against a recovery ladder
+that is still talking to the controller. The teardown is ordered — quiesce, stop the
+supervisor, terminal Stop packet, join the RT thread, RMI disconnect, release the lock
+— and every join is timed. A join that wedges is *abandoned* and reported rather than
+killing the process, which is why it is a check and not an assumption. `Ctrl-C`
+mid-motion takes the same path, with a `stop_j()` brake first.
+
+`tests/test_driver.py::test_close_is_clean_while_an_estop_is_latched` exercises this
+against the fake controller, including that the ownership lock comes back free.
 
 Two things worth knowing before you try it. The driver's policy defaults leave an
 armed E-stop recovery in `MOTION_INHIBITED` — motion stays refused until something
@@ -153,6 +171,22 @@ best-effort — a denied request is logged and tolerated, not fatal, so if you p
 them without the privileges (`CAP_SYS_NICE`, a `MEMLOCK` rlimit) nothing will fail
 loudly and nothing will improve either.
 
+## What is specific to this arm
+
+The driver itself is far more portable than these scripts are — the top-level README's
+"Which robots this actually works on" is the accurate account of that. The scripts, by
+contrast, hardcode our arm on purpose, so a validation run has concrete numbers to
+check against instead of asking the operator for six of them. On a different FANUC,
+these are what to change:
+
+| What | Where | Why it is arm- or controller-specific |
+|---|---|---|
+| Joint position limits `[-180,-180,-270,-190,-180,-225]` / `[180,180,270,190,180,225]` deg | `sine_wave.py` `_LIMIT_*_DEG` | Measured on our controller (`docs/controller-notes.md` §1.1). This table is the only thing standing between an `--amplitude-deg` argument and a soft-limit hit. |
+| Velocity / acceleration / jerk clamps | `DriverConfig` defaults, from `controller_facts.CRX10IAL_*` | CRX-10iA/L. They are ordinary constructor fields — pass your own to `DriverConfig` rather than editing the package. |
+| 8 ms interpolation period | `--itp-ms` default | An R-30iB-class fact. Bring-up refuses a mismatch, so a wrong value fails loudly rather than silently mis-scaling every per-tick limit. |
+| Stream Motion v3 / type-202, no force block | the `bring-up` report, and `sm_version=3` under `--fake` | What our controller negotiates. A v4 controller streams a force block and `get_wrench()` starts returning values. |
+| Six joints, `--joint 1..6`, "J6 = wrist roll" | `NDOF = 6` in `_common.py` | `kNumJoints = 6` is a C++ compile-time constant, not a config knob. 7-axis arms and positioner axes are out of scope. |
+
 ## What these scripts deliberately do not cover
 
 Passing all five steps validates the motion path end to end. It does not validate:
@@ -176,8 +210,10 @@ Passing all five steps validates the motion path end to end. It does not validat
 ## When something goes wrong
 
 The scripts print the failure and exit non-zero rather than raising a traceback at
-you. Exit codes: `0` all checks passed, `1` aborted before connecting, `2` bring-up
-failed or a check failed.
+you. Exit codes: `0` all checks passed; `1` aborted before the driver was up (the
+pre-motion banner or bring-up itself was interrupted); `2` bring-up failed, or a check
+failed — including a `Ctrl-C` mid-motion, which is recorded as a failed check because
+the run did not finish what it set out to do.
 
 - `OwnershipError: ... already owned by pid=N` — another process holds the
   controller. Kill it; the lock is released by the kernel, so there is no stale file

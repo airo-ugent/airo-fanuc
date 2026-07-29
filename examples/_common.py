@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared plumbing for the validation examples in this directory.
 
+The examples target one specific robot — a FANUC CRX-10iA/L on an R-30iB-class
+controller, Stream Motion v3 at an 8 ms interpolation period — and assume rather than
+detect it. ``examples/README.md`` lists what that assumption covers and what to change
+for a different arm.
+
 The examples answer one question: *does this driver, built on this host, actually
 drive my controller?* They all do it the same way — connect, print what the
 controller said during bring-up, move a little under watch, then print whether the
@@ -22,7 +27,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from airo_fanuc import DriverConfig, DriverPolicy, MotionResult
+from airo_fanuc import DriverConfig, DriverPolicy, FanucError, MotionResult
 from airo_fanuc import controller_facts as cf
 
 #: Joint count. Six is baked into the C++ core (the online trajectory generator's
@@ -417,8 +422,8 @@ def report_rt_health(driver: Any, config: DriverConfig) -> bool:
         f"rx_seq_gaps={ts['rx_seq_gaps']}"
     )
     print(
-        f"  cpu          : migrations={ts['cpu_migrations']} — expected non-zero (no affinity is set); "
-        f"what matters is the tx interval above"
+        f"  cpu          : migrations={ts['cpu_migrations']} — this driver sets no CPU affinity, so any "
+        f"count is fine; what matters is the tx interval above"
     )
 
     # One τ-advance per tick is the core's central invariant: the trajectory clock
@@ -439,8 +444,42 @@ def report_rt_health(driver: Any, config: DriverConfig) -> bool:
     return ok
 
 
-def verdict(name: str, checks: Sequence[tuple[str, bool]]) -> int:
-    """Print the final verdict block; return the process exit code (0 = all passed)."""
+def close_driver(driver: Any) -> bool:
+    """Shut the driver down and say whether it went cleanly.
+
+    ``close()`` is poison-not-exit: it abandons a wedged teardown step and raises
+    :class:`FanucError` rather than killing the process. A validation run must catch
+    that and report it — an unhandled raise here would replace the verdict with a
+    traceback, which is the worst moment to lose the output. Idempotent, because it
+    is called both on the normal path and from a ``finally``.
+    """
+    if getattr(driver, "_closed", False):
+        return True
+    print(rule("shutdown"))
+    try:
+        driver.close()
+    except FanucError as exc:
+        # A wedged join means a thread was abandoned. The flock is released by the
+        # kernel when this process dies either way, so the next run is not locked out,
+        # but the controller did not get its terminal Stop packet.
+        print(f"  !! did not fully quiesce: {exc}")
+        return False
+    print("  closed cleanly — Stop packet sent, RT thread joined, RMI disconnected, lock released")
+    return True
+
+
+def verdict(name: str, checks: Sequence[tuple[str, bool]], driver: Any = None) -> int:
+    """Close the driver, then print the final verdict block; return the exit code.
+
+    Shutting down is part of a run being valid, not an afterthought: an E-stop can
+    land at any moment, including while the driver is tearing down, and a close that
+    wedges leaves the controller without its terminal Stop packet. So the shutdown
+    happens here — before the verdict is printed, and as the last check in it —
+    rather than in a ``finally`` whose output would land after the verdict.
+    """
+    checks = list(checks)
+    if driver is not None:
+        checks.append(("driver shut down cleanly", close_driver(driver)))
     print(rule("verdict"))
     failed = [label for label, passed in checks if not passed]
     for label, passed in checks:

@@ -35,6 +35,7 @@ from airo_fanuc import (
     RobotFaultedError,
     TrajectoryValidationError,
 )
+from airo_fanuc.ownership import OwnershipLock
 from airo_fanuc.testing import FakeCRXConfig, FakeCRXController
 
 _READY_TIMEOUT_S = 6.0
@@ -472,6 +473,42 @@ def test_close_is_clean_and_idempotent(tmp_path: Any) -> None:
     # Motion after close raises (driver closed) — never a segfault / exit.
     with pytest.raises(FanucError):
         rig.driver.move_trajectory([0, 1_000_000_000], [[0] * 6, [0.1] + [0] * 5], [[0.0] * 6, [0.0] * 6])
+
+
+def test_close_is_clean_while_an_estop_is_latched(tmp_path: Any) -> None:
+    """An E-stop mid-trajectory must not turn shutdown into a wedge.
+
+    The E-stop is the one fault guaranteed to arrive while a trajectory is running,
+    and it arrives with auto-recovery armed — so ``close()`` runs against a latched
+    controller and races a recovery ladder that is itself doing RMI I/O. It must
+    still tear down in order and without raising, put nothing invalid on the wire
+    (``DriverRig.close`` asserts the fake saw no strict-conformance violation), and
+    release the flock: an abandoned lock would keep the next process off the
+    single-session controller with nothing left alive to release it.
+    """
+    lock_path = tmp_path / "owner.lock"
+    rig = DriverRig(tmp_path, policy_overrides={"auto_recover": True})
+    driver = rig.driver
+    handle = driver.move_trajectory(*_traj_from(driver, 0.2, 2_000_000_000))
+    # Let the trajectory actually start moving before the E-stop lands.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and driver.get_state()["active_motion_id"] != handle.motion_id:
+        time.sleep(0.01)
+
+    rig.controller.press_estop()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and driver.get_state()["lifecycle_state"] != "faulted":
+        time.sleep(0.01)
+    assert driver.get_state()["fault_reason"] == "e_stop"
+
+    t0 = time.monotonic()
+    rig.close()  # driver.close() must not raise; then the fake is torn down
+    assert time.monotonic() - t0 < 12.0, "close() outran its own timed joins"
+    # The motion is a FAULTED outcome, not an exception — the airo convention holds
+    # even for the fault that arrives from outside the process.
+    assert handle.result() == MotionResult.FAULTED
+    # PROOF the flock is free: a fresh acquirer takes it without contention.
+    OwnershipLock("control", path=lock_path).acquire().release()
 
 
 def test_close_poison_does_not_exit_on_wedged_thread(tmp_path: Any) -> None:

@@ -129,7 +129,7 @@ so a plain `uv sync` does *not* install pytest. Use `--extra dev`.
 ```bash
 git clone --recursive <repo-url> && cd airo-fanuc
 uv sync --extra dev            # compiles the C++17 extension (scikit-build-core + CMake)
-uv run pytest -q               # 327 tests, all hardware-free
+uv run pytest -q               # 328 tests, all hardware-free
 uvx ruff check src tests
 uv run mypy
 uv run python examples/move_joints.py --fake   # zero-hardware end-to-end smoke

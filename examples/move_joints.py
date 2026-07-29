@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validation step 1: connect to the controller and move one joint.
 
+WRITTEN FOR ONE SPECIFIC ROBOT: a FANUC CRX-10iA/L on an R-30iB-class controller
+negotiating Stream Motion v3 at an 8 ms interpolation period. Six joints, the
+CRX-10iA/L limit defaults out of ``controller_facts``, and J6 as a wrist roll are all
+assumed here, not detected. On a different FANUC, read the table in
+``examples/README.md`` first.
+
 The smallest run that proves the whole stack works end to end — ownership lock,
 RMI bring-up ladder, preflight gate, Stream Motion handshake, the 125 Hz C++ tick
 loop, and one commanded trajectory. Every line it prints is something the
@@ -42,6 +48,7 @@ from _common import (
     NDOF,
     add_connection_args,
     build_policy,
+    close_driver,
     confirm,
     degrees,
     open_target,
@@ -129,6 +136,11 @@ def main() -> int:
     checks: list[tuple[str, bool]] = []
     try:
         driver = FanucDriver(target.ip, policy)
+    except KeyboardInterrupt:
+        # The constructor's own cleanup already released the lock and stopped the core.
+        print("\naborted during bring-up")
+        target.close()
+        return 1
     except Exception as exc:
         print(f"\nbring-up FAILED: {type(exc).__name__}: {exc}")
         target.close()
@@ -155,13 +167,13 @@ def main() -> int:
                 time.sleep(1.0)
             checks.append((f"no fault while streaming for {args.observe:.0f}s", not faulted))
             checks.append(("rt loop held its deadline", report_rt_health(driver, target.config)))
-            return verdict("bring-up validation", checks)
+            return verdict("bring-up validation", checks, driver)
 
         # Ride out any post-bring-up motion_possible transient before commanding.
         if not _wait_streaming(driver):
             print("  driver did not reach stable streaming — aborting the move (no motion issued).")
             checks.append(("driver reached stable streaming", False))
-            return verdict("move_joints", checks)
+            return verdict("move_joints", checks, driver)
         checks.append(("driver reached stable streaming", True))
 
         times, q, qd = _build_trajectory(q_start, jidx, delta_rad, args.duration)
@@ -196,9 +208,18 @@ def main() -> int:
             print(f"  joints now (deg): {degrees(driver.get_state()['q_meas'])}")
 
         checks.append(("rt loop held its deadline", report_rt_health(driver, target.config)))
-        return verdict("move_joints", checks)
+        return verdict("move_joints", checks, driver)
+    except KeyboardInterrupt:
+        # Ctrl-C mid-motion: brake first (stop_j is callable from any thread, takes
+        # effect within one tick and never raises), then shut down and still report.
+        print("\ninterrupted — braking, then shutting down")
+        driver.stop_j()
+        checks.append(("interrupted by the operator", False))
+        return verdict("move_joints", checks, driver)
     finally:
-        driver.close()  # poison-not-exit: timed joins + StopPacket
+        # Belt and braces: close_driver() is idempotent, so this only does anything on
+        # a path that never reached a verdict (an unexpected exception).
+        close_driver(driver)
         target.close()
 
 
