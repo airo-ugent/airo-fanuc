@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Minimal example: drive the FANUC CRX-10iA/L with ``airo_fanuc.FanucDriver``.
+"""Validation step 1: connect to the controller and move one joint.
 
-Moves ONE joint by a small delta (and optionally back), then reports the result.
-Runnable two ways:
+The smallest run that proves the whole stack works end to end — ownership lock,
+RMI bring-up ladder, preflight gate, Stream Motion handshake, the 125 Hz C++ tick
+loop, and one commanded trajectory. Every line it prints is something the
+controller reported, and it ends in an explicit PASS/FAIL verdict.
 
   # Offline — no hardware. Spins up an in-process FakeCRX and drives it:
   python examples/move_joints.py --fake
 
-  # Real controller — operator AT THE ROBOT, E-STOP in hand, workspace clear:
+  # Real controller, bring-up only. NO commanded motion — run this one first:
+  python examples/move_joints.py --ip 192.168.1.100 --no-move
+
+  # Real controller, one joint. Operator AT THE ROBOT, E-STOP in hand, area clear:
   python examples/move_joints.py \
       --ip 192.168.1.100 --joint 6 --delta-deg 10 --duration 4 --return
 
@@ -29,19 +34,25 @@ from __future__ import annotations
 import argparse
 import math
 import sys
-import tempfile
 import time
-from pathlib import Path
 
 import numpy as np
 
-from airo_fanuc import DriverConfig, DriverPolicy, FanucDriver, MotionResult
-
-_NDOF = 6
-
-
-def _degrees(q_rad) -> list[float]:
-    return np.round(np.degrees(np.asarray(q_rad, dtype=float)[:_NDOF]), 3).tolist()
+from _common import (
+    NDOF,
+    add_connection_args,
+    build_policy,
+    confirm,
+    degrees,
+    open_target,
+    report_bringup,
+    report_motion,
+    report_rt_health,
+    rule,
+    verdict,
+    watch,
+)
+from airo_fanuc import FanucDriver, MotionResult
 
 
 def _wait_streaming(driver, hold_s: float = 2.0, timeout_s: float = 10.0) -> bool:
@@ -71,121 +82,124 @@ def _build_trajectory(q_start_rad, joint_idx: int, delta_rad: float, duration_s:
     the CAPTURE splice is a no-op) and ends with the single joint offset; ``qd`` is
     zero at both ends (the C++ core cubic-Hermite-interpolates the rest-to-rest move).
     """
-    q0 = [float(x) for x in np.asarray(q_start_rad, dtype=float)[:_NDOF]]
+    q0 = [float(x) for x in np.asarray(q_start_rad, dtype=float)[:NDOF]]
     q1 = list(q0)
     q1[joint_idx] += delta_rad
     times = [0, int(duration_s * 1e9)]
-    qd = [[0.0] * _NDOF, [0.0] * _NDOF]
+    qd = [[0.0] * NDOF, [0.0] * NDOF]
     return times, [q0, q1], qd
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Move one FANUC joint a bit via airo_fanuc.FanucDriver.")
-    ap.add_argument("--ip", default="192.168.1.100", help="controller IP (real robot)")
-    ap.add_argument("--fake", action="store_true", help="offline in-process FakeCRX (no hardware)")
+    add_connection_args(ap)
     ap.add_argument("--joint", type=int, default=6, help="joint to move, 1-6 (default 6 = wrist roll)")
     ap.add_argument("--delta-deg", type=float, default=10.0, help="relative move, degrees (default 10)")
     ap.add_argument("--duration", type=float, default=4.0, help="move duration, seconds (default 4)")
     ap.add_argument("--return", dest="return_", action="store_true", help="move back to start afterward")
     ap.add_argument("--no-move", action="store_true", help="bring up + stream only; no motion")
     ap.add_argument("--observe", type=float, default=5.0, help="--no-move: seconds to watch")
-    ap.add_argument("--lock-path", default=None, help="ownership flock path")
     args = ap.parse_args()
 
-    if not (1 <= args.joint <= _NDOF):
+    if not (1 <= args.joint <= NDOF):
         ap.error("--joint must be in 1..6")
     jidx = args.joint - 1
     delta_rad = math.radians(args.delta_deg)
 
-    # --- build the driver config; spin up an offline FakeCRX for --fake ----------
-    controller = None
-    if args.fake:
-        from airo_fanuc.testing import FakeCRXConfig, FakeCRXController
+    target = open_target(args)
+    policy = build_policy(target)
 
-        controller = FakeCRXController(FakeCRXConfig(available_version=3))  # v3/type-202, like the real one
-        controller.start()
-        controller.start_realtime(speed=1.0)  # stream status at the ITP
-        cfg = DriverConfig(sm_port=controller.sm_port, rmi_port=controller.rmi_port, sm_version=3)
-        ip = "127.0.0.1"
-        lock_path = str(Path(tempfile.gettempdir()) / "airo-fanuc-example.lock")
-    else:
-        cfg = DriverConfig()  # default Stream Motion (60015) + RMI (16001) ports
-        ip = args.ip
-        lock_path = None
-
-    if args.lock_path is not None:
-        lock_path = args.lock_path
-
-    # joint move only — no gripper; single bring-up attempt (clean signal, no churn).
-    policy_kwargs = {"config": cfg, "enable_gripper": False, "connect_retries": 1}
-    if lock_path is not None:
-        policy_kwargs["lock_path"] = lock_path
-    policy = DriverPolicy(**policy_kwargs)
-
-    # --- safety gate on real hardware --------------------------------------------
-    if not args.fake:
-        print("=" * 72)
-        if args.no_move:
-            print("  BRING-UP ONLY — no commanded motion. The driver will hold the current pose.")
-            print(f"  It streams status + holds for {args.observe:.0f} s, then closes.")
-        else:
-            print("  REAL ROBOT MOVE — operator must be present, E-STOP in hand, area clear.")
-            print(f"  About to move J{args.joint} by {args.delta_deg:+.1f} deg over {args.duration:.1f} s.")
-        print("  Ctrl-C now to abort; starting in 3 s ...")
-        print("=" * 72)
-        try:
-            time.sleep(3.0)
-        except KeyboardInterrupt:
-            print("aborted before connect")
+    if not target.is_fake:
+        banner = (
+            [
+                "BRING-UP ONLY — no commanded motion. The driver will hold the current pose.",
+                f"It streams status + holds for {args.observe:.0f} s, then closes.",
+            ]
+            if args.no_move
+            else [
+                "REAL ROBOT MOVE — operator must be present, E-STOP in hand, area clear.",
+                f"About to move J{args.joint} by {args.delta_deg:+.1f} deg over {args.duration:.1f} s.",
+            ]
+        )
+        if not confirm(banner):
+            target.close()
             return 1
 
-    print(f"connecting to {ip} (construct-and-go: blocks until commandable or raises) ...")
-    driver = FanucDriver(ip, policy)
+    print(f"connecting to {target.ip} (construct-and-go: blocks until commandable or raises) ...")
+    checks: list[tuple[str, bool]] = []
     try:
-        q_start = np.asarray(driver.get_state()["q_cmd"], dtype=float)[:_NDOF]
-        print("commandable. current joints (deg):", _degrees(q_start))
+        driver = FanucDriver(target.ip, policy)
+    except Exception as exc:
+        print(f"\nbring-up FAILED: {type(exc).__name__}: {exc}")
+        target.close()
+        return 2
+
+    try:
+        report_bringup(driver, target.config)
+        checks.append(("bring-up reached a commandable driver", True))
+        q_start = np.asarray(driver.get_state()["q_cmd"], dtype=float)[:NDOF]
 
         # --- no-motion bring-up validation: stream state, confirm no fault, hold ----
         if args.no_move:
-            print(f"bring-up OK. streaming state for {args.observe:.0f} s (NO commanded motion) ...")
+            print(rule(f"streaming for {args.observe:.0f}s (NO commanded motion)"))
             deadline = time.monotonic() + args.observe
             faulted = False
             while time.monotonic() < deadline:
                 st = driver.get_state()
                 print(
                     f"  mode={st.get('lifecycle_state')} fault={st.get('fault_reason')} "
-                    f"rx_age_ms={st.get('rx_age_ms', 0.0):.1f} wrench={driver.get_wrench()} "
-                    f"joints_deg={_degrees(st['q_meas'])}"
+                    f"rx_age_ms={st.get('rx_age_ms', 0.0):.1f} joints_deg={degrees(st['q_meas'])}"
                 )
                 if str(st.get("fault_reason") or "none").lower() != "none":
                     faulted = True
                 time.sleep(1.0)
-            print("done — no commanded motion was issued." + ("  (a fault was observed!)" if faulted else ""))
-            return 2 if faulted else 0
+            checks.append((f"no fault while streaming for {args.observe:.0f}s", not faulted))
+            checks.append(("rt loop held its deadline", report_rt_health(driver, target.config)))
+            return verdict("bring-up validation", checks)
 
         # Ride out any post-bring-up motion_possible transient before commanding.
         if not _wait_streaming(driver):
             print("  driver did not reach stable streaming — aborting the move (no motion issued).")
-            return 3
+            checks.append(("driver reached stable streaming", False))
+            return verdict("move_joints", checks)
+        checks.append(("driver reached stable streaming", True))
+
         times, q, qd = _build_trajectory(q_start, jidx, delta_rad, args.duration)
-        print(f"moving J{args.joint} by {args.delta_deg:+.1f} deg ...")
-        result = driver.move_trajectory(times, q, qd).wait(timeout=args.duration + 5.0)
-        print(f"  result: {result}")
-        print("  joints now (deg):", _degrees(driver.get_state()["q_meas"]))
+        print(rule(f"moving J{args.joint} by {args.delta_deg:+.1f} deg over {args.duration:.1f}s"))
+        handle = driver.move_trajectory(times, q, qd)
+        w = watch(driver, handle, timeout_s=args.duration + 5.0)
+        checks.append(
+            (f"J{args.joint} move returned DONE", report_motion(w, expect_result=MotionResult.DONE))
+        )
 
-        if args.return_ and result == MotionResult.DONE:
+        # Did the joint actually arrive? DONE already means the core saw the settle
+        # criteria met; this re-checks it from the outside, in the units the operator
+        # asked in, against the same tolerance the settle policy uses.
+        tol_deg = policy.settle.tol_deg
+        reached = np.asarray(driver.get_state()["q_meas"], dtype=float)[:NDOF]
+        arrived_deg = math.degrees(reached[jidx] - q_start[jidx])
+        print(f"  commanded {args.delta_deg:+.3f} deg, measured {arrived_deg:+.3f} deg")
+        print(f"  joints now (deg): {degrees(reached)}")
+        checks.append(
+            (
+                f"J{args.joint} arrived within the {tol_deg:.2f} deg settle tolerance "
+                f"of the commanded {args.delta_deg:+.1f} deg",
+                abs(arrived_deg - args.delta_deg) <= tol_deg,
+            )
+        )
+
+        if args.return_ and w.result == MotionResult.DONE:
             times, q, qd = _build_trajectory(driver.get_state()["q_cmd"], jidx, -delta_rad, args.duration)
-            print("returning to start ...")
-            back = driver.move_trajectory(times, q, qd).wait(timeout=args.duration + 5.0)
-            print(f"  result: {back}")
-            print("  joints now (deg):", _degrees(driver.get_state()["q_meas"]))
+            print(rule("returning to start"))
+            back = watch(driver, driver.move_trajectory(times, q, qd), timeout_s=args.duration + 5.0)
+            checks.append(("return move returned DONE", report_motion(back, expect_result=MotionResult.DONE)))
+            print(f"  joints now (deg): {degrees(driver.get_state()['q_meas'])}")
 
-        return 0 if result == MotionResult.DONE else 2
+        checks.append(("rt loop held its deadline", report_rt_health(driver, target.config)))
+        return verdict("move_joints", checks)
     finally:
         driver.close()  # poison-not-exit: timed joins + StopPacket
-        if controller is not None:
-            controller.stop_realtime()
-            controller.close()
+        target.close()
 
 
 if __name__ == "__main__":

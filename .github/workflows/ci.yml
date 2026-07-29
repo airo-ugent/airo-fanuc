@@ -81,8 +81,11 @@ jobs:
 
       - name: Lint (ruff)
         # Config lives in [tool.ruff] in pyproject.toml; --output-format=github
-        # turns findings into inline annotations on the diff.
-        run: uv run ruff check --output-format=github src tests
+        # turns findings into inline annotations on the diff. examples/ is linted
+        # but not executed here: the examples assert the RT loop held an 8 ms
+        # deadline, which a shared CI runner cannot be relied on to do. Run
+        # `--fake` locally instead (see examples/README.md).
+        run: uv run ruff check --output-format=github src tests examples
 
       - name: Type check (mypy)
         # Packages, mypy_path and python_version all come from [tool.mypy].

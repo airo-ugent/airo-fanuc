@@ -55,7 +55,10 @@ AIRO_FANUC_BUILD_TESTS = "OFF"
 [tool.ruff]
 line-length = 110
 target-version = "py310"
-src = ["src"]
+# Both are import roots: the package lives under src/, and each example script runs
+# with examples/ on sys.path (it imports its sibling _common). Listing both keeps
+# import sorting from filing our own modules as third-party.
+src = ["src", "examples"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

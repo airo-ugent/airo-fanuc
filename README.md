@@ -305,6 +305,11 @@ uv run python examples/move_joints.py --fake      # single-joint rest-to-rest mo
 uv run python examples/sine_wave.py --fake        # dense-knot trajectory, all joints
 ```
 
+Both are also the bring-up validation scripts: each one reports what the controller said, moves,
+and ends in a `PASS`/`FAIL` verdict with the real-time loop's measured timing.
+[`examples/README.md`](examples/README.md) is the step-by-step procedure for a first run against a
+real controller.
+
 ---
 
 ## Repository layout
@@ -317,6 +322,7 @@ uv run python examples/sine_wave.py --fake        # dense-knot trajectory, all j
 | `src/cpp/tick_engine/` | I/O-free tick math: Hermite, brake, capture, servo, slew, settle |
 | `src/cpp/codec/` | Wrapper TU compiled against the vendored FANUC Stream Motion headers |
 | `vendor/fanuc_driver/` | FANUC's driver as a submodule; two headers compiled (see `PATCHES.md`) |
+| `examples/` | Runnable validation scripts (`--fake` or real hardware) + the bring-up procedure |
 | `docs/successor-invariants.md` | The driver's binding safety / motion invariants |
 | `docs/controller-notes.md` | Measured controller behaviour, alarm texts, recovery procedures |
 | `deploy/GRPRUN.LS` | Teach-pendant launcher that RUN-forks `GRIPDISP` |
