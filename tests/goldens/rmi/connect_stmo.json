@@ -1,0 +1,9 @@
+{
+  "provenance": "rmi_client._open_session_locked: send {'Communication': 'FRC_Connect_STMO'}",
+  "builder": "rmi_connect_stmo_request",
+  "args": {},
+  "request": {
+    "Communication": "FRC_Connect_STMO"
+  },
+  "wire": "{\"Communication\": \"FRC_Connect_STMO\"}\r\n"
+}

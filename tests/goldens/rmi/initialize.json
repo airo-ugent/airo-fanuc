@@ -1,0 +1,11 @@
+{
+  "provenance": "rmi_client._initialize_with_recovery_locked: {'Command': 'FRC_Initialize'}",
+  "builder": "rmi_command_request",
+  "args": {
+    "command": "FRC_Initialize"
+  },
+  "request": {
+    "Command": "FRC_Initialize"
+  },
+  "wire": "{\"Command\": \"FRC_Initialize\"}\r\n"
+}

@@ -1,0 +1,6 @@
+.venv/
+.venv-dev/
+build/
+_skbuild/
+*.so
+__pycache__/

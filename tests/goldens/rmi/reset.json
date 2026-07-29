@@ -1,0 +1,11 @@
+{
+  "provenance": "rmi_client.reset: {'Command': 'FRC_Reset'}",
+  "builder": "rmi_command_request",
+  "args": {
+    "command": "FRC_Reset"
+  },
+  "request": {
+    "Command": "FRC_Reset"
+  },
+  "wire": "{\"Command\": \"FRC_Reset\"}\r\n"
+}

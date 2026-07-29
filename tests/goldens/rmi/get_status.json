@@ -1,0 +1,11 @@
+{
+  "provenance": "rmi_client.get_status / reseed_sequence_id_from_controller",
+  "builder": "rmi_command_request",
+  "args": {
+    "command": "FRC_GetStatus"
+  },
+  "request": {
+    "Command": "FRC_GetStatus"
+  },
+  "wire": "{\"Command\": \"FRC_GetStatus\"}\r\n"
+}

@@ -1,0 +1,9 @@
+{
+  "provenance": "rmi_client.stop: best-effort {'Communication': 'FRC_Disconnect'}",
+  "builder": "rmi_disconnect_request",
+  "args": {},
+  "request": {
+    "Communication": "FRC_Disconnect"
+  },
+  "wire": "{\"Communication\": \"FRC_Disconnect\"}\r\n"
+}

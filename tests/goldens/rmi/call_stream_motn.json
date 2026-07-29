@@ -1,0 +1,14 @@
+{
+  "provenance": "rmi_client.program_call('STREAM_MOTN') \u2014 fire-and-forget FRC_Call",
+  "builder": "rmi_call_request",
+  "args": {
+    "sequence_id": 7,
+    "program_name": "STREAM_MOTN"
+  },
+  "request": {
+    "Instruction": "FRC_Call",
+    "SequenceID": 7,
+    "ProgramName": "STREAM_MOTN"
+  },
+  "wire": "{\"Instruction\": \"FRC_Call\", \"SequenceID\": 7, \"ProgramName\": \"STREAM_MOTN\"}\r\n"
+}

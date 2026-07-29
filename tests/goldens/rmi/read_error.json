@@ -1,0 +1,12 @@
+{
+  "provenance": "rmi_client.read_error(1): {'Command': 'FRC_ReadError', 'Count': 1}",
+  "builder": "rmi_read_error_request",
+  "args": {
+    "count": 1
+  },
+  "request": {
+    "Command": "FRC_ReadError",
+    "Count": 1
+  },
+  "wire": "{\"Command\": \"FRC_ReadError\", \"Count\": 1}\r\n"
+}

@@ -1,0 +1,3 @@
+[submodule "vendor/fanuc_driver"]
+	path = vendor/fanuc_driver
+	url = https://github.com/FANUC-CORPORATION/fanuc_driver.git

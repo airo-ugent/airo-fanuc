@@ -1,0 +1,9 @@
+{
+  "provenance": "rmi_client.read_joint_angles \u2014 FRC_ReadJointAngles (RMI \u00a72.3.15, ReadJointAnglesPacket)",
+  "builder": "rmi_read_joint_angles_request",
+  "args": {},
+  "request": {
+    "Command": "FRC_ReadJointAngles"
+  },
+  "wire": "{\"Command\": \"FRC_ReadJointAngles\"}\r\n"
+}

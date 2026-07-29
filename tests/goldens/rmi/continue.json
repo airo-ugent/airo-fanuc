@@ -1,0 +1,9 @@
+{
+  "provenance": "rmi_client.program_continue \u2014 FRC_Continue (RMI \u00a72.3.4, ContinuePacket)",
+  "builder": "rmi_continue_request",
+  "args": {},
+  "request": {
+    "Command": "FRC_Continue"
+  },
+  "wire": "{\"Command\": \"FRC_Continue\"}\r\n"
+}

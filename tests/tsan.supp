@@ -1,0 +1,38 @@
+# ThreadSanitizer suppressions for the airo_fanuc RT core (P3c).
+#
+# SCOPE: narrowly the by-design lock-free "racy snapshot" surfaces, and ONLY
+# those. Everything else (the SpscRing mailbox/events/retire, the atomic epoch,
+# the socket/timerfd/thread lifecycle) is properly synchronised and MUST stay
+# TSan-clean — a genuine new race there fails the tsan gate.
+#
+# Each pattern is a specific function (TSan matches it anywhere in the race
+# stack), NOT a blanket file/module suppression. Do not broaden these.
+#
+# WHY THESE RACE BY DESIGN
+# ------------------------
+# The RT thread publishes state to Python-side pollers WITHOUT taking a lock the
+# writer could stall on (no RT-thread blocking, no callbacks into Python). The
+# torn-free guarantee comes from a version counter (seqlock) / accepted-torn
+# read, which TSan cannot model — so TSan reports the payload read↔write as a
+# data race. This is the classic seqlock false positive, documented in
+# snapshot.hpp and realtime_core.hpp. Staleness is annotated (ages), never lied
+# about; the counters are diagnostics only.
+
+# --- Seqlock<StateSnapshot> payload (snapshot.hpp) -------------------------
+# read() copies value_ while the RT writer may be memcpy-ing it; the seq counter
+# (acquire/release) makes the reader retry on a torn copy. TSan flags value_.
+race:airo_fanuc::rt_core::Seqlock
+
+# --- RT-owned timing histograms + counters (realtime_core.hpp / .cpp) ------
+# timing() reads the RT-thread-owned Histogram buckets and the tx/tick/etc.
+# counters racily (a torn bucket is a cosmetic percentile blip, never a control
+# decision). Documented "reads them racily" at realtime_core.hpp.
+race:airo_fanuc::rt_core::Histogram
+race:airo_fanuc::rt_core::RealtimeCore::timing
+
+# --- JointsAtRing per-slot seqlock (rings.hpp) -----------------------------
+# Same per-slot version-counter design as Seqlock: nearest()/push() race on the
+# (mono_ns, q) payload, torn-free via the per-slot seq. Not exercised
+# concurrently by the current gtests, but scoped here so the P4b joints_at_wall
+# concurrency test inherits the correct, narrow suppression rather than a blanket.
+race:airo_fanuc::rt_core::JointsAtRing

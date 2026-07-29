@@ -1,0 +1,12 @@
+{
+  "provenance": "rmi_client.read_register(1) \u2014 gripper R[1] poll",
+  "builder": "rmi_read_register_request",
+  "args": {
+    "register_number": 1
+  },
+  "request": {
+    "Command": "FRC_ReadRegister",
+    "RegisterNumber": 1
+  },
+  "wire": "{\"Command\": \"FRC_ReadRegister\", \"RegisterNumber\": 1}\r\n"
+}

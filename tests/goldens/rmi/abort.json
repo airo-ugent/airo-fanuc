@@ -1,0 +1,11 @@
+{
+  "provenance": "rmi_client.abort / recovery pass-2: {'Command': 'FRC_Abort'}",
+  "builder": "rmi_command_request",
+  "args": {
+    "command": "FRC_Abort"
+  },
+  "request": {
+    "Command": "FRC_Abort"
+  },
+  "wire": "{\"Command\": \"FRC_Abort\"}\r\n"
+}

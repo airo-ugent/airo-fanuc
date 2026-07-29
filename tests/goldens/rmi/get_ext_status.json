@@ -1,0 +1,11 @@
+{
+  "provenance": "rmi_client.get_extended_status: {'Command': 'FRC_GetExtStatus'}",
+  "builder": "rmi_command_request",
+  "args": {
+    "command": "FRC_GetExtStatus"
+  },
+  "request": {
+    "Command": "FRC_GetExtStatus"
+  },
+  "wire": "{\"Command\": \"FRC_GetExtStatus\"}\r\n"
+}

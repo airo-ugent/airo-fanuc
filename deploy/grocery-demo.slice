@@ -1,0 +1,39 @@
+# grocery-demo.slice — the ONE slice allowed onto the reserved SMT pair (15+31).
+#
+# PLAN §5.5 (host/RT hygiene) + R1 E1 (SMT sibling). The FANUC RT thread self-pins
+# to logical core 31 and runs SCHED_FIFO; core 31's SMT sibling is logical core 15
+# (verified `cat /sys/devices/system/cpu/cpu31/topology/thread_siblings_list` = 15,31),
+# so BOTH are reserved: every other slice is confined to 0-14,16-30 by the
+# companion drop-ins (user.slice.d/system.slice.d/99-reserve-smt-pair.conf), and
+# only processes in THIS slice may touch 15/31.
+#
+# The whole grocery demo (grocery-robot and everything it spawns) runs in this
+# slice with AllowedCPUs=0-31. The demo's Python entry point additionally masks
+# itself to 0-14,16-30 (os.sched_setaffinity) BEFORE importing torch/zenoh, so
+# the RT thread is the sole occupant of 31 and sibling 15 stays idle — the demo's
+# CUDA/voxel/Zenoh threads never contend on the pair. (dries measured p99 inter-TX
+# 11.75 → 17.95 ms without this isolation.)
+#
+# This SUPERSEDES the previous single-core-31 units (fanuc.slice +
+# 99-reserve-core-31.conf, which reserved only 31 with others on 0-30). The
+# separate systemd-isolated grocery-fanuc-bridge unit is disabled at cutover; the
+# driver's RT core now lives IN the demo process (in-process, per the P2′ verdict),
+# hence a demo-wide slice rather than a bridge-only one.
+#
+# Install:
+#   sudo cp grocery-demo.slice /etc/systemd/system/grocery-demo.slice
+#   sudo cp user.slice.d/99-reserve-smt-pair.conf   /etc/systemd/system/user.slice.d/
+#   sudo cp system.slice.d/99-reserve-smt-pair.conf /etc/systemd/system/system.slice.d/
+#   sudo systemctl daemon-reload
+# Launch the demo inside it, e.g.:
+#   sudo systemd-run --slice=grocery-demo.slice -p AllowedCPUs=0-31 \
+#        -p LimitRTPRIO=99 -p LimitMEMLOCK=infinity --pty --wait --collect \
+#        -E GROCERY_FANUC_BACKEND=driver uv run grocery-robot
+# Verify: systemctl show grocery-demo.slice -p AllowedCPUs  → 0-31
+
+[Unit]
+Description=Grocery demo slice (FANUC RT thread on core 31; SMT pair 15+31 reserved)
+Before=slices.target
+
+[Slice]
+AllowedCPUs=0-31

@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: Apache-2.0
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "airo-fanuc"
+version = "0.1.0.dev0"
+description = "FANUC CRX-10iA/L driver: C++17 real-time Stream Motion core + ur_rtde-shaped Python API"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSES/*", "NOTICE"]
+authors = [{ name = "AIRO — Ghent University" }]
+keywords = ["fanuc", "crx", "stream-motion", "robot", "manipulator", "real-time"]
+# Runtime deps: numpy only (D14). No airo-robots / zenoh / loguru — the wheel
+# must install standalone for the eventual airo-mono split.
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+# pytest-timeout is required, not optional: 17 tests carry @pytest.mark.timeout
+# guards (incl. a self-deadlock guard) that silently do nothing without it.
+dev = ["pytest>=8", "pytest-timeout>=2.3", "mypy>=1.10", "ruff>=0.4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "timeout: per-test wall-clock cap (pytest-timeout); guards against deadlock regressions",
+]
+
+# ---------------------------------------------------------------------------
+# scikit-build-core: build the CMake extension and drop airo_fanuc._core into
+# the import package (src/airo_fanuc → airo_fanuc; _core installed there by the
+# CMake install() rule).
+# ---------------------------------------------------------------------------
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+wheel.packages = ["src/airo_fanuc"]
+# Stable, gitignored build dir so editable rebuilds reuse FetchContent deps.
+build-dir = "build/{wheel_tag}"
+sdist.include = ["src/cpp", "CMakeLists.txt", "vendor/fanuc_driver/fanuc_libs/stream_motion"]
+
+[tool.scikit-build.cmake]
+version = ">=3.22"
+build-type = "Release"
+
+[tool.scikit-build.cmake.define]
+# The wheel runtime never needs gtest; skip the googletest FetchContent. The
+# standalone `cmake -S ... && ctest` build leaves this ON (CMake default).
+AIRO_FANUC_BUILD_TESTS = "OFF"
+
+# ---------------------------------------------------------------------------
+# Lint / typecheck config (consumed by the CI `lint` job).
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["airo_fanuc"]
+mypy_path = "src"
+ignore_missing_imports = true

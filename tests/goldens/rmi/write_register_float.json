@@ -1,0 +1,15 @@
+{
+  "provenance": "rmi_client.write_register(1, 1.5) \u2014 float -> DataType 'float' (lowercase)",
+  "builder": "rmi_write_register_request",
+  "args": {
+    "register_number": 1,
+    "value": 1.5
+  },
+  "request": {
+    "Command": "FRC_WriteRegister",
+    "RegisterNumber": 1,
+    "RegisterValue": 1.5,
+    "DataType": "float"
+  },
+  "wire": "{\"Command\": \"FRC_WriteRegister\", \"RegisterNumber\": 1, \"RegisterValue\": 1.5, \"DataType\": \"float\"}\r\n"
+}

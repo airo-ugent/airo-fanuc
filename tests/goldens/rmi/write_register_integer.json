@@ -1,0 +1,15 @@
+{
+  "provenance": "rmi_client.write_register(2, 1) \u2014 int -> DataType 'integer' (lowercase)",
+  "builder": "rmi_write_register_request",
+  "args": {
+    "register_number": 2,
+    "value": 1
+  },
+  "request": {
+    "Command": "FRC_WriteRegister",
+    "RegisterNumber": 2,
+    "RegisterValue": 1,
+    "DataType": "integer"
+  },
+  "wire": "{\"Command\": \"FRC_WriteRegister\", \"RegisterNumber\": 2, \"RegisterValue\": 1, \"DataType\": \"integer\"}\r\n"
+}
