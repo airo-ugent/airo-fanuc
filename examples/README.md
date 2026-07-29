@@ -153,6 +153,26 @@ best-effort — a denied request is logged and tolerated, not fatal, so if you p
 them without the privileges (`CAP_SYS_NICE`, a `MEMLOCK` rlimit) nothing will fail
 loudly and nothing will improve either.
 
+## What these scripts deliberately do not cover
+
+Passing all five steps validates the motion path end to end. It does not validate:
+
+- **The gripper.** Both scripts run `enable_gripper=False`. The `GRPRUN`/`GRIPDISP`
+  path is the one part of this package specific to a particular end effector, and it
+  needs its own run once the tool is mounted.
+- **The acceleration and jerk clamps.** The values in `controller_facts.py` are
+  derived from the velocity limits; FANUC's own `joint_limits.yaml` in the vendored
+  driver publishes accelerations 6–16× lower. Nothing in these runs distinguishes
+  the two, because both are permissive enough for the gentle speeds above. Decide it
+  by working the speed up in step 3 and watching for vibration or a servo alarm.
+- **Recovery from a collision-induced `SystemFault`**, which is a different path from
+  the E-stop drill (it can leave RMI unresponsive and forces the cold-reconnect
+  escalation). Provoking it deliberately is not something to do casually.
+- **The J2/J3 angle representation on RMI reads**, which only affects the
+  RMI-sourced receive/calibration path, not Stream Motion. A wrong assumption there
+  is a silent J2-sized FK error, so it wants its own check against the pendant's
+  displayed joint angles.
+
 ## When something goes wrong
 
 The scripts print the failure and exit non-zero rather than raising a traceback at
