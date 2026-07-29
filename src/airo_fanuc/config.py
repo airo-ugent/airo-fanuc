@@ -119,12 +119,21 @@ class DriverConfig:
     #: verdict re-forks and re-creates the un-killable stacking wedge, so err toward
     #: waiting. Python-only (not mirrored into the RT core).
     gripdisp_probe_timeout_s: float = 6.0
-    #: RT-thread isolation. Default OFF (test/dev safe; pthread affinity EINVALs
-    #: outside the process cgroup cpuset). Production/P5 enables via the grocery
-    #: entry point once the ``grocery-demo.slice`` reservation is in place.
-    rt_core: int = 31
+    #: RT-thread hygiene, applied best-effort on the RT thread itself. Both flags
+    #: default OFF so an unprivileged process constructs and runs unchanged, and
+    #: each tolerates EPERM rather than failing bring-up.
+    #:
+    #: ``sched_fifo`` raises the 125 Hz thread to ``SCHED_FIFO`` at ``rt_priority``
+    #: so it preempts normal-priority threads instead of queueing behind them; the
+    #: loop must put a packet on the wire every ITP, and a scheduling delay is a
+    #: missed tick. ``mlock`` calls ``mlockall`` so no page of the process can be
+    #: swapped out — a major fault on the tick path costs milliseconds.
+    #:
+    #: Enabling them requires privilege: ``CAP_SYS_NICE`` (or an ``RTPRIO`` rlimit)
+    #: for ``sched_fifo``, a ``MEMLOCK`` rlimit for ``mlock``. This driver does not
+    #: set CPU affinity and does not require any host CPU reservation; pinning or
+    #: isolating cores, if wanted at all, is the consumer's concern.
     rt_priority: int = 80
-    pin_core: bool = False
     sched_fifo: bool = False
     mlock: bool = False
 
@@ -147,9 +156,7 @@ class DriverConfig:
         rc.drift_fault_rad = float(np.deg2rad(self.drift_fault_deg))
         rc.drift_fault_ticks = int(self.drift_fault_ticks)
         rc.preroll_timeout_s = float(self.preroll_timeout_s)
-        rc.rt_core = int(self.rt_core)
         rc.rt_priority = int(self.rt_priority)
-        rc.pin_core = bool(self.pin_core)
         rc.sched_fifo = bool(self.sched_fifo)
         rc.mlock = bool(self.mlock)
         return rc

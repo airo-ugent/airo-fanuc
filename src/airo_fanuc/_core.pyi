@@ -129,9 +129,7 @@ class RtCoreConfig:
     drift_fault_rad: float
     drift_fault_ticks: int
     preroll_timeout_s: float
-    rt_core: int
     rt_priority: int
-    pin_core: bool
     sched_fifo: bool
     mlock: bool
     pll_rx_lead_us: float

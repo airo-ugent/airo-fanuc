@@ -181,11 +181,9 @@ struct RtCoreConfig {
   // --- RealtimeCore I/O + PLL (not used by pure TickCore) ---
   std::string host{"127.0.0.1"};
   std::uint16_t sm_port{60015};
-  int rt_core{31};       // logical core to self-pin (PLAN.md §5.5); SMT sibling 15 reserved idle
-  int rt_priority{80};   // SCHED_FIFO priority
-  bool pin_core{false};  // request affinity (graceful on EPERM/EINVAL)
-  bool sched_fifo{false};
-  bool mlock{false};
+  int rt_priority{80};      // SCHED_FIFO priority requested when sched_fifo is set
+  bool sched_fifo{false};   // raise the RT thread to SCHED_FIFO (graceful on EPERM)
+  bool mlock{false};        // mlockall the process (graceful on EPERM)
   double pll_rx_lead_us{300.0};  // PLL target: fire tick this long after RX
   double pll_kp{0.20};           // PLL proportional gain
   bool reply_on_receive{false};  // H2 comparison flag (raw reply-on-receive instead of PLL-clocked)

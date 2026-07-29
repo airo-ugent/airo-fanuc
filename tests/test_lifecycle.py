@@ -46,12 +46,10 @@ def test_driver_config_limits_match_controller_facts() -> None:
 
 
 def test_to_rt_core_config_maps_protocol_and_hygiene() -> None:
-    cfg = DriverConfig(sm_version=4, rt_core=31, rt_priority=80, pin_core=True, sched_fifo=True, mlock=True)
+    cfg = DriverConfig(sm_version=4, rt_priority=80, sched_fifo=True, mlock=True)
     rc = cfg.to_rt_core_config()
     assert rc.sm_version == 4
-    assert rc.rt_core == 31
     assert rc.rt_priority == 80
-    assert rc.pin_core is True
     assert rc.sched_fifo is True
     assert rc.mlock is True
 

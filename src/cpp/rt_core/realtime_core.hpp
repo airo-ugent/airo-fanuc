@@ -9,8 +9,9 @@
 // finite-difference-slope qd_est, decoded gates, wrench) → TickCore::tick → encode
 // type-201 (rad→deg, 9-pad, dataStyle 0xFFFF)
 // → send → publish seqlock snapshot + drain events → rings. RT hygiene behind
-// flags (self-pin core, SCHED_FIFO, mlockall) all degrade gracefully without
-// privilege (spike-proven). ZERO heap allocation on the tick path.
+// flags (SCHED_FIFO, mlockall) degrades gracefully without privilege; no CPU
+// affinity is set, so no host core reservation is required. ZERO heap
+// allocation on the tick path.
 //
 // This is the ONLY place a wall clock is read (PLL / snapshot ages). NO Python
 // callbacks from the RT thread — Python polls the snapshot and drains events.

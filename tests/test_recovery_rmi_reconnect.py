@@ -20,7 +20,7 @@ import threading
 from types import SimpleNamespace
 
 from airo_fanuc.exceptions import RmiSessionDown
-from airo_fanuc.supervisor import FaultReason, Supervisor, _STREAM_MOTN
+from airo_fanuc.supervisor import _STREAM_MOTN, FaultReason, Supervisor
 
 
 class _FakeRmi:

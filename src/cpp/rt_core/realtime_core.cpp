@@ -3,7 +3,7 @@
 // RealtimeCore — the RT thread / I/O wrapper. See realtime_core.hpp.
 
 #ifndef _GNU_SOURCE
-#define _GNU_SOURCE  // sched_getcpu, pthread_setaffinity_np, MCL_ONFAULT
+#define _GNU_SOURCE  // sched_getcpu, MCL_ONFAULT
 #endif
 
 #include "rt_core/realtime_core.hpp"
@@ -293,15 +293,12 @@ bool RealtimeCore::arm_timer_abs_(std::int64_t abs_ns) {
 }
 
 // ---------------------------------------------------------------------------
-// RT hygiene (all graceful on EPERM/EINVAL — spike-proven)
+// RT hygiene. Both are best-effort: an unprivileged process simply keeps the
+// default scheduling class and swappable pages, so bring-up never depends on
+// having been granted CAP_SYS_NICE / MEMLOCK. No CPU affinity is set — this
+// driver requires no host core reservation.
 // ---------------------------------------------------------------------------
 void RealtimeCore::apply_rt_hygiene_() {
-  if (cfg_.pin_core) {
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(cfg_.rt_core, &set);
-    (void)pthread_setaffinity_np(pthread_self(), sizeof(set), &set);  // tolerate failure
-  }
   if (cfg_.sched_fifo) {
     struct sched_param sp;
     std::memset(&sp, 0, sizeof(sp));
