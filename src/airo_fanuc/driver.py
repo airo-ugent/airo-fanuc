@@ -33,6 +33,7 @@ from ._core import Mode, MotionStatus, StreamCore
 from .config import DriverPolicy, MotionResult
 from .controller_facts import SettlePolicy
 from .exceptions import (
+    FanucConnectionError,
     FanucError,
     RejectedStartMismatch,
     RobotFaultedError,
@@ -154,6 +155,11 @@ class FanucDriver:
         self._closed = False
         self._close_lock = threading.Lock()
 
+        # Built once and retained, not rebuilt per use: the CAPTURE collision check
+        # must synthesize its splice with the exact knobs the core runs with, or it
+        # would be checking a path the core does not execute.
+        self._rt_cfg = self._cfg.to_rt_core_config()
+
         self._ownership: OwnershipLock | None = None
         self.rmi: RmiClient | None = None
         self.core: StreamCore | None = None
@@ -172,9 +178,10 @@ class FanucDriver:
                 connect_timeout=self._cfg.rmi_connect_timeout,
                 request_timeout=self._cfg.rmi_request_timeout,
             )
-            self.core = StreamCore(ip, self._cfg.sm_port, self._cfg.to_rt_core_config())
+            self.core = StreamCore(ip, self._cfg.sm_port, self._rt_cfg)
             self._supervisor = Supervisor(self.core, self.rmi, self._policy)
             self._preflight_report = self._supervisor.bringup()  # raises FanucConnectionError/Preflight
+            self._verify_controller_itp()
             self._supervisor.start_watch()
 
             if self._policy.enable_gripper:
@@ -597,6 +604,35 @@ class FanucDriver:
             return None
         return {"pid": None, "mode": lock.mode, "since": lock.since}
 
+    def _verify_controller_itp(self) -> None:
+        """Check the configured interpolation period against the controller's own.
+
+        The controller states its interpolation period in the GetCapability reply, in
+        whole milliseconds. Every per-tick quantity in the core is scaled by
+        ``config.itp_s`` — the slew clip, the drift guard's lag window, each mode's
+        Ruckig period — so a driver configured for one period against a controller
+        running another produces limits that are silently wrong by that ratio, in the
+        permissive direction if the real period is shorter. Bring-up refuses instead.
+
+        A reported 0 means no capability reply was seen; that is not treated as a
+        mismatch here, because a controller that never completed the handshake fails
+        earlier and more informatively on the preroll timeout.
+        """
+        assert self.core is not None
+        reported_ms = int(self.core.sm_sampling_rate_ms)
+        if reported_ms == 0:
+            return
+        configured_ms = self._cfg.itp_s * 1000.0
+        # The wire field is integer milliseconds, so allow the rounding it implies and
+        # nothing more.
+        if abs(configured_ms - reported_ms) > 0.5:
+            raise FanucConnectionError(
+                f"controller reports a {reported_ms} ms interpolation period, but the driver is "
+                f"configured for {configured_ms:.3f} ms (DriverConfig.itp_s={self._cfg.itp_s}). "
+                f"Every per-tick limit is scaled by itp_s, so continuing would apply limits "
+                f"computed for the wrong period. Set DriverConfig.itp_s to {reported_ms / 1000.0}."
+            )
+
     def _capture_gate(self, q_arr: np.ndarray, qd_arr: np.ndarray, asynchronous: bool) -> None:
         """CAPTURE-or-REJECT + collision-check hook.
 
@@ -613,7 +649,10 @@ class FanucDriver:
         qd_cmd = [float(v) for v in snap["qd_cmd"]]
         q0 = q_arr[0].tolist()
         qd0 = qd_arr[0].tolist()
-        path = cast("dict[str, Any]", _core.generate_capture_path(q_cmd, qd_cmd, q0, qd0))
+        path = cast(
+            "dict[str, Any]",
+            _core.generate_capture_path(q_cmd, qd_cmd, q0, qd0, self._rt_cfg),
+        )
 
         if bool(path["would_reject"]):
             if asynchronous:

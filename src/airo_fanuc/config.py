@@ -109,6 +109,16 @@ class DriverConfig:
     # -- Stream Motion protocol / RT hygiene -----------------------------
     #: Negotiated Stream Motion version (3 = no force config, 4 = FSConfig/force).
     sm_version: int = 3
+    #: Controller interpolation period in seconds. The R-30iB class runs an 8 ms ITP
+    #: (125 Hz), which is the default; a controller with a different period is
+    #: configured here rather than by editing the package. Every per-tick quantity is
+    #: expressed against it — the slew clip is ``slew_factor · v_lim · itp_s``, and the
+    #: drift guard's lag window is ``tracking_lag_s / itp_s`` ticks — so this value and
+    #: the controller's real period must agree. The controller reports its own period in
+    #: the GetCapability reply, and bring-up rejects a mismatch (see
+    #: :meth:`airo_fanuc.driver.FanucDriver._verify_controller_itp`) rather than running
+    #: with per-tick limits scaled to a period the hardware is not using.
+    itp_s: float = cf.ITP_S
     preroll_timeout_s: float = 5.0
     #: GRIPDISP liveliness-probe ceiling (s) for the cross-process anti-stacking
     #: gate in the bring-up ladder (supervisor ``_gripdisp_alive``). Before forking
@@ -153,7 +163,8 @@ class DriverConfig:
         # In-process safety watchdogs. drift_lag_ticks is derived from the measured
         # servo lag (25 ms ≈ 3 ticks) so the drift guard compares like with like.
         rc.supervisor_lost_s = float(self.supervisor_lost_s)
-        rc.drift_lag_ticks = int(round(self.tracking_lag_s / cf.ITP_S))
+        rc.itp_s = float(self.itp_s)
+        rc.drift_lag_ticks = int(round(self.tracking_lag_s / self.itp_s))
         rc.drift_fault_rad = float(np.deg2rad(self.drift_fault_deg))
         rc.drift_fault_ticks = int(self.drift_fault_ticks)
         rc.preroll_timeout_s = float(self.preroll_timeout_s)

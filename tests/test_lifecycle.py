@@ -166,3 +166,44 @@ def test_capture_would_reject_at_five_degrees() -> None:
 def test_capture_path_bad_length_raises() -> None:
     with pytest.raises((ValueError, RuntimeError)):
         generate_capture_path([0.0, 0.0], _ZERO6, _ZERO6, _ZERO6)
+
+
+# --------------------------------------------------------------------------- #
+# The interpolation period is a configured quantity, and the CAPTURE check must be
+# synthesized with the SAME config the core runs, or it validates a path the core
+# will not execute.
+# --------------------------------------------------------------------------- #
+
+
+def test_itp_s_maps_into_rt_core_config() -> None:
+    assert DriverConfig().itp_s == cf.ITP_S
+    assert DriverConfig().to_rt_core_config().itp_s == pytest.approx(cf.ITP_S)
+    rc = DriverConfig(itp_s=0.004).to_rt_core_config()
+    assert rc.itp_s == pytest.approx(0.004)
+    # The drift guard's lag window is a tick count, so it must be derived from the
+    # configured period rather than a module constant: halving the period doubles it.
+    assert rc.drift_lag_ticks == 2 * DriverConfig().to_rt_core_config().drift_lag_ticks
+
+
+def test_capture_path_omitted_config_equals_default_config() -> None:
+    q_cmd = [0.05, 0, 0, 0, 0, 0]
+    assert generate_capture_path(q_cmd, _ZERO6, _ZERO6, _ZERO6) == generate_capture_path(
+        q_cmd, _ZERO6, _ZERO6, _ZERO6, DriverConfig().to_rt_core_config()
+    )
+
+
+def test_capture_path_honours_the_configured_itp() -> None:
+    """A different period must change the synthesized splice.
+
+    This is the guard that the config is actually threaded through: if the binding
+    ignored it and used the shipped defaults, both calls would return identical knots
+    and a caller running a non-default period would be collision-checking a path the
+    core never executes.
+    """
+    q_cmd = [0.05, 0, 0, 0, 0, 0]
+    default = generate_capture_path(q_cmd, _ZERO6, _ZERO6, _ZERO6, DriverConfig().to_rt_core_config())
+    halved = generate_capture_path(
+        q_cmd, _ZERO6, _ZERO6, _ZERO6, DriverConfig(itp_s=cf.ITP_S / 2).to_rt_core_config()
+    )
+    # Knots are ITP-spaced, so halving the period roughly doubles their number.
+    assert int(halved["count"]) > int(default["count"])

@@ -40,6 +40,7 @@ def generate_capture_path(
     qd_cmd: list[float],
     q0: list[float],
     qd0: list[float],
+    config: RtCoreConfig | None = None,
 ) -> dict[str, object]:
     """Synthesize the deterministic CAPTURE splice ``(q_cmd, qd_cmd) → (q0, qd0)``.
 
@@ -132,6 +133,9 @@ class RtCoreConfig:
     drift_fault_rad: float
     drift_fault_ticks: int
     preroll_timeout_s: float
+    #: Controller interpolation period in seconds (8 ms on the R-30iB class). Every
+    #: per-tick limit is scaled by it, so it must equal the controller's real period.
+    itp_s: float
     rt_priority: int
     sched_fifo: bool
     mlock: bool
@@ -158,6 +162,17 @@ class StreamCore:
 
     @property
     def running(self) -> bool: ...
+    @property
+    def sm_negotiated_version(self) -> int:
+        """Stream Motion version the controller reported it will serve, from the
+        GetCapability reply. 0 until a reply has been seen."""
+
+    @property
+    def sm_sampling_rate_ms(self) -> int:
+        """The controller's own interpolation period in whole milliseconds, from the
+        GetCapability reply. 0 until a reply has been seen. Compare against the
+        configured ``itp_s`` to detect a controller running a different period."""
+
     def submit_trajectory(
         self,
         times_ns: list[int],

@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -53,7 +54,8 @@ py::bytes py_encode_command_packet(std::uint32_t sequence_no, bool is_last_comma
 // the RT core's embedded cfg.tick (RtCoreConfig does not expose the tick config to
 // Python, so both sides use the same defaults → byte-identical output).
 py::dict py_generate_capture_path(const std::vector<double>& q_cmd, const std::vector<double>& qd_cmd,
-                                  const std::vector<double>& q0, const std::vector<double>& qd0) {
+                                  const std::vector<double>& q0, const std::vector<double>& qd0,
+                                  const std::optional<airo_fanuc::rt_core::RtCoreConfig>& config) {
   namespace te = airo_fanuc::tick_engine;
   auto to_vec6 = [](const std::vector<double>& v, const char* name) {
     if (v.size() != static_cast<std::size_t>(te::kNumJoints)) {
@@ -70,7 +72,12 @@ py::dict py_generate_capture_path(const std::vector<double>& q_cmd, const std::v
   const te::Vec6 qdc = to_vec6(qd_cmd, "qd_cmd");
   const te::Vec6 q0v = to_vec6(q0, "q0");
   const te::Vec6 qd0v = to_vec6(qd0, "qd0");
-  const te::TickEngineConfig cfg{};
+  // The tick-engine knobs MUST be the ones the RT core will run with, not the
+  // shipped defaults: a caller that changes itp_s or a limit and then checks a
+  // default-configured splice would be collision-checking a path the core never
+  // executes. Passing no config means "the defaults", which is what a core
+  // constructed from a default RtCoreConfig runs.
+  const te::TickEngineConfig cfg = config ? config->tick : te::TickEngineConfig{};
 
   py::dict d;
   d["would_reject"] = te::capture_would_reject(qc, q0v, cfg);
@@ -172,6 +179,8 @@ class StreamCore {
     return core_->wait_ready(timeout_s);
   }
   bool running() const { return core_->running(); }
+  std::uint32_t sm_negotiated_version() const { return core_->sm_negotiated_version(); }
+  std::uint32_t sm_sampling_rate_ms() const { return core_->sm_sampling_rate_ms(); }
 
   std::uint64_t submit_trajectory(const std::vector<std::int64_t>& times_ns,
                                   const std::vector<std::vector<double>>& q,
@@ -338,10 +347,12 @@ PYBIND11_MODULE(_core, m) {
         "dict. force_x..moment_z are 0 and fs_type is 0xFFFFFFFF (Unavailable).");
 
   m.def("generate_capture_path", &py_generate_capture_path, py::arg("q_cmd"), py::arg("qd_cmd"),
-        py::arg("q0"), py::arg("qd0"),
+        py::arg("q0"), py::arg("qd0"), py::arg("config") = py::none(),
         "Synthesize the deterministic CAPTURE splice (q_cmd,qd_cmd)->(q0,qd0) the RT core will "
         "execute. Returns {would_reject, count, finished, overflow, q, qd} — the same code path "
-        "as the RT execution so the Python collision check IS the executed path.");
+        "as the RT execution so the Python collision check IS the executed path. Pass the same "
+        "RtCoreConfig the core was constructed with; omitting it uses the shipped defaults, which "
+        "only matches a core built from a default RtCoreConfig.");
 
   // -------------------------------------------------------------------------
   // RT core: StreamCore + RtCoreConfig + mode/fault/status enums.
@@ -386,6 +397,13 @@ PYBIND11_MODULE(_core, m) {
 
   py::class_<rt::RtCoreConfig>(m, "RtCoreConfig")
       .def(py::init<>())
+      // Controller interpolation period. Lives in the embedded TickEngineConfig
+      // because every per-tick limit is expressed against it; surfaced here so a
+      // caller on a controller with a different ITP can set it, and so the CAPTURE
+      // splice check can be handed the same value the core runs with.
+      .def_property(
+          "itp_s", [](const rt::RtCoreConfig& c) { return c.tick.itp_s; },
+          [](rt::RtCoreConfig& c, double v) { c.tick.itp_s = v; })
       .def_readwrite("rx_silence_blind_hold_ms", &rt::RtCoreConfig::rx_silence_blind_hold_ms)
       .def_readwrite("rx_silence_qd_ramp_ms", &rt::RtCoreConfig::rx_silence_qd_ramp_ms)
       .def_readwrite("rx_silent_park_ms", &rt::RtCoreConfig::rx_silent_park_ms)
@@ -430,5 +448,13 @@ PYBIND11_MODULE(_core, m) {
       .def("joints_at_wall", &StreamCore::joints_at_wall, py::arg("wall_ns"))
       .def("get_snapshot", &StreamCore::get_snapshot)
       .def("poll_events", &StreamCore::poll_events)
-      .def("timing_stats", &StreamCore::timing_stats);
+      .def("timing_stats", &StreamCore::timing_stats)
+      .def_property_readonly("sm_negotiated_version", &StreamCore::sm_negotiated_version,
+                             "Stream Motion version the controller reported it will serve "
+                             "(GetCapability type-7 reply); 0 until a reply is seen.")
+      .def_property_readonly("sm_sampling_rate_ms", &StreamCore::sm_sampling_rate_ms,
+                             "Interpolation period in milliseconds as reported by the controller "
+                             "(GetCapability type-7 reply); 0 until a reply is seen. Compare "
+                             "against the configured itp_s to catch a controller whose period is "
+                             "not the one the driver was configured for.");
 }

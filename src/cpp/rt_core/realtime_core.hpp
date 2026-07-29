@@ -115,6 +115,19 @@ class RealtimeCore {
   void heartbeat();  // supervisor-liveness beat → TickCore SUPERVISOR_LOST watchdog reset
 
   // --- getters (never raise) ---
+  // What the controller reported in its GetCapability (type-7) reply: the Stream
+  // Motion version it will actually serve, and its interpolation period in
+  // milliseconds. Both are 0 until a reply has been seen, so 0 means "unknown",
+  // not "zero". The sampling rate is the controller's own statement of its ITP,
+  // which lets a caller check the period the driver was configured with against
+  // the period the hardware is really running.
+  std::uint32_t sm_negotiated_version() const {
+    return sm_negotiated_version_.load(std::memory_order_relaxed);
+  }
+  std::uint32_t sm_sampling_rate_ms() const {
+    return sm_sampling_rate_ms_.load(std::memory_order_relaxed);
+  }
+
   StateSnapshot snapshot() const { return snap_.read(); }
   std::size_t drain_events(Event* out, std::size_t max);
   int event_fd() const { return event_fd_; }

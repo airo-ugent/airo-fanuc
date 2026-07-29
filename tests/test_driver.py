@@ -18,6 +18,7 @@ from __future__ import annotations
 import socket
 import time
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -597,3 +598,51 @@ def test_gripper_registered_with_supervisor(rig: DriverRig) -> None:
     can fail-fast-gate it."""
     assert rig.driver.gripper is not None
     assert rig.driver._supervisor._gripper is rig.driver.gripper  # noqa: SLF001
+
+
+# --------------------------------------------------------------------------- #
+# Interpolation period: the controller states its own in the GetCapability reply,
+# and a driver configured for a different one applies per-tick limits scaled by the
+# wrong ratio, so bring-up must refuse.
+# --------------------------------------------------------------------------- #
+
+
+def test_core_reports_the_controllers_interpolation_period(rig: DriverRig) -> None:
+    """The period reported by the controller reaches Python through a real handshake."""
+    assert rig.driver.core is not None
+    assert rig.driver.core.sm_sampling_rate_ms == 8
+    # The negotiated version comes from the same reply; the fake serves v3.
+    assert rig.driver.core.sm_negotiated_version == 3
+
+
+def _itp_check(reported_ms: int, configured_itp_s: float) -> None:
+    """Drive FanucDriver._verify_controller_itp against a stub core.
+
+    The method reads only the reported rate and the configured period, so a stub is
+    enough and keeps the case controller-free.
+    """
+    stub = SimpleNamespace(
+        core=SimpleNamespace(sm_sampling_rate_ms=reported_ms),
+        _cfg=DriverConfig(itp_s=configured_itp_s),
+    )
+    FanucDriver._verify_controller_itp(stub)  # type: ignore[arg-type]  # noqa: SLF001
+
+
+def test_matching_interpolation_period_is_accepted() -> None:
+    _itp_check(8, 0.008)
+
+
+def test_unreported_interpolation_period_is_tolerated() -> None:
+    """0 means no capability reply was seen. That failure surfaces on the preroll
+    timeout, which reports every cause, so it must not be reported here as a
+    period mismatch."""
+    _itp_check(0, 0.008)
+
+
+def test_mismatched_interpolation_period_refuses_bringup() -> None:
+    with pytest.raises(FanucConnectionError) as exc:
+        _itp_check(8, 0.004)
+    msg = str(exc.value)
+    assert "8 ms" in msg and "itp_s" in msg
+    # The message must name the value that would fix it.
+    assert "0.008" in msg
