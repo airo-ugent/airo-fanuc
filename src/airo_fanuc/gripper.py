@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Robotiq 2F-85 register protocol for the FANUC GRIP_DISP TP program.
 
-Ported verbatim (constants + R[3] action-dependent semantics) from the
-battle-tested ``dries`` ``grocery_bot.robot.fanuc.gripper`` — the behavioral
-ground truth. The register contract is a controller fact, not a design choice,
-so it is reproduced here exactly; :class:`~airo_fanuc.gripper_worker.GripperWorker`
-consumes these constants.
+The register contract is fixed by the TP program running on the controller, not
+chosen here, so the constants below reproduce it exactly;
+:class:`~airo_fanuc.gripper_worker.GripperWorker` consumes them and writes the
+registers via :class:`~airo_fanuc.rmi_client.RmiClient`.
 
 The gripper is wired to the FANUC controller's tool I/O.  A TP program
 (``GRIPDISP``, on-disk name — the docs call it ``GRIP_DISP`` for
@@ -24,13 +23,18 @@ R[3] modifier semantics by action:
 
 * **Close** (R[2]=2) — R[3] selects close target position + force:
 
-  * 0 → POSITION 220, FORCE 100 (light; for balls)
-  * 1 → POSITION 220, FORCE 150 (medium; default for most items)
-  * else → POSITION 255, FORCE 255 (hard; for compressible items
-    like towels). We write the literal value 2 for this branch.
+  * 0 → POSITION 220, FORCE 100 (light; least grip force, for rigid or
+    easily-crushed objects)
+  * 1 → POSITION 220, FORCE 150 (medium; the default)
+  * else → POSITION 255, FORCE 255 (hard; full close at full force, for
+    compressible objects that only hold once squeezed). We write the
+    literal value 2 for this branch.
 
-:class:`~airo_fanuc.gripper_worker.GripperWorker` writes those registers via
-:class:`~airo_fanuc.rmi_client.RmiClient`.
+**Three discrete buckets per action, and nothing else.** There is no continuous
+width command — R[3] carries a bucket index, not millimetres — and no width
+feedback: the only gripper state readable over this protocol is R[1] (1 = the TP
+program is mid-action, 0 = done), which is why a caller polls R[1] rather than
+comparing a commanded width against a measured one.
 """
 
 from __future__ import annotations
@@ -40,9 +44,9 @@ REG_ACTION = 2  # action: 1=open, 2=close
 REG_R3 = 3  # action-dependent modifier (see module docstring):
 #   on open  → open-state selector
 #   on close → close-force selector
-# Alias mirroring the dries `robot/fanuc/gripper.py` register contract (the module
-# P5b migrates onto this one), so consumers that spell R[3] by its open-state name
-# keep resolving. Same register, two names for its two readings.
+# One register, two names for its two readings: callers reasoning about open
+# widths spell it REG_OPEN_STATE, callers reasoning about close-force classes
+# spell it REG_R3. Both resolve to R[3].
 REG_OPEN_STATE = REG_R3
 
 ACTION_OPEN = 1
@@ -63,8 +67,8 @@ FORCE_HARD = 2
 
 VALID_CLOSE_FORCES = (FORCE_LIGHT, FORCE_MEDIUM, FORCE_HARD)
 
-# Default close force when a caller does not specify one. Matches the
-# medium / for-most-items setting in the TP program.
+# Default close force when a caller does not specify one: the TP program's
+# medium bucket (POSITION 220 / FORCE 150).
 DEFAULT_CLOSE_FORCE = FORCE_MEDIUM
 
 

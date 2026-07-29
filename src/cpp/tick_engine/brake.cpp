@@ -10,10 +10,12 @@
 namespace airo_fanuc::tick_engine {
 
 namespace {
-// 1% margin above |qd_cmd| for the velocity envelope. Mirrors the dries
-// BrakeTarget comment: Ruckig's strict |current_velocity| < max_velocity
-// precondition (kept for safety even though 0.17.3's update() does not check
-// current-state limits by default; harmless and prescribed by decision 5).
+// 1% margin above |qd_cmd| for the velocity envelope. Ruckig documents a strict
+// |current_velocity| < max_velocity precondition, so the envelope must never sit
+// below the velocity the brake is seeded with — otherwise a brake entered at
+// full speed would be seeded outside its own limits. (0.17.3's update() does not
+// validate current-state limits by default, so this is belt-and-braces, but it
+// costs nothing and keeps the seed inside the documented contract.)
 constexpr double kVMaxSeedMargin = 1.01;
 }  // namespace
 
@@ -29,7 +31,8 @@ void Brake::seed(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& qdd_cmd) {
     inp_.max_jerk[j] = cfg_.stop_scale_j * cfg_.limits.j[j];
   }
 
-  // Seed from COMMANDED state + analytic wire qdd (R1 C1).
+  // Seed from the COMMANDED state + the analytic wire qdd — never from the
+  // measured state, and never accel=0 (see brake.hpp).
   inp_.current_position = q_cmd;
   inp_.current_velocity = qd_cmd;
   inp_.current_acceleration = qdd_cmd;
@@ -63,7 +66,7 @@ BrakeStep Brake::step() {
     ++elapsed_ticks_;
   } else {
     // RT-path error: do NOT throw. Hold the last commanded position at rest;
-    // P3b converts this into a slew-limited hold + FAULTED.
+    // the tick core converts this into a slew-limited hold + FAULTED.
     s.error = true;
     s.q = inp_.current_position;
     s.qd = Vec6{};

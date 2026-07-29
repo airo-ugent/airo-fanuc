@@ -1,47 +1,49 @@
 # SPDX-License-Identifier: Apache-2.0
-"""RMI-poll read-only state interface for calibration / no-demo tools.
+"""RMI-poll read-only state interface for calibration / no-motion tools.
 
-``FanucReceiveInterface`` (PLAN decision 14, R2 F30/F31) is the standalone,
-motion-free way to read the controller when no demo is running: it polls the
+``FanucReceiveInterface`` is the motion-free way to read the controller when
+nothing is driving it: it polls the
 :class:`~airo_fanuc.rmi_client.RmiClient` *commands-only* session (it NEVER
-calls :meth:`~airo_fanuc.rmi_client.RmiClient.initialize`, so it works in T1 /
-no-demo) and derives joint velocity by least squares. It is the structural fix
-for the 2026-05-17 T1-freeze calibration-corruption incident.
+calls :meth:`~airo_fanuc.rmi_client.RmiClient.initialize`, so it works in T1 and
+with no program running) and derives joint velocity by least squares. It is the
+structural fix for the 2026-05-17 T1-freeze calibration-corruption incident.
 
 Two guards make hand-eye calibration safe (both raise, never silently return a
 bad sample — "surface latent issues loudly"):
 
-* **Velocity gate (F30).** Velocity is a least-squares slope over a
+* **Velocity gate.** Velocity is a least-squares slope over a
   ``>= CALIB_LSQ_WINDOW_S`` (0.5 s) window, NOT a single instantaneous sample.
-  The stillness threshold is ``CALIB_STILLNESS_DEG_S`` (0.1 deg/s), the exact
-  ``dries`` ``hand_eye.py`` ground truth. If velocity is unavailable (too few
+  The stillness threshold is ``CALIB_STILLNESS_DEG_S`` (0.1 deg/s), matching the
+  hand-eye calibration ground truth. If velocity is unavailable (too few
   samples / insufficient time base / a frozen feed with duplicate stamps) the
   estimate is ``None`` and a capture is **rejected** — never fabricated as zero
   (fabricating 0 deg/s is exactly the corruption: a frozen feed then reads as
   "settled"). A capture also asserts the measured pose actually changed vs the
   previous accepted sample (a frozen feed at rest would otherwise pass).
 
-* **J2/J3 source gate (F31).** RMI-sourced joints are tagged
+* **J2/J3 source gate.** RMI-sourced joints are tagged
   :data:`SOURCE_RMI_UNCONVERTED` and calibration **HARD-REJECTS** them while
   ``controller_facts.INTERIM_FACTS.rmi_joints_identical_to_stream`` is ``False``
   (the vendor is known to apply ``J3 += J2`` on RMI reads — a wrong guess is a
-  silent J2-sized FK error). Once E3 / HIL-L7 proves identity and that fact is
-  flipped, :meth:`_apply_rmi_joint_policy` is the single per-model conversion
+  silent J2-sized FK error). Once a hardware measurement proves identity and that
+  fact is flipped, :meth:`_apply_rmi_joint_policy` is the single per-model conversion
   point. RMI and Stream Motion joints are never mixed in one dataset.
 
 Joint source
 ------------
 Joints arrive through an injected :class:`JointReader` (dependency injection),
-which isolates the safety-critical velocity/settled/source logic (P4c's charge)
-from the joint-read transport. :class:`RmiClientJointReader` (P4d) is the
+which isolates the safety-critical velocity/settled/source logic from the
+joint-read transport — the gates above are testable without a controller, and a
+new transport cannot quietly bypass them. :class:`RmiClientJointReader` is the
 RMI-backed implementation — it reads ``FRC_ReadJointAngles`` off an
 :class:`~airo_fanuc.rmi_client.RmiClient` and tags every sample
 :data:`SOURCE_RMI_UNCONVERTED` (the vendor ``J3 += J2`` representation is
-unproven, so calibration HARD-REJECTS it until E3/HIL-L7). The optional ``rmi``
-client passed here is used only for status polling (``get_status`` /
+unproven, so calibration HARD-REJECTS it until it is measured). The optional
+``rmi`` client passed here is used only for status polling (``get_status`` /
 ``get_extended_status``), which the commands-only session already supports.
 
-Wheel-standalone: stdlib ``logging`` / ``threading`` / ``time`` + numpy (LSQ).
+Dependency-light on purpose: stdlib ``logging`` / ``threading`` / ``time`` +
+numpy (LSQ).
 """
 
 from __future__ import annotations
@@ -77,8 +79,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger("airo_fanuc.receive")
 
-# Joint-source tags. RMI reads are UNCONVERTED (J2/J3 representation unproven)
-# until E3/HIL-L7; Stream Motion joints are the calibration-safe reference.
+# Joint-source tags. RMI reads are UNCONVERTED (the J2/J3 representation is unproven
+# until measured on hardware); Stream Motion joints are the calibration-safe reference.
 SOURCE_STREAM = "stream"
 SOURCE_RMI_UNCONVERTED = "rmi_unconverted"
 SOURCE_RMI_CONVERTED = "rmi_converted"
@@ -99,7 +101,8 @@ class JointSample:
 
     ``q_deg`` is the measured joint vector in **degrees**; ``t_wall_ns`` is the
     wall-clock capture stamp in nanoseconds (the same clock the cameras stamp
-    grab time with — R3 C2); ``source`` is one of the ``SOURCE_*`` tags.
+    grab time with, so a pose can be paired with an image); ``source`` is one of
+    the ``SOURCE_*`` tags.
     """
 
     q_deg: np.ndarray
@@ -126,20 +129,20 @@ class _JointReadRmi(Protocol):
 
 
 class RmiClientJointReader:
-    """:class:`JointReader` backed by ``RmiClient.read_joint_angles`` (P4d).
+    """:class:`JointReader` backed by ``RmiClient.read_joint_angles``.
 
     Each :meth:`read` issues ``FRC_ReadJointAngles`` on the client's
     commands-only session and wraps the reply in a :class:`JointSample` stamped
     with a monotonic wall-clock time (the same clock the cameras stamp grab time
-    with — R3 C2) and tagged :data:`SOURCE_RMI_UNCONVERTED`.
+    with) and tagged :data:`SOURCE_RMI_UNCONVERTED`.
 
     The tag is load-bearing: the vendor applies ``J3 += J2`` on RMI reads
     (``controller_facts.INTERIM_FACTS.rmi_j3_plus_j2_conversion``), so these
     joints are HARD-rejected for calibration by
-    :meth:`FanucReceiveInterface._apply_source_policy` until E3/HIL-L7 flips
-    ``rmi_joints_identical_to_stream``. This reader NEVER converts — conversion
-    is the single per-model job of ``_apply_rmi_joint_policy``, downstream and
-    gated on that fact.
+    :meth:`FanucReceiveInterface._apply_source_policy` until a hardware
+    measurement flips ``rmi_joints_identical_to_stream``. This reader NEVER
+    converts — conversion is the single per-model job of
+    ``_apply_rmi_joint_policy``, downstream and gated on that fact.
 
     Per the :class:`JointReader` contract a transport blip / dead session
     surfaces as ``None`` (logged at DEBUG), not an exception, so the receive
@@ -196,7 +199,7 @@ class SettleResult:
 
 
 class FanucReceiveInterface:
-    """RMI-poll read-only state + calibration velocity gate (decision 14).
+    """RMI-poll read-only state + calibration velocity gate.
 
     Feed it joints via an injected :class:`JointReader` (polled on
     :meth:`start`) or, in tests, directly via :meth:`ingest_sample`. Query
@@ -288,8 +291,9 @@ class FanucReceiveInterface:
     def stop(self) -> None:
         """Stop poll threads, then close RMI, then release ownership.
 
-        R3 enumerated item: the receive holder completes the RMI close BEFORE
-        releasing the flock (so a successor never races the dying RMI session).
+        The order is load-bearing: the RMI close completes BEFORE the flock is
+        released, so the next process to take the lock can never race the dying
+        RMI session (the controller allows only one).
         """
         if not self._started:
             return
@@ -339,7 +343,7 @@ class FanucReceiveInterface:
             return self._latest_ext_status
 
     # ------------------------------------------------------------------
-    # Velocity gate (F30)
+    # Velocity gate
     # ------------------------------------------------------------------
 
     def estimate_velocity_deg_s(self, window_s: float | None = None) -> np.ndarray | None:
@@ -423,9 +427,9 @@ class FanucReceiveInterface:
         Raises (never returns a bad sample):
 
         * :class:`CalibrationSourceError` — RMI joints while
-          ``rmi_joints_identical_to_stream`` is False (F31 hard-reject), or an
-          attempt to mix sources in one dataset.
-        * :class:`CalibrationVelocityUnavailable` — velocity is ``None`` (F30).
+          ``rmi_joints_identical_to_stream`` is False (the J2/J3 hard-reject), or
+          an attempt to mix sources in one dataset.
+        * :class:`CalibrationVelocityUnavailable` — velocity is ``None``.
         * :class:`CalibrationError` — no samples, robot still moving, or the
           pose is unchanged vs the previous accepted sample (frozen feed).
         """
@@ -436,7 +440,7 @@ class FanucReceiveInterface:
         if newest is None:
             raise CalibrationError("no joint samples available to capture")
 
-        # F31: source policy (hard-reject rmi_unconverted until identity proven).
+        # Source policy: hard-reject rmi_unconverted until identity is proven.
         accepted = self._apply_source_policy(newest)
 
         # Never mix joint representations within one calibration dataset.
@@ -447,7 +451,7 @@ class FanucReceiveInterface:
                 source=accepted.source,
             )
 
-        # F30: velocity gate — None is a hard reject (never fabricate zeros).
+        # Velocity gate — None is a hard reject (never fabricate zeros).
         result = self.settled(threshold=threshold, window=window)
         if result.reason == "velocity_unavailable":
             raise CalibrationVelocityUnavailable(
@@ -483,7 +487,7 @@ class FanucReceiveInterface:
         self._accepted_source = None
 
     # ------------------------------------------------------------------
-    # J2/J3 source policy (F31) — the single per-model conversion point
+    # J2/J3 source policy — the single per-model conversion point
     # ------------------------------------------------------------------
 
     def _apply_source_policy(self, sample: JointSample) -> JointSample:
@@ -493,9 +497,10 @@ class FanucReceiveInterface:
             # HARD reject: the RMI J2/J3 representation is unproven. Using it now
             # would inject a silent J2-sized FK error into the calibration.
             raise CalibrationSourceError(
-                "RMI-sourced joints are hard-rejected for calibration until E3/"
-                "HIL-L7 proves rmi_joints_identical_to_stream (vendor applies "
-                "J3+=J2 on RMI reads — a wrong guess is a silent J2-sized FK error)",
+                "RMI-sourced joints are hard-rejected for calibration until "
+                "rmi_joints_identical_to_stream is proven on hardware (the vendor "
+                "applies J3+=J2 on RMI reads — a wrong guess is a silent J2-sized "
+                "FK error)",
                 source=sample.source,
                 fact="rmi_joints_identical_to_stream",
             )
@@ -504,16 +509,17 @@ class FanucReceiveInterface:
     def _apply_rmi_joint_policy(self, sample: JointSample) -> JointSample:
         """Convert RMI joints into the Stream Motion frame. SINGLE per-model point.
 
-        Reached ONLY once ``rmi_joints_identical_to_stream`` has been flipped True
-        (E3/HIL-L7). "Identical to stream" means the RMI reads already match the
-        Stream Motion representation, so the default policy is a pass-through
-        (retag as :data:`SOURCE_RMI_CONVERTED` for provenance). If E3 instead
-        reveals a residual coupling (``rmi_j3_plus_j2_conversion``), THIS method
-        is the one place to apply ``q[2] += q[1]`` (J3 += J2) — E3 confirms the
-        exact sign/formula before that line is enabled.
+        Reached ONLY once a hardware measurement has flipped
+        ``rmi_joints_identical_to_stream`` to True. "Identical to stream" means the
+        RMI reads already match the Stream Motion representation, so the default
+        policy is a pass-through (retag as :data:`SOURCE_RMI_CONVERTED` for
+        provenance). If the measurement instead reveals a residual coupling
+        (``rmi_j3_plus_j2_conversion``), THIS method is the one place to apply
+        ``q[2] += q[1]`` (J3 += J2) — and the measurement must confirm the exact
+        sign/formula before that line is enabled.
         """
         q = np.asarray(sample.q_deg, dtype=np.float64).copy()
-        # NOTE(E3/HIL-L7): if the sweep shows RMI J3 is reported WITHOUT the J2
+        # NOTE: if a stream-vs-RMI sweep shows RMI J3 is reported WITHOUT the J2
         # coupling that Stream Motion carries, enable the documented correction
         # here (per INTERIM_FACTS.rmi_j3_plus_j2_conversion) — kept disabled
         # until the sign/formula is measured, so identity == pass-through today.

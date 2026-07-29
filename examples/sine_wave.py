@@ -8,10 +8,10 @@ the start pose. One `move_trajectory` (dense cubic-Hermite knots with analytic
 velocities) — the C++ RT core interpolates + executes it.
 
   # Offline (no hardware):
-  packages/airo_fanuc/.venv-dev/bin/python packages/airo_fanuc/examples/sine_wave.py --fake
+  python examples/sine_wave.py --fake
 
   # Real controller (operator AT THE ROBOT, E-STOP in hand, area clear):
-  packages/airo_fanuc/.venv-dev/bin/python packages/airo_fanuc/examples/sine_wave.py \
+  python examples/sine_wave.py \
       --ip 192.168.1.100 --amplitude-deg 5 --period 10 --cycles 2
 
 Defaults are deliberately gentle: ±5° at a 10 s period ⇒ peak joint speed ≈ 3.1°/s.
@@ -34,8 +34,8 @@ from airo_fanuc import DriverConfig, DriverPolicy, FanucDriver, MotionResult
 
 _NDOF = 6
 
-# CRX-10iA/L active joint limits (deg), from docs/controller-notes.md §1.1 (P-1
-# measured). Used only as a safety guard for this all-joints exercise.
+# CRX-10iA/L active joint limits (deg), measured on the controller and recorded in
+# docs/controller-notes.md §1.1. Used only as a safety guard for this all-joints exercise.
 _LIMIT_LOWER_DEG = np.array([-180.0, -180.0, -270.0, -190.0, -180.0, -225.0])
 _LIMIT_UPPER_DEG = np.array([180.0, 180.0, 270.0, 190.0, 180.0, 225.0])
 

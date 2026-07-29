@@ -13,7 +13,7 @@ Stream Motion packet codec
 This product vendors and compiles the Stream Motion packet-codec headers from
 FANUC's `fanuc_driver` project:
 
-    packages/airo_fanuc/vendor/fanuc_driver/fanuc_libs/stream_motion/
+    vendor/fanuc_driver/fanuc_libs/stream_motion/
         include/stream_motion/packets.hpp    (#pragma pack(1) wire structs)
         include/stream_motion/byte_ops.hpp    (endian swap template)
 

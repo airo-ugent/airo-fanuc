@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// airo_fanuc — RealtimeCore: the thin I/O wrapper around TickCore (P3b).
-// PLAN.md §5.2 + design doc 07 §3.2/§3.4.
+// airo_fanuc — RealtimeCore: the thin I/O wrapper around TickCore.
 //
 // The RT thread: epoll{connected UDP 60015, timerfd(CLOCK_MONOTONIC, absolute)}
 // → PLL-clocked TX (one send + one τ-advance per 8 ms window) → decode status
@@ -171,17 +170,17 @@ class RealtimeCore {
   std::atomic<std::uint32_t> sm_negotiated_version_{0};
   std::atomic<std::uint32_t> sm_sampling_rate_ms_{0};
 
-  // Caller-side stop generation (finding-1 root-cause fix). Incremented in
-  // stop_j() ON THE CALLER THREAD (so a subsequent submit on the caller side sees
-  // it immediately) and stamped onto every submitted Target. At consume the RT
-  // thread compares the target's stamp to the live value: a mismatch means a
-  // stop_j was issued AFTER the target was submitted → the stop supersedes it.
-  // This captures caller-causal order, which distinguishes the finding-1 hazard
-  // (submit-then-stop → reject) from legitimate brake-then-submit (stop-then-
-  // submit → accept) even when both land in the same 8 ms tick. A caller-thread
-  // counter is REQUIRED: a counter bumped on the RT thread (in request_stop) lags
-  // the caller by up to one tick and would wrongly reject a brake-then-submit
-  // issued from an already-steady pose.
+  // Caller-side stop generation. Incremented in stop_j() ON THE CALLER THREAD (so
+  // a subsequent submit on the caller side sees it immediately) and stamped onto
+  // every submitted Target. At consume the RT thread compares the target's stamp
+  // to the live value: a mismatch means a stop_j was issued AFTER the target was
+  // submitted → the stop supersedes it. This captures caller-causal order, which
+  // distinguishes submit-then-stop (the stop must win → reject the target) from
+  // legitimate brake-then-submit (stop, then a fresh trajectory → accept) even
+  // when both land in the same 8 ms tick. A caller-thread counter is REQUIRED: a
+  // counter bumped on the RT thread (in request_stop) lags the caller by up to one
+  // tick and would wrongly reject a brake-then-submit issued from an
+  // already-steady pose.
   std::atomic<std::uint64_t> stop_gen_{0};
 
   // mailbox (Python → RT); producers serialised by submit_mu_.

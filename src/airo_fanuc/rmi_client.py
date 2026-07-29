@@ -1,19 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """JSON-over-TCP client for the FANUC Remote Motion Interface (option R912 / S636).
 
-Ported from the battle-tested ``dries`` ``grocery_bot.robot.fanuc.rmi_client``
-(behavioral ground truth), then **restructured per PLAN R2 disposition F3+F5**
-("RmiClient contract-verbatim, structure-revised"). The wire contract is
-byte-for-byte identical — every request is built with the pinned
-:mod:`airo_fanuc.testing.wire` serializers so the P1a goldens still hold — but
-the *responsibilities* are split so a worker's socket blip can never abort a
-live trajectory.
+Every request is built with the pinned :mod:`airo_fanuc.testing.wire`
+serializers, so the bytes this client puts on the wire are exactly the ones the
+goldens in ``tests/goldens/rmi/`` assert. Responsibilities are split along one
+axis: **a worker's socket blip must never abort a live trajectory.**
 
-What is preserved verbatim from ``dries``
------------------------------------------
-* The full ``ERROR_ID → text`` table (2556929–2556981, with the
-  "misaligned starting at 2556941" correction — 2556946 is "Invalid Motion
-  Option", NOT "Wait for Command Done").
+Controller behaviors this client encodes
+----------------------------------------
+* The full ``ERROR_ID → text`` table (2556929–2556981). The block is easy to
+  mis-transcribe from 2556941 onward: 2556946 is "Invalid Motion Option", NOT
+  "Wait for Command Done".
 * Correlate-by-echo request/response matching (the controller echoes the
   request's ``Command`` / ``Communication`` / ``Instruction`` identifier).
 * The async push ring: ``FRC_SystemFault`` / ``FRC_Terminate`` /
@@ -27,7 +24,7 @@ What is preserved verbatim from ``dries``
 * The Init recovery ladder: GetStatus→Reset→GetStatus→Initialize; on error
   Abort→Reset→GetStatus→Initialize.
 
-The F3+F5 restructure (the central design change)
+The session split (the central design constraint)
 -------------------------------------------------
 1. **Commands-only session.** :meth:`start` establishes a session with
    ``Connect_STMO`` + the redirect-port hop and *nothing else*. ``GetStatus`` /
@@ -37,23 +34,23 @@ The F3+F5 restructure (the central design change)
    auto-reopen re-establishes the socket **without** issuing
    Initialize/Abort — a bounded, single-flight transport concern.
 2. **Explicit** :meth:`initialize`. Runs the Init recovery ladder + seq reseed.
-   Invoked ONLY by the lifecycle supervisor (a later phase), never implicitly
-   on reconnect.
+   Invoked ONLY by the lifecycle supervisor, never implicitly on reconnect.
 3. **Typed** :class:`~airo_fanuc.exceptions.RmiSessionDown`. Workers that hit a
    persistently dead session get this instead of an implicit reopen (avoids the
    concurrent-reopen 2556954 self-infliction and the gripper TOCTOU).
 4. :meth:`abort` is **supervisor-only** and is *not* on the auto-reopen path —
    a worker's socket blip must never abort a live ``STREAM_MOTN``.
 
-Threading model (also new vs ``dries``)
----------------------------------------
-``dries`` read the socket synchronously inside each request. Here a single
-long-lived **background RX thread** is the sole reader of the redirect session
-socket: it reads + buffers + dispatches every packet (push → async ring,
-matched reply → the one in-flight waiter, orphan → async ring). This surfaces
-``FRC_SystemFault`` pushes promptly (F19: supervisor drains at a ~1 s cadence)
-even when no request is in flight, and the async ring is *preserved across
-session rebuilds* (F19) rather than cleared on reopen as ``dries`` did.
+Threading model
+---------------
+A single long-lived **background RX thread** is the sole reader of the redirect
+session socket: it reads + buffers + dispatches every packet (push → async ring,
+matched reply → the one in-flight waiter, orphan → async ring). Reading on a
+dedicated thread rather than synchronously inside each request is what surfaces
+``FRC_SystemFault`` pushes promptly — the supervisor drains the ring at a ~1 s
+cadence and a fault must not wait for the next request to be noticed. The ring
+is *preserved across session rebuilds* (a fault that killed the session is
+exactly the one worth reporting, so reopening must not discard it).
 
 Two locks with a strict order (``_request_lock`` → ``_state_lock``, never the
 reverse) keep it deadlock-free: ``_request_lock`` serializes request/response
@@ -66,8 +63,9 @@ the RX thread: it runs on a throwaway bootstrap socket while ``self._sock`` is
 ``None`` (RX thread idle-spinning), so there is no contention for the redirect
 socket.
 
-Wheel-standalone: stdlib ``logging`` (never loguru — D14 numpy-only deps),
-``socket`` / ``json`` / ``threading`` / ``queue``. Sockets are O_CLOEXEC (F24).
+Dependency-light: stdlib ``logging`` / ``socket`` / ``json`` / ``threading`` /
+``queue`` only — the package's sole runtime dependency is numpy. Sockets are
+O_CLOEXEC.
 """
 
 from __future__ import annotations
@@ -100,19 +98,20 @@ _PUSH_PACKET_COMMS = frozenset({"FRC_SystemFault", "FRC_Terminate", "FRC_AsbnRea
 _REQ_REPLY_KEYS: tuple[str, ...] = ("Command", "Communication", "Instruction")
 
 # FRC_Continue of a program that is not paused returns this ErrorID; the
-# supervisor recovery ladder treats it as a no-op success (PLAN F17/F21).
+# supervisor recovery ladder treats it as a no-op success (an already-running
+# program is the state the ladder was trying to reach).
 _ERR_TP_NOT_PAUSED: int = 2556938  # "TP Program is Not Paused." (see _RMI_ERROR_CODES)
 
 
 # ---------------------------------------------------------------------------
 # FANUC RMI error-code → human-readable.  Verbatim from
 # fanuc_libs/rmi/src/rmi.cpp lines 25-81 (``kErrorCodes`` table) of the
-# FANUC America reference driver (Apache-2.0).  Earlier hand-curated
-# tables in this codebase were misaligned starting at 2556941, producing
-# misleading log lines like "2556946 = Wait for Command Done" when the
-# controller actually means "Invalid Motion Option."  Keep IN SYNC with
-# the reference and do NOT edit individual entries; if FANUC extends the
-# table, regenerate from the reference.
+# FANUC America reference driver (Apache-2.0).  A hand-curated table drifts
+# out of alignment easily from 2556941 onward, which produces misleading log
+# lines like "2556946 = Wait for Command Done" when the controller actually
+# means "Invalid Motion Option."  Keep IN SYNC with the reference and do NOT
+# edit individual entries; if FANUC extends the table, regenerate from the
+# reference.
 # ---------------------------------------------------------------------------
 _RMI_ERROR_CODES: dict[int, str] = {
     2556929: "Internal System Error.",
@@ -251,7 +250,7 @@ class _Pending:
 
 
 class RmiClient:
-    """JSON-over-TCP client for the FANUC RMI (option R912 / S636), F3+F5 split.
+    """JSON-over-TCP client for the FANUC RMI (option R912 / S636).
 
     Thread-safe. A background RX thread is the sole reader of the redirect
     session socket; ``_request_lock`` serializes request/response cycles.
@@ -278,7 +277,7 @@ class RmiClient:
 
     # Cap on stashed async/orphan packets.  Above this we evict oldest with a
     # warning — bounded so a runaway push-packet stream can't drive memory
-    # growth on a long-lived bridge.
+    # growth in a long-running driver process.
     _MAX_ASYNC_QUEUE: int = 64
 
     def __init__(
@@ -308,7 +307,8 @@ class RmiClient:
         # (FRC_SystemFault / FRC_Terminate / FRC_AsbnReady), unsolicited FRC_Call
         # acks that lingered after a fire-and-forget write, and any reply that
         # did not match the in-flight request all land here.  Drained by
-        # ``poll_async_packets``.  PRESERVED across session rebuilds (F19).
+        # ``poll_async_packets``.  PRESERVED across session rebuilds: the fault
+        # that killed the session is the one most worth reporting.
         self._async_packets: deque[dict[str, Any]] = deque(maxlen=self._MAX_ASYNC_QUEUE)
         # Set after the first Connect_STMO; reused on auto-reopen so we don't
         # re-log the redirect port every time.
@@ -333,7 +333,7 @@ class RmiClient:
         """Establish the commands-only session: Connect_STMO + redirect hop.
 
         Does NOT Initialize — that is :meth:`initialize`, driven only by the
-        lifecycle supervisor (F3+F5).  After ``start()`` the full commands-only
+        lifecycle supervisor.  After ``start()`` the full commands-only
         surface (GetStatus / ReadError / registers / GetExtStatus /
         program_call) is available pre-Initialize.
 
@@ -371,14 +371,14 @@ class RmiClient:
         logger.info("RMI: disconnected")
 
     # ------------------------------------------------------------------
-    # Explicit initialize — SUPERVISOR-ONLY (F3+F5)
+    # Explicit initialize — SUPERVISOR-ONLY
     # ------------------------------------------------------------------
 
     def initialize(self) -> None:
         """Run the FANUC Init recovery ladder + SequenceID reseed. SUPERVISOR-ONLY.
 
-        Ladder (mirrors ``dries`` ``_initialize_with_recovery_locked`` /
-        fanuc_client.cpp:443-459):
+        Ladder (mirrors the FANUC reference driver,
+        ``fanuc_libs/fanuc_client/src/fanuc_client.cpp`` lines 443-459):
 
             pass 1:  GetStatus -> Reset -> GetStatus -> Initialize
             on error (incl. 2556943 "Invalid Controller State"):
@@ -389,7 +389,7 @@ class RmiClient:
         reseed ``_instruction_seq_id`` from ``FRC_GetStatus.NextSequenceID``.
 
         This is the ONLY method that issues ``FRC_Initialize`` — transport
-        auto-reopen deliberately does not (F3+F5).  It MUST be invoked only by
+        auto-reopen deliberately does not.  It MUST be invoked only by
         the lifecycle supervisor from a state where STREAM_MOTN is known-down
         (TP_LAUNCH / RECOVERING); calling it from STREAMING would restart the
         session under a live trajectory.
@@ -407,7 +407,7 @@ class RmiClient:
         decel, not a hard E-stop) and any running ``GRIPDISP``, and flushes the
         controller-side instruction queue.
 
-        F3+F5 CONTRACT: this is **supervisor-only** and is deliberately NOT on
+        CONTRACT: this is **supervisor-only** and is deliberately NOT on
         the transport auto-reopen path.  A worker whose socket blipped must
         never abort a live trajectory — auto-reopen re-establishes the socket
         *without* Abort/Initialize.  The supervisor may call this only in a
@@ -421,9 +421,8 @@ class RmiClient:
     def program_continue(self) -> None:
         """FRC_Continue; resume a paused Remote-Motion TP program. SUPERVISOR-ONLY.
 
-        Resolves the recovery ladder's previously-no-op ``program_continue``
-        hook (PLAN F17/F21): after a SYST-348 payload-confirm clears the pause,
-        ``FRC_Continue`` resumes the RMI-launched program. ErrorID
+        The recovery ladder's resume step: after a SYST-348 payload-confirm
+        clears the pause, ``FRC_Continue`` resumes the RMI-launched program. ErrorID
         ``2556938`` ("TP Program is Not Paused.") is TOLERATED as a no-op
         success — the program is already running (or was never paused), which is
         the desired post-recovery end state; treating it as fatal would wedge
@@ -452,7 +451,7 @@ class RmiClient:
         """Drain any async / orphan packets the RX thread has stashed.
 
         Returns and removes everything currently buffered.  The supervisor
-        calls this from its ~1 s status loop (F19) so SystemFault / Terminate
+        calls this from its ~1 s status loop so SystemFault / Terminate
         notifications are surfaced as warnings instead of silently piling up.
         The ring is preserved across session rebuilds (only drained here).
         """
@@ -583,13 +582,14 @@ class RmiClient:
         still reports nine axes with the trailing three zero, so callers get the
         contiguous run starting at J1 (six or nine values).
 
-        **UNCONVERTED joints (F31).** The vendor applies ``J3 += J2`` on RMI
+        **UNCONVERTED joints.** The vendor applies ``J3 += J2`` on RMI
         reads (``controller_facts.INTERIM_FACTS.rmi_j3_plus_j2_conversion``), so
         these are NOT interchangeable with Stream Motion joints. A caller feeding
         them to calibration must tag them
         :data:`~airo_fanuc.receive_interface.SOURCE_RMI_UNCONVERTED`
         (:class:`~airo_fanuc.receive_interface.RmiClientJointReader` does), which
-        the calibration path hard-rejects until E3/HIL-L7 proves identity.
+        the calibration path hard-rejects until the two representations are
+        proven identical on hardware.
 
         Raises :class:`RmiError` on a non-zero ErrorID or a malformed reply
         (missing / empty ``JointAngle``), :class:`RmiSessionDown` on persistent
@@ -666,8 +666,7 @@ class RmiClient:
         out-of-band orphan (no protocol corruption).
 
         Auto-reopens the transport WITHOUT Initialize/Abort on transport error
-        (F3+F5) and retries once; raises :class:`RmiSessionDown` on persistent
-        failure.
+        and retries once; raises :class:`RmiSessionDown` on persistent failure.
         """
         with self._request_lock:
             for attempt in (1, 2):
@@ -714,7 +713,7 @@ class RmiClient:
     def _exchange_with_retry(self, req: dict[str, Any], *, quiet: bool = False) -> dict[str, Any]:
         """Send a request and return its correlated reply, retrying once on socket error.
 
-        Transport auto-reopen (F3+F5) re-establishes the socket via
+        Transport auto-reopen re-establishes the socket via
         ``Connect_STMO`` + the redirect hop WITHOUT issuing Initialize/Abort.
         A non-zero ErrorID raises :class:`RmiError` (a controller-level problem,
         not transient — not retried, not converted).  A persistent transport
@@ -730,8 +729,9 @@ class RmiClient:
                     return self._send_and_wait_locked(req, quiet=quiet)
                 except RmiError:
                     # Controller-level error: a real protocol problem (incl. a
-                    # single-session 2556954 on reopen).  Do NOT retry — that is
-                    # the self-reopen storm F3+F5 exists to prevent.
+                    # single-session 2556954 on reopen).  Do NOT retry — retrying
+                    # a controller-level refusal is the self-reopen storm the
+                    # session split exists to prevent.
                     raise
                 except OSError as exc:
                     self._bump_retry_locked()
@@ -765,7 +765,8 @@ class RmiClient:
         best-effort FRC_Disconnect.
 
         Raises :class:`OSError` if the socket is not open or the reply never
-        lands within the bounded deadline (mirrors ``dries``' drain deadline);
+        lands within the bounded deadline (a missing reply must surface as a
+        transport failure, not an indefinite block on the request lock);
         :class:`RmiError` on a non-zero ErrorID when ``raise_on_error_id``.
         """
         identifier = self._request_reply_identifier(req)
@@ -836,7 +837,7 @@ class RmiClient:
         """Run the ``FRC_Connect_STMO`` → redirect-hop handshake. Caller holds ``_request_lock``.
 
         Establishes the *commands-only* session — deliberately NO
-        ``FRC_Initialize`` (F3+F5).  On success installs ``self._sock`` (the
+        ``FRC_Initialize``.  On success installs ``self._sock`` (the
         redirect socket) and starts the RX thread; on any failure leaves
         ``self._sock = None`` so the next attempt re-bootstraps cleanly.
 
@@ -857,8 +858,8 @@ class RmiClient:
             # e.g. 2556954 "Robot is Already Connected." — a prior session not yet
             # freed (the reacquire race, controller-notes.md §1.4; a genuine
             # concurrent session times out on the redirect port instead). This is a
-            # controller-level RmiError — the caller must NOT retry-reopen (that is
-            # the self-reopen storm F3+F5 prevents).
+            # controller-level RmiError — the caller must NOT retry-reopen (that
+            # would be a self-reopen storm against a controller already refusing).
             raise RmiError(
                 f"FRC_Connect_STMO failed: ErrorID={eid} ({describe_rmi_error_id(eid)}), response={resp}",
                 error_id=eid,
@@ -879,8 +880,9 @@ class RmiClient:
         sock = self._tcp_connect(self._controller_ip, self._redirect_port)
         with self._state_lock:
             self._sock = sock
-            # NOTE (F19): _async_packets is intentionally NOT cleared here — the
-            # push/orphan ring is preserved across session rebuilds.
+            # NOTE: _async_packets is intentionally NOT cleared here — the
+            # push/orphan ring is preserved across session rebuilds, since the
+            # fault that forced the rebuild is the one worth reporting.
         self._ensure_rx_thread()
         logger.info("RMI: commands-only session up on %s:%s", self._controller_ip, self._redirect_port)
 
@@ -923,7 +925,7 @@ class RmiClient:
 
         ``FRC_Initialize`` does NOT reset the controller's ``NextSequenceID`` on
         R-30iB+ v9.0 — it persists across sessions until a power-cycle (or a
-        successful ``FRC_Disconnect``).  Without re-anchoring, every bridge
+        successful ``FRC_Disconnect``).  Without re-anchoring, every driver
         restart after the first silently drops ``FRC_Call(STREAM_MOTN, seq=1)``.
         """
         resp = self._send_and_wait_locked(wire.rmi_command_request("FRC_GetStatus"))
@@ -1139,7 +1141,7 @@ class RmiClient:
 
     def _tcp_connect(self, ip: str, port: int) -> socket.socket:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # F24: O_CLOEXEC on every socket fd (Python defaults fds non-inheritable
+        # O_CLOEXEC on every socket fd (Python defaults fds non-inheritable
         # per PEP 446; set it explicitly so a fork in the robot process can never
         # leak the RMI connection into a child).
         sock.set_inheritable(False)

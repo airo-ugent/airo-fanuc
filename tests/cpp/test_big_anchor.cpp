@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 — big-anchor int64 timestamp invariant (R1 F2: "int64-only absolute
-// timestamps; doubles for differences only" + the >2^53 anchor unit test). The
-// path that actually carries ABSOLUTE monotonic timestamps is JointsAtRing (the
-// camera FK-at-shutter ring, R3 C2): it stores mono_ns as int64 and finds the
+// Unit test — big-anchor int64 timestamp invariant: absolute timestamps are
+// int64-only, doubles are used for differences only. The path that actually
+// carries ABSOLUTE monotonic timestamps is JointsAtRing (the FK-at-shutter ring
+// that matches a camera frame to the joint pose at its exposure): it stores
+// mono_ns as int64 and finds the
 // nearest sample by int64 subtraction. This test proves that lookup stays EXACT
 // when the anchor exceeds 2^53 ns (a double can no longer represent every integer
 // there, so a "simplify mono_ns to double" regression would collapse neighbours

@@ -1,26 +1,39 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Single-owner controller lock via ``flock`` (PLAN decision 13, R2 F24/F25).
+"""Single-owner controller lock via ``flock``.
 
-The FANUC controller accepts exactly one Stream Motion peer and (per HIL-L3)
-one RMI session, so at most one process may talk to it on either protocol at a
-time. This module enforces that with a ``flock``-based advisory lock on a lock
+The FANUC controller accepts exactly ONE Stream Motion peer and one RMI session,
+so at most one process may talk to it on either protocol at a time. This is a
+hardware-level constraint, not a policy choice:
+
+* the controller does not serve two Stream Motion peers — a second peer gets no
+  status packets at all, and its packets are not harmlessly ignored: a foreign
+  StopPacket silences the *live* session mid-motion, and a foreign or malformed
+  StartPacket can wedge the Stream Motion daemon until a controller power-cycle;
+* a second RMI connect is not cleanly refused either — the ``FRC_Connect_STMO``
+  itself succeeds and the redirect-port connect then times out, so the loser of
+  the race learns about the conflict only as a stall.
+
+This module enforces the exclusion with a ``flock``-based advisory lock on a lock
 file whose payload names the current holder (``pid`` / ``mode`` / ``since``).
 
-Why ``flock`` (design 08 §6, decision 13): the kernel releases the lock
-automatically when the holder dies — a crashed bridge never wedges the next
-start (fault-matrix row 20). The YIELD protocol was cut; a second acquirer gets
-a loud, typed :class:`~airo_fanuc.exceptions.OwnershipError` naming the holder
-("kill <PID>") rather than negotiating a handover.
+Why ``flock``: the kernel releases the lock automatically when the holder dies, so
+a crashed process never wedges the next start — no stale-PID file to clean up, no
+timeout to tune. There is no yield/negotiation protocol; a second acquirer gets a
+loud, typed :class:`~airo_fanuc.exceptions.OwnershipError` naming the holder
+("kill <PID>"), because silently taking the controller away from a process that
+may be mid-trajectory is exactly the conflict the lock exists to prevent.
 
-Modes (design 08 §6): ``control`` (Stream Motion + STREAM_MOTN — the demo /
-``FanucDriver``), ``receive`` (RMI-poll state for calibration /
-:class:`~airo_fanuc.receive_interface.FanucReceiveInterface`), ``tool`` (gripper
-register pokes). All three contend for the *same* lock — only one process holds
-the controller regardless of what it intends to do with it.
+Modes: ``control`` (Stream Motion + STREAM_MOTN —
+:class:`~airo_fanuc.driver.FanucDriver`), ``receive`` (RMI-poll state for
+calibration / :class:`~airo_fanuc.receive_interface.FanucReceiveInterface`),
+``tool`` (gripper register pokes). All three contend for the *same* lock — only
+one process holds the controller regardless of what it intends to do with it.
 
-F24: the lock fd is ``O_CLOEXEC`` so a fork in the robot process cannot leak the
-lock into a child. F25: the lock directory's owner is checked (a foreign-owned
-lock dir would let another user pre-seed or hijack the lock).
+The lock fd is ``O_CLOEXEC`` so a fork in the robot process cannot leak the lock
+into a child (a leaked fd would keep the lock alive past the holder's death and
+defeat the kernel-release guarantee above). The lock directory's owner is also
+checked: a foreign-owned lock dir would let another user pre-seed or replace the
+lock file and hijack ownership.
 
 Wheel-standalone: stdlib ``fcntl`` / ``os`` / ``json`` / ``logging`` only.
 Tests override :data:`DEFAULT_LOCK_PATH` to a tmp path — acquiring the lock
@@ -44,9 +57,9 @@ logger = logging.getLogger("airo_fanuc.ownership")
 
 #: Production lock path. Under ``/run/lock`` so it lives on tmpfs (cleared on
 #: reboot) and the kernel-released flock is the whole crash-safety story.
-DEFAULT_LOCK_PATH = "/run/lock/grocery-fanuc/owner.lock"
+DEFAULT_LOCK_PATH = "/run/lock/airo-fanuc/owner.lock"
 
-#: Valid ownership modes (design 08 §6).
+#: Valid ownership modes.
 VALID_MODES = ("control", "receive", "tool")
 
 
@@ -109,13 +122,16 @@ class OwnershipLock:
 
         Non-blocking (``LOCK_NB``): on contention we read the current holder's
         ``pid`` / ``mode`` / ``since`` from the lock file and raise immediately —
-        no waiting, no yield negotiation (decision 13).
+        no waiting, no yield negotiation. A caller that blocked here would sit
+        for the controller's idle timeout behind a hung (SIGSTOP'd) holder, which
+        the kernel will not release; failing loudly with the holder's PID is the
+        only actionable outcome.
         """
         if self._fd is not None:
             return self  # already held by this instance (idempotent)
 
         self._ensure_lock_dir()
-        # O_CLOEXEC (F24): the lock must not leak across a fork/exec.
+        # O_CLOEXEC: the lock must not leak across a fork/exec.
         fd = os.open(self._path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -175,7 +191,7 @@ class OwnershipLock:
     # ------------------------------------------------------------------
 
     def _ensure_lock_dir(self) -> None:
-        """Create the lock directory if needed and verify its owner (F25).
+        """Create the lock directory if needed and verify its owner.
 
         A lock dir owned by a *different* non-root user could let that user
         pre-seed or replace the lock file to hijack ownership, so we refuse to
@@ -196,7 +212,7 @@ class OwnershipLock:
                     message=(
                         f"ownership: lock dir {parent} is owned by uid={owner_uid}, "
                         f"not root or the current user (uid={my_uid}) — refusing to "
-                        "use a foreign-owned lock directory (F25)"
+                        "use a foreign-owned lock directory"
                     )
                 )
 

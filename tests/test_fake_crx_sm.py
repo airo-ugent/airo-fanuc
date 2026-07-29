@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""L2 self-tests for the FakeCRXController Stream Motion side + plant.
+"""Integration self-tests for the FakeCRXController Stream Motion side + plant.
 
 Prove the fake is a faithful executable spec: the handshake completes, status
 streams at the ITP cadence under the injectable clock, the plant lags toward
@@ -112,8 +112,8 @@ def test_handshake_negotiates_capability_and_starts_streaming() -> None:
         c.tick()
         assert c.sm.streaming
         st = wire.decode_status_packet(cli.recvfrom(4096)[0])
-        # At negotiated v3 the controller streams legacy type-202 (no force block) —
-        # what the real P-1 controller sends (E6 pcap). type-204 requires v4.
+        # At negotiated v3 the controller streams legacy type-202 (no force block),
+        # matching what a real controller sends on the v3 wire. type-204 requires v4.
         assert st is not None and st.packet_type == wire.PACKET_TYPE_STATUS_V3
         assert st.fs_type is None  # no force-sensor block on the v3 wire
         cli.close()
@@ -217,13 +217,13 @@ def test_fsconfig_on_v3_raises_host380() -> None:
 
 
 def test_plant_first_order_lag_settles_with_tau() -> None:
-    tau, dt = 0.025, 0.008  # MEASURED servo lag (P-1 E9); was 0.107 interim
+    tau, dt = 0.025, 0.008  # measured servo lag: 25 ms, at the 8 ms ITP
     p = JointPlant(tau_s=tau, itp_s=dt, deviation_watchdog_enabled=False)
     target = _q9(30.0)
     xs = []
     # ~12 tau: enough for a first-order response to a 30° step to settle AND its
-    # velocity to decay below 1°/s (at the smaller measured tau, 6 tau still leaves
-    # a few °/s of residual velocity — the settle time scales with tau).
+    # velocity to decay below 1°/s. 6 tau is not enough — the 1°/s bound is absolute
+    # while peak velocity scales as 1/tau, so a short tau leaves a few °/s left over.
     for _ in range(int(12 * tau / dt)):
         p.command_step(target, dt)
         xs.append(float(p.q_meas[0]))

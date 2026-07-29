@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for :class:`airo_fanuc.receive_interface.FanucReceiveInterface`.
 
-The velocity gate is the structural fix for the 2026-05-17 T1-freeze
-calibration corruption (PLAN R2 F30/F31, decision 14): a still-vs-moving
-predicate over an LSQ window, a None-velocity hard reject, a frozen-feed
-changed-position guard, and the J2/J3 ``rmi_unconverted`` source hard reject.
+The velocity gate is the structural fix for the 2026-05-17 T1-freeze calibration
+corruption: a still-vs-moving predicate over an LSQ window, a None-velocity hard
+reject, a frozen-feed changed-position guard, and the J2/J3 ``rmi_unconverted``
+source hard reject. A frozen feed must never read as "settled" — fabricating
+0 deg/s is exactly what corrupts a hand-eye dataset.
 """
 
 from __future__ import annotations
@@ -124,7 +125,7 @@ def test_velocity_unavailable_frozen_stamps_returns_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Calibration capture: None-reject (F30)
+# Calibration capture: an unavailable velocity is rejected, never read as zero
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +152,7 @@ def test_capture_rejects_no_samples() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Calibration capture: J2/J3 source hard reject (F31)
+# Calibration capture: J2/J3 source hard reject
 # ---------------------------------------------------------------------------
 
 
@@ -168,8 +169,10 @@ def test_rmi_unconverted_hard_rejected_for_calibration() -> None:
 
 
 def test_rmi_accepted_once_identity_proven() -> None:
-    # Flip the fact (simulating E3/HIL-L7): rmi joints become acceptable and are
-    # retagged rmi_converted via the single per-model policy point.
+    # Flip the fact, as a hardware measurement proving the RMI J2/J3 representation
+    # is identical to the Stream Motion one would (docs/controller-notes.md §1.5):
+    # rmi joints become acceptable and are retagged rmi_converted via the single
+    # per-model policy point.
     clock = _Clock()
     facts = replace(INTERIM_FACTS, rmi_joints_identical_to_stream=True)
     ri = FanucReceiveInterface(now_ns=clock, facts=facts)
@@ -255,13 +258,17 @@ def test_status_polling_uses_commands_only_session() -> None:
     status = ri.get_controller_status()
     assert status is not None
     assert ri.get_extended_status() is not None
-    # NEVER initializes (works in T1 / no-demo).
+    # NEVER initializes: FRC_Initialize claims the controller's motion interface and
+    # belongs to the lifecycle supervisor alone. Status polling stays on the
+    # commands-only session, so a read-only tool works in T1 and with no motion
+    # session running.
     assert "FRC_Initialize" not in seen
     assert "FRC_GetStatus" in seen
 
 
 # ---------------------------------------------------------------------------
-# Lifecycle ordering: close RMI before releasing the flock (R3)
+# Lifecycle ordering: close RMI before releasing the flock, so the next owner can
+# never open its single RMI session while ours is still up
 # ---------------------------------------------------------------------------
 
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """FakeCRXController — strict-conformance software emulator of the FANUC
-CRX-10iA/L controller (PLAN.md §5.2/§5.3, §8, D11/D13; design docs 08 + 09).
+CRX-10iA/L controller.
 
 This facade owns the shared controller state and wires together the three
 subsystems that together *are* the executable spec the C++ core + Python
@@ -50,9 +50,10 @@ FS_TYPE_EMBEDDED = wire.FORCE_SENSOR_TYPE_EMBEDDED
 
 @dataclass
 class FakeCRXConfig:
-    """Knobs for the fake. P-1-measured values are read from ``controller_facts``
-    — never hardcoded here so any future re-measure updates in one place. Mutable
-    so a scenario can, e.g., toggle strict mode mid-run."""
+    """Knobs for the fake. Values measured on the physical controller are read
+    from :mod:`airo_fanuc.controller_facts` — never hardcoded here, so a
+    re-measure updates in one place. Mutable so a scenario can, e.g., toggle
+    strict mode mid-run."""
 
     strict: bool = True
     itp_s: float = ITP_S
@@ -60,19 +61,20 @@ class FakeCRXConfig:
     # Stream Motion capability negotiation.
     available_version: int = 3  # set 4 to exercise the FSConfig / force path
 
-    # Plant. tau_s reads INTERIM_FACTS.tracking_lag_s (MEASURED P-1 E9 = 0.025 s).
+    # Plant. tau_s reads INTERIM_FACTS.tracking_lag_s (measured servo lag: 25 ms).
     tau_s: float = INTERIM_FACTS.tracking_lag_s
-    # deviation_watchdog_deg reads INTERIM_FACTS.deviation_watchdog_deg (MEASURED P-1 E6 = 5.0°).
+    # deviation_watchdog_deg reads INTERIM_FACTS.deviation_watchdog_deg (measured: 5.0°).
     deviation_watchdog_deg: float = INTERIM_FACTS.deviation_watchdog_deg
     deviation_watchdog_enabled: bool = True
     silence_decel_ticks: int = 3
 
     # TX-silence. tx_silence_backstop_ok reads INTERIM_FACTS.tx_silence_backstop_ok
-    # (MEASURED P-1 E6 = False / NO-GO: the controller coasts, does not fast-decel).
+    # (measured False: the controller coasts, it does not fast-decel).
     tx_silence_backstop_ok: bool = INTERIM_FACTS.tx_silence_backstop_ok
     tx_silence_threshold_ticks: int = 2
 
-    # RMI. single_session reads INTERIM_FACTS.rmi_single_session (E2).
+    # RMI. single_session reads INTERIM_FACTS.rmi_single_session (measured: the
+    # controller serves one RMI session at a time).
     single_session: bool = INTERIM_FACTS.rmi_single_session
     seq_seed: int = 1  # controller NextSequenceID seed (persists across sessions)
     major_version: int = 9
@@ -320,8 +322,8 @@ class FakeCRXController:
     def press_estop(self) -> None:
         with self.state.lock:
             self.state.e_stopped = True
-            # in_error latches (design 08 fault row 1/2): survives e-stop release
-            # until an FRC_Reset, so recovery needs the ladder, not just release.
+            # in_error latches: it survives e-stop release until an FRC_Reset, so
+            # recovery needs the ladder, not just releasing the button.
             self.state.in_error = True
             self.state.raise_alarm("SRVO-001", "Operator panel E-stop")
 
@@ -386,7 +388,7 @@ class FakeCRXController:
             if control_mode is not None:
                 self.state.control_mode = control_mode
 
-    # -- Stream-Motion TX perturbation (S-DROP taxonomy) ------------------
+    # -- Stream-Motion TX perturbation (drop / seq gap / duplicate) -------
 
     def drop_status(self, n: int = 1) -> None:
         """Skip sending the next ``n`` status packets (RX-silence / drop)."""

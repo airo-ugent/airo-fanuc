@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 — PLL-clocked TX phase servo (PLAN.md decision 4 / R1 A1+A2). The headline
+// Unit test — PLL-clocked TX phase servo. The headline
 // invariants: correction is clamped to ±100 µs/tick; free-run at nominal cadence
 // without a fresh RX; the next tick is always strictly ahead of the fired one;
 // the phase converges to (rx + lead).

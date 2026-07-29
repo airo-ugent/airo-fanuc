@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Cubic-Hermite resampling — see hermite.hpp. Compiled with -ffp-contract=off
-// (set on the `tick_engine` target) so the position expression matches the
-// dries Python oracle bit-for-bit.
+// (set on the `tick_engine` target) so nothing in the position expression fuses
+// into an FMA and the result stays bit-reproducible.
 
 #include "tick_engine/hermite.hpp"
 
@@ -17,7 +17,7 @@ HermiteSample hermite_eval(const Vec6& q0, const Vec6& qd0, const Vec6& q1, cons
   const double s2 = s * s;
   const double s3 = s2 * s;
 
-  // Basis (oracle order/literals).
+  // Basis (pinned order/literals).
   const double h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
   const double h10 = s3 - 2.0 * s2 + s;
   const double h01 = -2.0 * s3 + 3.0 * s2;
@@ -40,7 +40,7 @@ HermiteSample hermite_eval(const Vec6& q0, const Vec6& qd0, const Vec6& q1, cons
 
   HermiteSample out{};
   for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
-    // Position — EXACT oracle op order (bit-for-bit vs interpolator.py).
+    // Position — PINNED op order; do not reassociate or factor (see hermite.hpp).
     out.q[j] = h00 * q0[j] + h10 * h_s * qd0[j] + h01 * q1[j] + h11 * h_s * qd1[j];
 
     // Natural velocity dq/dt. The h_s in the tangent terms cancels 1/h_s, so at
@@ -57,13 +57,14 @@ HermiteSample hermite_at_ns(std::int64_t t0_ns, const Vec6& q0, const Vec6& qd0,
                             const Vec6& q1, const Vec6& qd1, std::int64_t t_query_ns) {
   const std::int64_t h_ns = t1_ns - t0_ns;
   if (h_ns <= 0) {
-    // Oracle's degenerate-interval guard returns q1 (position); derivatives
-    // are undefined there — report zero.
+    // Degenerate-interval guard: return q1 for the position; the derivatives are
+    // undefined there (division by a zero-length interval) — report zero.
     HermiteSample out{};
     out.q = q1;
     return out;
   }
-  // Match the oracle exactly: int64 differences → double, then IEEE divide.
+  // Pinned: take the int64 differences first, widen to double, then one IEEE
+  // divide — reordering these changes the last bit of `s`.
   const double h_s = static_cast<double>(h_ns) / 1e9;
   const double s = static_cast<double>(t_query_ns - t0_ns) / static_cast<double>(h_ns);
   return hermite_eval(q0, qd0, q1, qd1, s, h_s);
@@ -124,8 +125,8 @@ HermiteSample TrajectorySampler::sample(std::int64_t tau_ns, double speed_scale)
   }
 
   // Locate the bracketing segment [times[i], times[i+1]] containing t_query.
-  // Linear-in-worst-case but trajectories are short and P3b caches the cursor;
-  // for the pure math a std::upper_bound over the int64 times is enough.
+  // Logarithmic per sample; trajectories are short and the tick core caches its
+  // own cursor, so a std::upper_bound over the int64 times is enough here.
   int hi = static_cast<int>(std::upper_bound(times_, times_ + n_, static_cast<std::int64_t>(t_query)) - times_);
   // t_query is strictly inside (t0, t_end) so 1 <= hi <= n-1.
   if (hi < 1) {
@@ -218,8 +219,10 @@ HermiteSample QdEndBlend::sample(std::int64_t tau_ns) const {
     // Entry sample: exact (q_end, qd_end). The velocity ramp qd(t)=(1−t/T)·qd_end
     // is LINEAR, so its acceleration is the constant −qd_end/T at every instant,
     // INCLUDING t=0 — the interior hermite path returns exactly this. Populate it
-    // here too so braking on the FIRST blend tick seeds the analytic accel (R1 C1)
-    // rather than a spurious 0. (dur_ns_ > 0 whenever active_, so no div-by-zero.)
+    // here too so braking on the FIRST blend tick seeds the analytic accel rather
+    // than a spurious 0: a zero seed would step the commanded acceleration and the
+    // CRX contact-stop monitor reads that step as contact.
+    // (dur_ns_ > 0 whenever active_, so no div-by-zero.)
     HermiteSample out{};
     out.q = q_end_;
     out.qd = qd_end_;

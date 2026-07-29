@@ -1,30 +1,36 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Lifecycle supervisor (PLAN.md §5.3 / design doc 08).
+"""Lifecycle supervisor — the POLICY layer above the autonomous C++ core.
 
 The C++ ``StreamCore`` does the ≤8 ms mechanical gating, kill, and SAFE_FOLLOW
-re-anchor *autonomously* (F29): it never waits for Python. The :class:`Supervisor`
-adds the POLICY layer on top of that autonomous core:
+re-anchor *autonomously*: it never waits for Python, so a slow or dead supervisor
+can delay recovery but can never delay a stop. The :class:`Supervisor` adds only
+the policy on top of that core:
 
 * the **bring-up ladder** (RMI connect+initialize → FRC_Call(GRPRUN) → full RMI
   reconnect → FRC_Call(STREAM_MOTN) → ``StreamCore.start`` + ``wait_ready`` →
   poll HOLD), with 3 retries and a 4-branch startup triage;
 * the **recovery ladders** (reset → best-effort FRC_Continue → seq reseed → FRC_Call
   → wait motion_possible → ``core.recover()``), single-flight, cooldown-gated;
-* the **ARM gate** (after an e-stop / operator-required fault, recovery ends in
-  MOTION_INHIBITED — the next motion needs an explicit ``arm()``);
+* the **ARM gate**: after an e-stop or an operator-required fault, recovery ends in
+  MOTION_INHIBITED and the next motion needs an explicit ``arm()``. Auto-arming
+  would move the robot the instant the fault cleared — with the operator still
+  standing at the pendant that just cleared it — so the decision to resume motion
+  is handed back to the caller rather than taken here;
 * the **SYST-348 OPERATOR_REQUIRED** flow (detect 2556936 ∧ SYST-348 → stop
   retrying → 1 Hz ReadError watch on the commands-only session → on clear, still
   require ``arm()``);
 * **TEACH→AUTO self-heal** (clear the cooldown on the tp_enabled True→False edge);
-* skip-recovery-while-tp_enabled without arming the cooldown (dries gate).
+* **skip recovery while tp_enabled** without arming the cooldown, so the
+  TEACH→AUTO edge re-fires recovery immediately instead of waiting one out.
 
-The anti-flap dwell (F7, 500 ms all-clear) and the mode re-anchor are owned by the
-C++ ``recover()`` (L2 ``test_contact_flap_storm_holds_dwell_no_premature_recovery``);
-the supervisor just calls ``core.recover()`` once the RMI-side fault is cleared.
+The anti-flap dwell (500 ms all-clear) and the mode re-anchor are owned by the
+C++ ``recover()`` (the FakeCRX integration test
+``test_contact_flap_storm_holds_dwell_no_premature_recovery`` covers it); the
+supervisor just calls ``core.recover()`` once the RMI-side fault is cleared.
 
-**SUPERVISOR_LOST invariant (F28/F29):** the RT core is independent of this thread.
-If the watch loop dies, the core keeps its 125 Hz loop and stays in HOLD; the
-autonomous gates still fault it to SAFE_FOLLOW on an e-stop. ``tests/test_supervisor.py``
+**SUPERVISOR_LOST invariant:** the RT core is independent of this thread. If the
+watch loop dies, the core keeps its 125 Hz loop and stays in HOLD; the autonomous
+gates still fault it to SAFE_FOLLOW on an e-stop. ``tests/test_supervisor.py``
 asserts this.
 """
 
@@ -65,15 +71,15 @@ _GRPRUN = "GRPRUN"
 _STREAM_MOTN = "STREAM_MOTN"
 
 # TPMode values that mean AUTO. The standard FANUC AUTO code is 2, but this
-# SOP-less CRX reports 0 in its (permanent) AUTO (P-1 measured; controller-notes
-# §1.6). Both are AUTO here; only 1/3 are genuine T1/T2.
+# SOP-less CRX reports 0 in its (permanent) AUTO — measured on the controller
+# (docs/controller-notes.md §1.6). Both are AUTO here; only 1/3 are genuine T1/T2.
 _TP_MODES_AUTO = (0, 2)
 _SYST348_WATCH_PERIOD_S = 1.0
 
-# Supervisor-liveness heartbeat (SUPERVISOR_LOST, P-1 finalization). A dedicated
-# lightweight thread beats the C++ RT core at this cadence; the core faults+holds
-# if beats lapse for controller_facts.SUPERVISOR_LOST_S. Kept well below that
-# threshold so GIL-storm / GC jitter never starves it into a false trip.
+# Supervisor-liveness heartbeat (SUPERVISOR_LOST). A dedicated lightweight thread
+# beats the C++ RT core at this cadence; the core faults+holds if beats lapse for
+# controller_facts.SUPERVISOR_LOST_S. Kept well below that threshold so GIL-storm /
+# GC jitter never starves it into a false trip.
 _HEARTBEAT_INTERVAL_S = 0.1
 
 
@@ -127,7 +133,7 @@ class Supervisor:
         # -- active motion handle (for trajectory_start_mono_ns latch) ---
         self._active_handle: MotionHandle | None = None
 
-        # -- gripper fail-fast gate (R2 F32) -----------------------------
+        # -- gripper fail-fast gate ---------------------------------------
         # Registered post-construction by the driver (the gripper is built after
         # the supervisor). While a recovery ladder runs, the supervisor toggles the
         # gripper's fail-fast gate so a concurrent gripper command is rejected
@@ -197,18 +203,26 @@ class Supervisor:
         # seq reseed (FINAL before FRC_Call) → FRC_Call(STREAM_MOTN).
         #
         # STREAM_MOTN cannot be un-launched via RMI (FRC_Abort AND FRC_Reset both leave
-        # program_status=2 — P-1 HIL 2026-07-07), and a pure SM handshake to a running
-        # instance does NOT re-arm motion_possible — so the FRC_Call is REQUIRED on every
-        # bring-up, even over a running instance. Re-Calling causes a brief motion_possible
-        # transient the supervisor auto-recovers from; it only WEDGED (unrecoverable) when
-        # the controller had been degraded by stacked GRIPDISP RUN-forks — which the
-        # enable_gripper gate below now prevents (a RUN-forked task FRC_Reset can't kill,
-        # so never launch it on a no-gripper session: bare move / calibration / --no-move).
+        # program_status=2 — observed on hardware 2026-07-07), and a pure SM handshake to a
+        # running instance does NOT re-arm motion_possible — so the FRC_Call is REQUIRED on
+        # every bring-up, even over a running instance. Re-Calling causes a brief
+        # motion_possible transient the supervisor auto-recovers from; it WEDGES
+        # (unrecoverably) only on a controller already degraded by stacked GRIPDISP
+        # RUN-forks — which the enable_gripper gate below prevents (a RUN-forked task
+        # FRC_Reset can't kill, so never launch it on a no-gripper session: bare move /
+        # calibration / --no-move).
         #
-        # ANTI-STACKING (P-1 HIL 2026-07-07): the enable_gripper gate stops no-gripper
+        # WHY A RUN-FORK AT ALL: FRC_Call(GRIPDISP) never returns. GRIPDISP is an infinite
+        # TP loop polling R[1], so a blocking Call would own the RMI session forever and no
+        # further command (including FRC_Call(STREAM_MOTN)) could be issued. GRPRUN is the
+        # launcher: a TP wrapper that RUN-forks GRIPDISP as an independent task and returns
+        # immediately. The price of the fork is that the task then outlives the RMI session
+        # that started it — hence all the anti-stacking machinery below.
+        #
+        # ANTI-STACKING WITHIN ONE PROCESS: the enable_gripper gate stops no-gripper
         # sessions from EVER forking, but bringup() retries _bringup_once up to
         # connect_retries times and _teardown_partial does NOT abort/reset the GRPRUN task
-        # (a RUN-fork survives FRC_Reset/FRC_Abort AND FRC_Disconnect), so a naive re-fork
+        # (and a RUN-fork survives both FRC_Reset and FRC_Disconnect), so a naive re-fork
         # on each retry would stack up to connect_retries un-killable GRIPDISP forks and
         # re-trigger the same program_status=2 wedge on a merely flaky bring-up. The
         # _grprun_forked latch (armed once per bringup(), NOT per attempt) makes the fork
@@ -221,14 +235,15 @@ class Supervisor:
         self._set_state(LifecycleState.TP_LAUNCH, FaultReason.NONE)
         self._rmi.reset()
         if self._policy.enable_gripper and not self._grprun_forked:
-            # CROSS-PROCESS anti-stacking (P-1 HIL 2026-07-07 + follow-up): the
-            # _grprun_forked latch alone only makes the fork at-most-once WITHIN one
-            # process. A RUN-forked GRIPDISP survives the process that forked it
+            # CROSS-PROCESS anti-stacking: the _grprun_forked latch alone only makes
+            # the fork at-most-once WITHIN one process, which is not enough. A
+            # RUN-forked GRIPDISP survives the process that forked it
             # (FRC_Reset/FRC_Disconnect can't kill it — only FRC_Abort / TP ABORT
-            # ALL can), so every fresh driver bring-up (e.g. each `grocery-up`) blindly
-            # re-forking stacks un-killable GRIPDISP tasks that wedge STREAM_MOTN at
-            # program_status=2 until a power-cycle. Probe first: if a dispatcher is
-            # already running, skip the fork entirely.
+            # ALL can), so every fresh driver bring-up blindly re-forking stacks
+            # un-killable GRIPDISP tasks that wedge STREAM_MOTN at program_status=2 —
+            # and the only way out of that wedge is an operator at the teach pendant
+            # pressing FCTN → ABORT ALL. So gate the fork on a liveness probe: if a
+            # dispatcher is already running, skip the fork entirely.
             if self._gripdisp_alive():
                 logger.info(
                     "airo_fanuc: GRIPDISP already running (probe: R[%d] auto-cleared) — "
@@ -316,15 +331,17 @@ class Supervisor:
                 raise
 
     def _triage(self) -> str:
-        """4-branch startup-failure hypothesis (dries Stream-Motion triage)."""
+        """4-branch hypothesis for why Stream Motion bring-up failed, so the raised
+        :class:`FanucConnectionError` names the actual blocker instead of a timeout."""
         try:
             st = self._rmi.get_status()
             err = self._rmi.read_error(3)
         except (RmiError, RmiSessionDown, OSError) as exc:
             return f"RMI unreachable — network / controller down or foreign SM peer holds the session ({exc})"
         # This SOP-less CRX reports TPMode=0 in its (permanent) AUTO — NOT the
-        # standard 2 (P-1 measured; controller-notes §1.6). Only a genuine T1/T2
-        # (TPMode 1/3) means "return the keyswitch"; 0 and 2 are both AUTO here.
+        # standard 2 (measured on the controller; docs/controller-notes.md §1.6).
+        # Only a genuine T1/T2 (TPMode 1/3) means "return the keyswitch"; 0 and 2
+        # are both AUTO here.
         if st.tp_mode not in _TP_MODES_AUTO:
             return f"teach pendant in T1/T2 (TPMode={st.tp_mode}) — return the keyswitch to AUTO"
         if not st.servo_ready:
@@ -332,7 +349,7 @@ class Supervisor:
         return (
             f"RMI healthy (AUTO, servo_ready) but motion_possible never asserted — likely a wedged "
             f"SM daemon / stale STREAM_MOTN (program_status={st.program_status}); POWER-CYCLE the "
-            f"controller (P-1 §2.5). alarms={list(err.messages)}"
+            f"controller (docs/controller-notes.md §2.5). alarms={list(err.messages)}"
         )
 
     def _teardown_partial(self) -> None:
@@ -435,11 +452,14 @@ class Supervisor:
     ) -> None:
         if self._recovering:
             return
-        # dries gate: skip while tp_enabled (no cooldown armed — TEACH→AUTO re-fires).
+        # Skip while tp_enabled, and deliberately WITHOUT arming the cooldown: the
+        # keyswitch is a human decision, so the TEACH→AUTO edge should re-fire
+        # recovery at once rather than wait out a cooldown nobody asked for.
         if tp:
             return
-        # Cannot auto-recover a held e-stop or a latched alarm — operator/explicit
-        # recover() must clear those (dries _attempt_motion_recovery bail).
+        # Cannot auto-recover a held e-stop or a latched alarm — the controller
+        # refuses motion until a human clears them, so only an operator action or an
+        # explicit recover() can move this forward.
         if estop or in_error:
             return
         now = time.monotonic()
@@ -465,7 +485,7 @@ class Supervisor:
                 return False
             self._recovering = True
         ok = False
-        # Fail-fast-gate the gripper for the whole ladder (R2 F32): a gripper command
+        # Fail-fast-gate the gripper for the whole ladder: a gripper command
         # racing the ladder must be rejected, not actuate GRIPDISP mid-recovery. Set
         # OUTSIDE the supervisor's _recovery_lock — set_recovery only takes the
         # gripper's own lock (cheap flag; no RMI), so there is no lock-ordering hazard.
@@ -509,10 +529,10 @@ class Supervisor:
 
         # RMI ladder — reset → (best-effort Continue) → reseed (FINAL) → FRC_Call.
         # A SystemFault can leave RMI unresponsive: FRC_Reset / FRC_Call then
-        # time out → RmiSessionDown, and the ladder used to dead-end here,
-        # freezing the arm. On RmiSessionDown, escalate to a full RMI reconnect
-        # (the bring-up "flush stale SystemFault" sequence), bounded by
-        # policy.recovery_reconnect_attempts.
+        # time out → RmiSessionDown. Without an escalation the ladder dead-ends
+        # right here and the arm stays frozen, so on RmiSessionDown escalate to a
+        # full RMI reconnect (the bring-up "flush stale SystemFault" sequence),
+        # bounded by policy.recovery_reconnect_attempts.
         try:
             self._rmi.reset()
             self._maybe_continue()
@@ -559,7 +579,10 @@ class Supervisor:
             logger.warning("airo_fanuc: recovery did not reach HOLD within %.1fs", ready_wait)
             return False
 
-        # ARM gate: an e-stop / operator-required recovery ends MOTION_INHIBITED.
+        # ARM gate: an e-stop / operator-required recovery ends MOTION_INHIBITED, and
+        # every motion method raises until an explicit arm(). Whoever cleared the
+        # fault is standing at the pendant, inside the robot's envelope; resuming
+        # motion on our own initiative would move the robot at them.
         with self._lock:
             self._recovery_count += 1
             if self._policy.arm_gate and (requires_arm(latched) or self._operator_required):
@@ -625,7 +648,9 @@ class Supervisor:
         return False
 
     def _abort_recovery(self) -> bool:
-        """A new e-stop / TEACH / RX-silence event aborts an in-flight recovery (F8-F16)."""
+        """A new e-stop / TEACH / RX-silence event aborts an in-flight recovery: a
+        ladder that pushed on through a fresh fault would re-arm motion the operator
+        just interrupted."""
         snap = self._snap()
         return (
             bool(snap["e_stopped"]) or bool(snap["tp_enabled"]) or Mode(int(snap["mode"])) == Mode.RX_SILENT
@@ -635,7 +660,7 @@ class Supervisor:
         """Best-effort FRC_Continue (tolerate 2556938 "TP program not paused").
 
         Wired via :meth:`RmiClient.program_continue`; issued after FRC_Reset in the
-        recovery ladder (P-1 E1: FRC_Continue → ErrorID 0 OK observed on hardware).
+        recovery ladder (FRC_Continue → ErrorID 0 OK, observed on hardware).
         Duck-typed via ``getattr`` so a hypothetical commands-only ``RmiClient``
         variant without the method degrades to a no-op rather than raising."""
         fn = getattr(self._rmi, "program_continue", None)
@@ -691,6 +716,10 @@ class Supervisor:
     # ==================================================================
 
     def arm(self) -> None:
+        """Lift the ARM gate: permit motion again after an e-stop / operator-required
+        recovery left the driver MOTION_INHIBITED. Only the caller may do this — the
+        gate exists so the robot never moves on its own initiative while an operator
+        is still at the pendant."""
         with self._lock:
             was = self._motion_inhibited
             self._motion_inhibited = False
@@ -713,7 +742,7 @@ class Supervisor:
         self._active_handle = handle
 
     def set_gripper(self, gripper: GripperWorker | None) -> None:
-        """Register (or clear) the gripper the recovery ladder fail-fast-gates (R2 F32).
+        """Register (or clear) the gripper the recovery ladder fail-fast-gates.
 
         Called by the driver after it builds the gripper. Just stores the reference;
         the ladder toggles ``gripper.set_recovery(...)`` — a cheap flag toggle guarded
@@ -804,10 +833,11 @@ class Supervisor:
         # While OPERATOR_REQUIRED is latched (SYST-348 / payload-confirm), the hint
         # MUST stay the actionable operator-required instruction — a coexisting
         # lower-priority observed fault (e.g. motion_not_possible on the same tick)
-        # must NOT clobber it (PLAN F8-F16: the operator-required reason takes
-        # precedence in the ordered fault list). The observed ``fault`` still drives
-        # ``fault_reason`` (ordered-list semantics preserved); only the hint honors
-        # the latched operator-required precedence.
+        # must NOT clobber it: the operator-required reason outranks everything else
+        # in the ordered fault list, because it is the only one that tells the
+        # operator the action that will actually clear the state. The observed
+        # ``fault`` still drives ``fault_reason`` (ordered-list semantics
+        # preserved); only the hint honors the latched operator-required precedence.
         op_req = operator_required or self._operator_required
         changed = state != self._state or fault != self._fault_reason
         self._state = state

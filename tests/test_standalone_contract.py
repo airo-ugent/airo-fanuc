@@ -1,16 +1,17 @@
 """Guard the standalone-distribution contract that keeps this package upstreamable.
 
 ``airo_fanuc`` is intended to be contributed to airo-mono
-(https://github.com/airo-ugent/airo-mono) as a FANUC CRX manipulator alongside
-``airo_robots.manipulators.hardware.ur_rtde``. That only stays cheap while the
-package installs and imports with **numpy alone** — no zenoh, no loguru, no
-curobo, and above all no ``grocery_bot``.
+(https://github.com/airo-ugent/airo-mono) as a FANUC CRX manipulator alongside the
+other ``airo_robots.manipulators.hardware`` drivers. That only stays cheap while the
+package installs and imports with **numpy alone**: no messaging middleware, no
+third-party logging shim, no planner or tensor stack, and — above all — nothing from
+whatever application happens to be deployed on top of the driver. The enforced list
+is :data:`_FORBIDDEN` below.
 
-Nothing enforced that before this test: the package's declared deps said
-``numpy>=1.26`` and its docstrings said "numpy only (D14)", but a single
-convenience ``from loguru import logger`` (the house style everywhere else in
-the parent repo) would have broken the contract silently, and the failure would
-only have surfaced at upstreaming time.
+Declared deps and docstrings cannot hold that line on their own: they say
+``numpy>=1.26`` and "numpy only", but a single convenience
+``from loguru import logger`` breaks the contract silently, and the failure would
+surface only at upstreaming time.
 
 These are static (AST) checks on purpose — they cannot be satisfied by an
 import that merely happens to be installed in the dev venv.
@@ -30,7 +31,8 @@ _PKG_ROOT = pathlib.Path(__file__).resolve().parents[1] / "src" / "airo_fanuc"
 #: Keep in sync with ``[project] dependencies`` in pyproject.toml.
 _ALLOWED_THIRD_PARTY = frozenset({"numpy"})
 
-#: Importing any of these would tie the package to its current host repo.
+#: Importing any of these would tie the distribution to a consumer application or to
+#: a heavyweight optional stack, and break the numpy-alone install.
 _FORBIDDEN = ("grocery_bot", "zenoh", "loguru", "curobo", "torch", "airo_robots")
 
 
@@ -57,7 +59,7 @@ def test_source_tree_is_discoverable() -> None:
 
 @pytest.mark.parametrize("path", _source_files(), ids=lambda p: p.name)
 def test_no_forbidden_imports(path: pathlib.Path) -> None:
-    """No module may import the host repo or its heavyweight stack."""
+    """No module may import a consumer application or a heavyweight optional stack."""
     imported = _imported_top_level_modules(path)
     offenders = sorted(imported.intersection(_FORBIDDEN))
     assert not offenders, (

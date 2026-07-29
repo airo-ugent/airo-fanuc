@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 — epoch bump-event table COMPLETENESS (R2 F4). test_epoch.cpp triggers each
+// Unit test — epoch bump-event table COMPLETENESS. test_epoch.cpp triggers each
 // of the nine bump reasons in isolation; this file locks down the table as a
 // whole: (1) the enum has exactly the nine reasons (a new reason without a test
 // breaks the static_assert), (2) the happy path (HOLD / trajectory-to-DONE /
 // stop_j preempt) bumps ZERO times — no spurious epoch churn, and (3) every
 // epoch increment is ATTRIBUTED to a table entry: Σ bump_counts == epoch (no
-// untracked bump can slip in). kSupervisorLost + kDriftFault added at P-1
-// finalization (see test_epoch.cpp SupervisorLost / DriftFault).
+// untracked bump can slip in). kSupervisorLost and kDriftFault are exercised by
+// test_epoch.cpp's SupervisorLost / DriftFault cases.
 
 #include <array>
 #include <cstdint>

@@ -1,19 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the P4d RMI additions: FRC_ReadJointAngles + FRC_Continue.
+"""Tests for the RMI joint-read and program-resume commands: FRC_ReadJointAngles
+and FRC_Continue.
 
 Covers, against the real-socket :class:`~airo_fanuc.testing.FakeCRXController`
 RMI emulator (mirroring the ``test_rmi_client`` pattern):
 
 * :meth:`RmiClient.read_joint_angles` returns the controller joints, with the
-  vendor ``J3 += J2`` conversion visible in the reply (F31 / controller_facts
-  ``rmi_j3_plus_j2_conversion``);
-* the emitted request bytes byte-match the committed P1a-style goldens;
+  vendor ``J3 += J2`` conversion visible in the reply (see
+  ``controller_facts.rmi_j3_plus_j2_conversion``);
+* the emitted request bytes byte-match the committed RMI wire goldens;
 * :meth:`RmiClient.program_continue` succeeds on a paused program, tolerates
   2556938 ("TP Program is Not Paused.") as a no-op on an unpaused one, and still
   raises :class:`RmiError` on any other ErrorID;
 * :class:`RmiClientJointReader` tags samples :data:`SOURCE_RMI_UNCONVERTED` and
-  the :class:`FanucReceiveInterface` calibration path HARD-REJECTS them (reusing
-  the P4c source-gate assertions).
+  the :class:`FanucReceiveInterface` calibration path HARD-REJECTS them — an
+  unconverted J3 would silently bias a calibration by the J2 angle.
 """
 
 from __future__ import annotations
@@ -205,7 +206,8 @@ def test_receive_interface_hard_rejects_rmi_reader_sample() -> None:
             sample = reader.read()
 
     assert sample is not None
-    # Feed the RMI-sourced sample into the calibration path (P4c hard-reject).
+    # Feed the RMI-sourced sample into the calibration path: it must hard-reject,
+    # not silently calibrate off unconverted joints.
     ri = FanucReceiveInterface()
     ri.ingest_sample(sample)
     with pytest.raises(CalibrationSourceError) as ei:

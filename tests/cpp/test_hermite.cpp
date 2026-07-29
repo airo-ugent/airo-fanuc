@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 golden — cubic-Hermite resampling. Bit-agreement with the dries oracle
-// (`src/grocery_bot/robot/fanuc/interpolator.py::_cubic_hermite` +
-// `tests/test_waypoint_interp.py`), analytic-derivative correctness, speed_scale
-// halving, and the qd_end blend (R1 B3).
+// Unit test — cubic-Hermite resampling: bit-exact position evaluation against
+// pinned goldens, analytic-derivative correctness, speed_scale halving, and the
+// qd_end blend.
 //
-// The expected position hexfloats were emitted by running the VERBATIM Python
-// oracle (see the reference generator in the P3a session). Bit-exactness holds
-// because hermite.cpp is compiled -ffp-contract=off and reproduces the oracle's
-// op order; this TU is compiled the same way.
+// The expected positions below are hexfloat literals: they pin the EXACT double
+// this implementation produces rather than a rounded value, so any change in
+// floating-point operation order fails loudly instead of hiding under a
+// tolerance. That pin is only meaningful because hermite.cpp is compiled
+// -ffp-contract=off (the compiler may not fuse a multiply-add and change the
+// rounding); this TU is compiled the same way.
 
 #include <array>
 #include <cmath>
@@ -27,7 +28,7 @@ using airo_fanuc::tick_engine::Vec6;
 
 namespace {
 
-// --- CASE_A: rich, non-knot query (matches the reference generator) ---
+// --- CASE_A: rich, non-knot query — the pinned golden case ---
 constexpr std::int64_t kT0 = 0;
 constexpr std::int64_t kT1 = 100'000'000;  // 0.1 s
 constexpr std::int64_t kTq = 37'000'000;   // s = 0.37
@@ -36,7 +37,7 @@ const Vec6 kQd0{1.0, -1.0, 0.5, -0.5, 0.25, -0.25};
 const Vec6 kQ1{0.6, 0.3, -0.1, 0.2, -0.3, 0.4};
 const Vec6 kQd1{-0.5, 0.5, -1.0, 1.0, -0.25, 0.25};
 
-// Position at kTq, hexfloat from the Python oracle — EXACT.
+// Position at kTq as a pinned hexfloat golden — compared EXACTly.
 const Vec6 kQExpectedA{
     0x1.1843690b5c549p-2, -0x1.07601e4dc8e10p-4, 0x1.89a543f1c7582p-3,
     -0x1.d7b7c0cc0d8a6p-3, 0x1.088305029e400p-2, -0x1.2f8c436fc1590p-2,
@@ -44,16 +45,16 @@ const Vec6 kQExpectedA{
 
 }  // namespace
 
-// interpolator.py::_cubic_hermite → bit-for-bit position agreement.
+// Position evaluation is bit-for-bit reproducible against the pinned golden.
 TEST(Hermite, BitExactPositionCaseA) {
   const HermiteSample s = hermite_at_ns(kT0, kQ0, kQd0, kT1, kQ1, kQd1, kTq);
   for (int j = 0; j < kNumJoints; ++j) {
     EXPECT_EQ(s.q[static_cast<std::size_t>(j)], kQExpectedA[static_cast<std::size_t>(j)])
-        << "joint " << j << " position must match the Python oracle bit-for-bit";
+        << "joint " << j << " position must match the pinned golden bit-for-bit";
   }
 }
 
-// test_waypoint_interp::test_cubic_hermite_at_knots_is_exact — q at the knots.
+// q at the knots is exact: interpolation introduces no error at t0 / t1.
 TEST(Hermite, ExactAtKnots) {
   const HermiteSample at0 = hermite_at_ns(kT0, kQ0, kQd0, kT1, kQ1, kQd1, kT0);
   const HermiteSample at1 = hermite_at_ns(kT0, kQ0, kQd0, kT1, kQ1, kQd1, kT1);
@@ -67,7 +68,7 @@ TEST(Hermite, ExactAtKnots) {
   }
 }
 
-// test_waypoint_interp::test_cubic_hermite_midpoint_for_zero_velocity_knots.
+// Two zero-velocity knots: the midpoint sits exactly halfway between them.
 TEST(Hermite, ZeroVelocityMidpointIsHalf) {
   const Vec6 z{};
   const Vec6 one{1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
@@ -93,7 +94,8 @@ TEST(Hermite, AnalyticDerivativesMatchFiniteDifference) {
   }
 }
 
-// TrajectorySampler at speed_scale=1.0 reproduces the oracle (bit-exact q).
+// At speed_scale=1.0 the TrajectorySampler must agree bit-for-bit with a direct
+// hermite_at_ns evaluation: it adds knot lookup and time scaling, nothing else.
 TEST(TrajectorySampler, MatchesOracleAtUnitScale) {
   const std::array<std::int64_t, 2> times{kT0, kT1};
   const std::array<Vec6, 2> q{kQ0, kQ1};
@@ -124,7 +126,7 @@ TEST(TrajectorySampler, SpeedScaleHalvesVelocity) {
     const auto jj = static_cast<std::size_t>(j);
     // Same trajectory point → identical position (bit-exact).
     EXPECT_EQ(half.q[jj], full.q[jj]) << "position at scaled time, joint " << j;
-    EXPECT_EQ(half.q[jj], kQExpectedA[jj]) << "position bit-exact vs oracle, joint " << j;
+    EXPECT_EQ(half.q[jj], kQExpectedA[jj]) << "position bit-exact vs golden, joint " << j;
     // Velocity halved, acceleration quartered.
     EXPECT_DOUBLE_EQ(half.qd[jj], 0.5 * full.qd[jj]) << "velocity halved, joint " << j;
     EXPECT_DOUBLE_EQ(half.qdd[jj], 0.25 * full.qdd[jj]) << "accel quartered, joint " << j;
@@ -149,7 +151,7 @@ TEST(TrajectorySampler, HoldsBeforeStartAndAfterEnd) {
   }
 }
 
-// R1 B3 — qd_end blend: monotone velocity ramp to 0, no step, ≥ 25 ms.
+// qd_end blend: monotone velocity ramp to 0, no step at entry, ≥ 25 ms long.
 TEST(QdEndBlend, MonotoneRampToRest) {
   const Vec6 q_end{0.1, -0.2, 0.3, -0.4, 0.5, -0.6};
   const Vec6 qd_end{0.5, -0.4, 0.3, -0.2, 0.1, -0.05};  // wire terminal velocity

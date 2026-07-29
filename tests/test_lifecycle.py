@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Fast, controller-free unit tests for P4b's pure layers.
+"""Fast, controller-free unit tests for the driver's pure layers.
 
 Covers the lifecycle state-machine helpers (:mod:`airo_fanuc.lifecycle`), the
 single-sourced :class:`~airo_fanuc.config.DriverConfig` limits, and the CAPTURE
@@ -30,7 +30,9 @@ from airo_fanuc.lifecycle import (
 )
 
 # --------------------------------------------------------------------------- #
-# DriverConfig limits are single-sourced from controller_facts (PLAN §5.1).
+# DriverConfig limits are single-sourced from controller_facts: the kinematic
+# envelope lives in exactly one place, so a config default can never drift from
+# the datasheet/measured facts it is derived from.
 # --------------------------------------------------------------------------- #
 
 
@@ -55,7 +57,7 @@ def test_to_rt_core_config_maps_protocol_and_hygiene() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Lifecycle classification (design doc 08 §2).
+# Lifecycle classification: (core Mode, FaultReason) → LifecycleState.
 # --------------------------------------------------------------------------- #
 
 
@@ -118,7 +120,9 @@ def test_operator_hints() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# CAPTURE collision-check binding parity (PLAN §5.1 / capture.hpp).
+# CAPTURE collision-check binding parity: the Python binding must return exactly the
+# knots capture.hpp would splice in the RT loop, or a host-side collision check would
+# be validating a different path than the one the core actually executes.
 # --------------------------------------------------------------------------- #
 
 _ZERO6 = [0.0] * 6

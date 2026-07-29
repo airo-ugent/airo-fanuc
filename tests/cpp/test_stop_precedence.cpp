@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1/L2 — STOP precedence over a same-tick trajectory/servo (finding-1
-// root-cause fix). PLAN.md §5.2: stop_j is the universal preempt, ≤1 tick, and
-// ALWAYS wins. TickCore::tick handles a drained stop_j (step 2) BEFORE it
+// STOP precedence over a same-tick trajectory/servo. stop_j is the universal
+// preempt: it takes effect within ≤1 tick and ALWAYS wins. TickCore::tick handles a drained stop_j (step 2) BEFORE it
 // consumes the mailbox target (step 7); request_stop() does NOT bump the motion
 // epoch, so absent a guard a trajectory/servo that raced the stop into the SAME
 // 8 ms window (e.g. a direct FanucDriver caller: TrajectoryMonitor.stop_j() vs a
@@ -12,10 +11,11 @@
 // The fix is CAUSAL-ORDER, not "same tick": RealtimeCore stamps every submitted
 // Target with the caller-side stop generation and, at consume, flags a target
 // superseded when a stop_j was issued AFTER it was submitted. That distinguishes
-//   * finding-1  (submit → stop_j)  → superseded → REJECTED, the stop wins;
+//   * submit-then-stop (submit → stop_j) → superseded → REJECTED, the stop wins;
 //   * brake-then-submit (stop_j → submit) → NOT superseded → accepted, even from
 //     an already-steady pose where the (no-op) stop and the submit land in the
-//     SAME tick (the load-bearing shim contract).
+//     SAME tick — the contract a caller relies on when it defensively stops
+//     before every move.
 //
 // Tests 1/1b/2 drive TickCore directly (deterministic) to prove the consume
 // gate; tests 3/4 drive the full RealtimeCore over UDP loopback to prove the
@@ -387,7 +387,7 @@ bool poll_mode(RealtimeCore& core, Mode want, int timeout_ms) {
 
 }  // namespace
 
-// TEST 3 (finding-1, end-to-end): submit a trajectory, THEN immediately stop_j.
+// TEST 3 (submit-then-stop, end-to-end): submit a trajectory, THEN immediately stop_j.
 // The trajectory was stamped with the pre-stop generation, so the later stop_j
 // supersedes it — the robot must NOT run toward the target and the motion must
 // resolve terminally non-DONE (REJECTED if caught same-tick, STOPPED if it
@@ -406,7 +406,7 @@ TEST(StopPrecedence, LoopbackSubmitThenStopHoldsTheStop) {
   const std::vector<std::int64_t> times{0, 1'000'000'000};
   const std::uint64_t mid = core.submit_trajectory(times, j0_line(0.0, 0.4), j0_line(0.0, 0.0),
                                                     1.0, 0.0087, 0.035, 2.0, 0.0, 0.0);
-  core.stop_j();  // issued AFTER the submit → supersedes it (finding-1)
+  core.stop_j();  // issued AFTER the submit → supersedes it
   ASSERT_GT(mid, 0u);
 
   // The motion resolves terminally non-DONE; the robot never runs toward 0.4.
@@ -431,8 +431,9 @@ TEST(StopPrecedence, LoopbackSubmitThenStopHoldsTheStop) {
 
 // TEST 4 (brake-then-submit, end-to-end): stop_j, wait to steady HOLD, THEN
 // submit. The submit carries the post-stop generation → NOT superseded → it must
-// be accepted and RUN (q_cmd advances toward the target). This is the load-
-// bearing shim contract and guards against the fix over-rejecting.
+// be accepted and RUN (q_cmd advances toward the target). This is the contract a
+// defensively-stopping caller relies on, and it guards the supersede rule against
+// over-rejecting.
 TEST(StopPrecedence, LoopbackStopThenSubmitRuns) {
   LoopbackRig rig;
   RtCoreConfig cfg;

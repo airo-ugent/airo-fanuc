@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""airo_fanuc — FANUC CRX-10iA/L driver: C++17 real-time core + ur_rtde-shaped Python API.
+"""airo_fanuc — FANUC CRX-10iA/L driver: a C++17 real-time core behind a Python API.
 
-Plan of record: docs/reference/airo-fanuc/PLAN.md (FINAL PLAN v2).
+The public surface is split the conventional way for a robot client library: a
+*receive* half (state getters that never raise and never lie — every value comes
+with its age) and a *control* half (motion commands), with each motion available
+both blocking and non-blocking. :class:`FanucDriver` presents both halves on one
+construct-and-go object and reaches through to its parts (``driver.core``,
+``driver.rmi``, ``driver.gripper``).
 """
 
 from .config import DriverConfig, DriverPolicy, MotionResult, SettlePolicy

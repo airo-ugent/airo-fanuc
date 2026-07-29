@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 — epoch-at-CONSUME + the bump-event table (R2 F4). Each of the nine
+// Unit test — epoch-at-CONSUME + the bump-event table. Each of the nine
 // bump-causing scenarios is triggered in isolation and asserted to bump the core
 // epoch exactly once with the right BumpReason. A target tagged with a pre-bump
 // epoch is structurally unexecutable (rejected at consume).
@@ -199,7 +199,7 @@ TEST(Epoch, DeadmanKickPreventsTrip) {
   EXPECT_NE(tc.fault(), FaultReason::WATCHDOG_EXPIRED);
 }
 
-// SUPERVISOR_LOST (P-1 finalization): once the supervisor has beaten at least
+// SUPERVISOR_LOST: once the supervisor has beaten at least
 // once, a heartbeat lapse > supervisor_lost_s while streaming latches the fault
 // and drops to SAFE_FOLLOW (the core holds). Armed only after the first beat.
 TEST(Epoch, SupervisorLostBumps) {
@@ -244,7 +244,7 @@ TEST(Epoch, SupervisorHeartbeatPreventsTrip) {
   EXPECT_NE(tc.fault(), FaultReason::SUPERVISOR_LOST);
 }
 
-// DRIFT (P-1 finalization): sustained commanded↔measured divergence beyond
+// DRIFT: sustained commanded↔measured divergence beyond
 // drift_fault_deg for drift_fault_ticks → FAULTED(DRIFT) → SAFE_FOLLOW. In HOLD
 // the command stays at q0, so a measured pose far from q0 is pure divergence.
 TEST(Epoch, DriftFaultBumps) {

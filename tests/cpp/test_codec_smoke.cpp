@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// P0 gtest smoke suite for the vendored Stream Motion codec + our wrapper.
-// Byte layout ground truth: dries src/grocery_bot/robot/fanuc/packets.py.
+// Smoke suite for the vendored Stream Motion codec + our wrapper. The sizes and
+// byte offsets asserted here are pinned goldens of this implementation: the
+// controller reads fields by fixed offset, so a struct that silently grows or
+// reorders would put valid-looking garbage on the wire. Every sizeof and offset
+// below must therefore be treated as load-bearing, not as documentation.
 
 #include <array>
 #include <cstdint>
@@ -191,9 +194,9 @@ TEST(CodecDecode, RejectsWrongPacketType) {
 }
 
 // ---------------------------------------------------------------------------
-// Status-202 (legacy V3, 388 B, NO force block) decode — the packet the P-1
-// controller actually streams (proven by the E6 pcap). Same header as 204; force
-// fields must decode to 0 and fs_type to 0xFFFFFFFF (Unavailable).
+// Status-202 (legacy V3, 388 B, NO force block) decode — what a controller
+// streams when the negotiated Stream Motion version is 3. Same header as 204;
+// force fields must decode to 0 and fs_type to 0xFFFFFFFF (Unavailable).
 // ---------------------------------------------------------------------------
 namespace {
 

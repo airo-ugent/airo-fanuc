@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""P4b ``FanucDriver`` public-API tests against the REAL realtime ``FakeCRXController``.
+"""``FanucDriver`` public-API tests against the REAL realtime ``FakeCRXController``.
 
-Reuses the P3c realtime-rig pattern (``test_l2_scenarios.Rig``): the fake's
-wall-paced 125 Hz thread + RMI server + the C++ RT core, driven through the
-ur_rtde-shaped :class:`~airo_fanuc.driver.FanucDriver`. Construct-and-go bring-up,
-``move_trajectory`` → ``MotionHandle.wait``, the validation table, ``stop_j``
-during a blocking wait, the force-guard, the ARM gate, the CAPTURE hook, honest
-getters and poison-not-exit ``close()``.
+Reuses the realtime-rig pattern of the FakeCRX integration tests
+(``test_integration_scenarios.Rig``): the fake's wall-paced 125 Hz thread + RMI server + the
+C++ RT core, driven through :class:`~airo_fanuc.driver.FanucDriver` — whose API keeps
+the conventional manipulator-driver shape: a receive side (state getters) split from
+a control side (motion commands), each command available blocking or non-blocking.
+Construct-and-go bring-up, ``move_trajectory`` → ``MotionHandle.wait``, the
+validation table, ``stop_j`` during a blocking wait, the force-guard, the ARM gate,
+the CAPTURE hook, honest getters and poison-not-exit ``close()``.
 
 :class:`DriverRig` is shared with ``test_supervisor.py`` (imported from here).
 """
@@ -89,7 +91,7 @@ class DriverRig:
     def enable_force_path(self) -> None:
         """Poke the fake so its type-204 carries a VALID wrench (fs_type EMBEDDED).
 
-        P3b's StreamCore never sends an FSConfig, so the fake reports fs_type
+        StreamCore never sends an FSConfig, so the fake reports fs_type
         Unavailable and the force-guard is inert. This test-only poke flips the
         fake's ``_fsconfig_received`` so wrench_valid asserts in the core (the
         real controller does this after the v4 FSConfig handshake)."""
@@ -137,7 +139,9 @@ def test_construct_and_go_reaches_commandable(rig: DriverRig) -> None:
     assert st["motion_possible"] is True
     assert rig.driver.wait_until_steady(2.0)
     assert rig.driver.is_steady()
-    # Reach-through attrs (ur_rtde doctrine).
+    # Reach-through attrs: the driver owns its collaborators but exposes them rather
+    # than wrapping every call, so a caller can drive RMI / the core / the gripper
+    # directly without a second connection to the single-session controller.
     assert rig.driver.rmi is not None and rig.driver.core is not None and rig.driver.gripper is not None
 
 
@@ -234,7 +238,7 @@ def test_validation_table(rig: DriverRig) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# stop_j during a blocking wait() → STOPPED (R3 A1)
+# stop_j during a blocking wait() → STOPPED
 # --------------------------------------------------------------------------- #
 
 
@@ -256,13 +260,14 @@ def test_stop_j_never_raises_when_idle(rig: DriverRig) -> None:
 
 
 def test_force_stop_trips_to_stopped(tmp_path: Any) -> None:
-    # Force telemetry requires a v4 / type-204 controller (the default v3 fake now
-    # streams type-202 with NO force block, matching the P-1 hardware — see
-    # controller-notes.md §1.8). enable_force_path() pokes the fake's FSConfig so
-    # its type-204 carries a valid wrench. strict=False: the C++ command encoder
-    # pins version_no=3 (wiring it to sm_version is the deferred v4/P84 concern,
-    # codec.hpp), so a strict v4 fake would flag a benign command-version mismatch;
-    # that is orthogonal to the version-agnostic force-guard under test here.
+    # Force telemetry requires a v4 / type-204 controller (the default v3 fake
+    # streams type-202 with NO force block, matching the measured CRX behaviour — see
+    # docs/controller-notes.md §1.8). enable_force_path() pokes the fake's FSConfig so
+    # its type-204 carries a valid wrench. strict=False: the C++ command encoder pins
+    # version_no=3 (wiring it to sm_version is deferred until v4 is actually reachable
+    # on the controller, codec.hpp), so a strict v4 fake would flag a benign
+    # command-version mismatch; that is orthogonal to the version-agnostic
+    # force-guard under test here.
     rig = DriverRig(tmp_path, available_version=4, strict=False)
     try:
         rig.enable_force_path()
@@ -296,7 +301,9 @@ def test_force_stop_rejected_without_force_telemetry(rig: DriverRig) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# CAPTURE collision-check hook (decision 6 / R3 A2)
+# CAPTURE collision-check hook: the driver synthesizes the splice from the currently
+# commanded pose to the caller's first knot, so those knots are geometry the caller
+# never planned. The hook is its veto over that synthesized segment.
 # --------------------------------------------------------------------------- #
 
 
@@ -408,8 +415,9 @@ def test_get_state_merges_snapshot_and_lifecycle(rig: DriverRig) -> None:
 
 
 def test_get_wrench_none_on_v3_controller(rig: DriverRig) -> None:
-    # The real P-1 controller (v3 / type-202) has NO force block on the wire, so
-    # get_wrench() is always None (fs_type Unavailable). See controller-notes.md §1.8.
+    # The target CRX controller (v3 / type-202) has NO force block on the wire, so
+    # get_wrench() is always None (fs_type Unavailable). See
+    # docs/controller-notes.md §1.8.
     assert rig.driver.get_wrench() is None
 
 
@@ -417,7 +425,7 @@ def test_get_wrench_gated_on_fs_type(tmp_path: Any) -> None:
     # v4 / type-204 controller: before the FSConfig handshake fs_type is Unavailable
     # (wrench None); after enable_force_path() it becomes EMBEDDED and the wrench flows.
     # strict=False — see test_force_stop_trips_to_stopped (pinned command version_no=3
-    # vs a v4 fake is the deferred v4/P84 wiring, orthogonal to get_wrench gating).
+    # vs a v4 fake is the deferred v4 wiring, orthogonal to get_wrench gating).
     rig = DriverRig(tmp_path, available_version=4, strict=False)
     try:
         assert rig.driver.get_wrench() is None  # pre-FSConfig: fs_type Unavailable
@@ -450,7 +458,7 @@ def test_timing_stats_and_joints_at_wall(rig: DriverRig) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# close() — poison-not-exit (R2 F2)
+# close() — poison-not-exit
 # --------------------------------------------------------------------------- #
 
 
@@ -505,7 +513,7 @@ def test_context_manager(tmp_path: Any) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# ARM gate end-to-end (R2 F1) — the full e-stop → recover → arm cycle.
+# ARM gate end-to-end — the full e-stop → recover → arm cycle.
 # --------------------------------------------------------------------------- #
 
 
@@ -545,27 +553,28 @@ def test_arm_gate_end_to_end(rig: DriverRig) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# reconnect() — cold re-bring-up returns to commandable (regression: F5).
+# reconnect() — cold re-bring-up returns to commandable.
 # --------------------------------------------------------------------------- #
 
 
 def test_reconnect_returns_to_commandable(tmp_path: Any) -> None:
     """reconnect() must clear the supervisor stop-signal before the cold re-bring-up.
 
-    Regression: ``shutdown()`` sets ``_stop_evt`` and only ``start_watch()`` clears
-    it — but reconnect runs ``bringup()`` (which short-circuits its ``_wait_mode(HOLD)``
-    on the still-set event) BEFORE ``start_watch()``, so every retry raised
-    ``FanucConnectionError('core did not publish HOLD after preroll')``. reconnect()
-    must now succeed and return the driver to a commandable/steady state.
+    The trap: ``shutdown()`` sets ``_stop_evt`` and only ``start_watch()`` clears it —
+    but reconnect runs ``bringup()`` (which short-circuits its ``_wait_mode(HOLD)`` on
+    a set event) BEFORE ``start_watch()``, so without an explicit clear every retry
+    raises ``FanucConnectionError('core did not publish HOLD after preroll')``.
+    reconnect() must succeed and return the driver to a commandable/steady state.
 
     Runs under a STRICT FakeCRX via :class:`DriverRig` (its ``close()`` asserts zero
     wire-conformance violations), matching the other driver tests. The reconnect
     re-handshake's PLL phase re-lock compresses the first CommandPacket interval of
-    the restarted stream; the FakeCRX SM server now checks that single first interval
-    against a tight same-instant floor (so it no longer false-flags the transient as a
-    double-send) while still catching a genuine double-send. connect_retries=3: the
-    cold re-bring-up's Connect_STMO can briefly race the single-session teardown of the
-    just-dropped session (2556954) — unrelated to F5."""
+    the restarted stream; the FakeCRX SM server checks that single first interval
+    against a tight same-instant floor, so the transient is not mistaken for a
+    double-send while a genuine double-send is still caught. connect_retries=3: the
+    cold re-bring-up's Connect_STMO can briefly race the single-session teardown of
+    the just-dropped session (2556954), which is a transport race rather than the
+    stop-signal bug under test."""
     # connect_retries=3 (see above); DriverRig defaults to a strict FakeCRX.
     rig = DriverRig(tmp_path, policy_overrides={"connect_retries": 3})
     d = rig.driver
@@ -585,6 +594,6 @@ def test_reconnect_returns_to_commandable(tmp_path: Any) -> None:
 
 def test_gripper_registered_with_supervisor(rig: DriverRig) -> None:
     """The driver registers its gripper with the supervisor so the recovery ladder
-    can fail-fast-gate it (R2 F32)."""
+    can fail-fast-gate it."""
     assert rig.driver.gripper is not None
     assert rig.driver._supervisor._gripper is rig.driver.gripper  # noqa: SLF001

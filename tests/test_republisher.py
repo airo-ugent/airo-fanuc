@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for :class:`airo_fanuc.republisher.Republisher` (PLAN §5.4, D9, R3 C2/C3)."""
+"""Tests for :class:`airo_fanuc.republisher.Republisher`.
+
+Covers the published payload shapes, the never-publish-an-unknown-velocity-as-zeros
+rule, the staleness annotation, the exact toast triples, the payload size guard and
+the wall-clock joints accessor contract.
+"""
 
 from __future__ import annotations
 
@@ -86,7 +91,7 @@ def test_joint_states_payload_shape() -> None:
     assert payload["age_ms"] is not None
 
 
-def test_robot_status_payload_has_dries_and_lifecycle_keys() -> None:
+def test_robot_status_payload_has_status_and_lifecycle_keys() -> None:
     r, pub = _repub(_base_snapshot())
     r.publish_robot_status()
     (payload,) = pub.payloads(TOPIC_ROBOT_STATUS)
@@ -105,7 +110,7 @@ def test_robot_status_payload_has_dries_and_lifecycle_keys() -> None:
         "gen_override_pct",
         "speed_clamp_limit_pct",
     ):
-        assert key in payload, f"missing dries key {key}"
+        assert key in payload, f"missing status key {key}"
     for key in (
         "lifecycle_state",
         "fault_reason",
@@ -171,7 +176,8 @@ def test_no_publish_when_no_joint_measurement() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Staleness annotation (D13)
+# Staleness annotation: a stale sample is still published, but flagged — a consumer
+# must be able to tell "old reading" from "no reading".
 # ---------------------------------------------------------------------------
 
 
@@ -186,7 +192,8 @@ def test_stale_annotation() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Toast triples (R3 C3) — exact (kind, tag, status)
+# Toast triples — exact (kind, tag, status). Subscribers match on the literal triple,
+# so these identifiers are wire contract: a renamed tag silently stops a toast.
 # ---------------------------------------------------------------------------
 
 
@@ -225,7 +232,8 @@ def test_no_toast_without_edge() -> None:
 
 
 # ---------------------------------------------------------------------------
-# < 3072 B guard (B1 SHM-drop)
+# < 3072 B guard: the pub/sub transport silently drops samples at or above its
+# shared-memory slot size, so every payload must stay under MAX_PAYLOAD_BYTES.
 # ---------------------------------------------------------------------------
 
 
@@ -255,7 +263,8 @@ def test_oversized_payload_is_dropped_not_published() -> None:
 
 
 # ---------------------------------------------------------------------------
-# joints_at wall-clock accessor contract (R3 C2)
+# joints_at wall-clock accessor contract: the republisher never owns the joint ring,
+# so the lookup must be injected — and must raise, not guess, when it is not.
 # ---------------------------------------------------------------------------
 
 

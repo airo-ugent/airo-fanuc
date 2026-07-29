@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// airo_fanuc — end-of-motion settle detection (P3a). PLAN.md §5.1 SettlePolicy.
+// airo_fanuc — end-of-motion settle detection. The thresholds mirror
+// `airo_fanuc.controller_facts.SettlePolicy`.
 //
 // After a trajectory (post qd_end blend) or brake reaches its hold position,
 // declare the motion DONE when the MEASURED state has converged:

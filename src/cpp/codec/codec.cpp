@@ -22,17 +22,20 @@ inline bool host_is_little_endian() {
   return *reinterpret_cast<const std::uint8_t*>(&probe) == 0x1;
 }
 
-// Safety-critical dataStyle value for the CommandPacket `unused` u16 at offset
-// 14. Mirror of airo_fanuc.controller_facts.COMMAND_DATA_STYLE (0xFFFF = joint
-// angles). See codec.hpp for the incident rationale.
+// SAFETY-CRITICAL dataStyle value for the CommandPacket `unused` u16 at offset
+// 14. Mirror of airo_fanuc.controller_facts.COMMAND_DATA_STYLE. 0xFFFF selects
+// JOINT ANGLES; any other value (notably 0) makes the controller read command_pos
+// as a Cartesian XYZWPR pose and slew the arm at full speed toward the garbage
+// pose that implies. Never change this value. See codec.hpp for the full note.
 constexpr std::uint16_t kCommandDataStyle = 0xFFFF;
 
 // The vendored struct comment marks RobotStatusPacket as "// 204"; keep a named
 // constant here rather than a bare literal at the validation site.
 constexpr std::uint32_t kRobotStatusPacketType = 204;
 
-// The vendored V3RobotStatusPacket comment marks it as "// 202" (legacy, no
-// force block). This is what the P-1 controller streams at Stream Motion v3.
+// The vendored V3RobotStatusPacket comment marks it as "// 202" — the Stream
+// Motion v3 status packet, which carries no force block. This is what a
+// controller streams at v3.
 constexpr std::uint32_t kV3RobotStatusPacketType = 202;
 
 // fs_type sentinel meaning "no force sensor block on the wire" (matches the
@@ -60,7 +63,8 @@ std::array<std::uint8_t, kCommandPacketSize> encode_command_packet(std::uint32_t
   cp.sequence_no = stream_motion::swapBytesIfNeeded<std::uint32_t>(sequence_no, swap);
   cp.is_last_command = is_last_command ? 1u : 0u;
   cp.do_motn_ctrl = do_motn_ctrl;
-  // dataStyle (0xFFFF) — palindromic, but route through the swap for uniformity.
+  // dataStyle (0xFFFF = joint angles; MUST NOT be 0 — see kCommandDataStyle).
+  // Byte-order-independent as a value, but routed through the swap for uniformity.
   cp.unused = stream_motion::swapBytesIfNeeded<std::uint16_t>(kCommandDataStyle, swap);
   for (int i = 0; i < kMaxAxes; ++i) {
     cp.command_pos[static_cast<std::size_t>(i)] = stream_motion::swapBytesIfNeeded<double>(command_pos_deg[static_cast<std::size_t>(i)], swap);

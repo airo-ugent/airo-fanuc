@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Lifecycle-supervisor policy tests (PLAN.md §5.3) against the realtime FakeCRX.
+"""Lifecycle-supervisor policy tests against the realtime FakeCRX.
 
 The C++ core does the ≤8 ms mechanical gating/kill/SAFE_FOLLOW autonomously; these
 tests exercise the POLICY the :class:`~airo_fanuc.supervisor.Supervisor` layers on
 top: fault→lifecycle-state mapping, auto-recovery + TEACH→AUTO self-heal, the ARM
 gate, the SYST-348 OPERATOR_REQUIRED flow, preflight hard-blocks, ownership, and
-the SUPERVISOR_LOST / C++-autonomy invariant (F28/F29).
+the SUPERVISOR_LOST invariant (the core's safety reaction never depends on the
+Python supervisor being alive).
 
 Reuses :class:`test_driver.DriverRig` (pytest prepends the tests dir to sys.path).
 """
@@ -121,7 +122,8 @@ def test_system_fault_and_in_error_drives_faulted(tmp_path: Any) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# RECOVERING safety: recover() bails on a held e-stop (F8-F16).
+# RECOVERING safety: recover() bails on a held e-stop — an e-stop is a human decision,
+# so the ladder must not try to clear it out from under the operator.
 # --------------------------------------------------------------------------- #
 
 
@@ -173,7 +175,9 @@ def test_auto_recovery_of_transient_motion_possible_drop(tmp_path: Any) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# SYST-348 OPERATOR_REQUIRED flow (fault-matrix row 6).
+# SYST-348 OPERATOR_REQUIRED flow: FRC_Reset cannot clear a payload-monitor alarm —
+# only a payload confirm at the teach pendant can — so the ladder must stop retrying
+# and hand the fault to a human instead of looping.
 # --------------------------------------------------------------------------- #
 
 
@@ -213,17 +217,19 @@ def test_syst348_operator_required_then_arm(tmp_path: Any) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Gripper fail-fast gate during recovery (R2 F32).
+# Gripper fail-fast gate during recovery.
 # --------------------------------------------------------------------------- #
 
 
 def test_gripper_fail_fast_gated_during_recovery_ladder(tmp_path: Any) -> None:
-    """R2 F32: while a recovery ladder runs, a gripper command must fast-reject
-    (never actuate GRIPDISP mid-recovery — e.g. just after an e-stop release with the
-    operator's hands at the pendant) and must work again once recovery completes.
+    """While a recovery ladder runs, a gripper command must fast-reject (never actuate
+    GRIPDISP mid-recovery — e.g. just after an e-stop release with the operator's hands
+    at the pendant) and must work again once recovery completes.
 
-    Regression: ``GripperWorker.set_recovery`` was never called outside tests, so the
-    gate was inert and a ``close_gripper()`` during recovery would EXECUTE."""
+    The gate is only as good as its callers: if ``GripperWorker.set_recovery`` is not
+    invoked on the real ladder path the gate is inert and a ``close_gripper()`` during
+    recovery EXECUTES, which is why this drives the ladder end-to-end rather than
+    poking the flag."""
     from test_gripper_worker import FakeGripperRmi
 
     from airo_fanuc.gripper_worker import GripperWorker
@@ -297,7 +303,7 @@ def test_preflight_hard_block_raises(tmp_path: Any) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Ownership — second control instance fails loudly (decision 13).
+# Ownership — a second control instance fails loudly rather than sharing the arm.
 # --------------------------------------------------------------------------- #
 
 
@@ -322,17 +328,17 @@ def test_ownership_conflict_raises(tmp_path: Any) -> None:
 
 # --------------------------------------------------------------------------- #
 # GRPRUN anti-stacking: the GRIPDISP RUN-fork fires at most once per bringup()
-# across all retries (P-1 HIL 2026-07-07 — a RUN-forked task cannot be killed by
-# FRC_Reset/FRC_Abort, and _teardown_partial does not abort it, so a per-attempt
-# re-fork stacks un-killable GRIPDISP tasks that wedge STREAM_MOTN at
+# across all retries (measured on hardware 2026-07-07 — a RUN-forked task cannot be
+# killed by FRC_Reset/FRC_Abort, and _teardown_partial does not abort it, so a
+# per-attempt re-fork stacks un-killable GRIPDISP tasks that wedge STREAM_MOTN at
 # program_status=2 until a power-cycle).
 # --------------------------------------------------------------------------- #
 
 
 def test_grprun_fork_at_most_once_across_failed_retries(tmp_path: Any) -> None:
     """A gripper-enabled bring-up that fails every attempt must fork GRPRUN AT MOST
-    ONCE (not once per attempt). Regression: the pre-fix _bringup_once re-forked on
-    every retry, so a 3-attempt flaky bring-up stacked 3 un-killable GRIPDISP forks.
+    ONCE (not once per attempt). A _bringup_once that re-forks on every retry stacks one
+    un-killable GRIPDISP task per attempt, so a 3-attempt flaky bring-up leaves 3.
 
     We drive the supervisor directly (no FanucDriver) so we can construct a bring-up
     that reaches the GRPRUN fork (TP_LAUNCH) on every attempt but then fails at the
@@ -363,7 +369,7 @@ def test_grprun_fork_at_most_once_across_failed_retries(tmp_path: Any) -> None:
     try:
         with pytest.raises(FanucConnectionError):
             sup.bringup()
-        # 3 failed attempts, at-most-one fork. (Pre-fix: 3 forks — one per attempt.)
+        # 3 failed attempts, at-most-one fork (a per-attempt fork would give 3).
         assert controller.rmi.grprun_call_count == 1
     finally:
         sup.shutdown()
@@ -401,10 +407,10 @@ def test_gripper_bringup_skips_fork_when_gripdisp_already_running(tmp_path: Any)
     prior process's surviving RUN-fork), the bring-up's liveliness probe detects it
     (REG_CMD auto-clears) and does NOT fork a second GRPRUN.
 
-    Regression guard for the stacking wedge that repeated driver restarts (every
-    `grocery-up`) otherwise create: the per-process _grprun_forked latch cannot see
-    a fork inherited from another process, so without the probe each restart would
-    stack an un-killable GRIPDISP task until STREAM_MOTN wedges (program_status=2).
+    Guards the stacking wedge that repeated driver restarts otherwise create: the
+    per-process _grprun_forked latch cannot see a fork inherited from another process,
+    so without the probe each restart would stack an un-killable GRIPDISP task until
+    STREAM_MOTN wedges (program_status=2).
     """
     from airo_fanuc import DriverConfig, DriverPolicy
     from airo_fanuc._core import StreamCore
@@ -444,7 +450,7 @@ def test_gripper_bringup_skips_fork_when_gripdisp_already_running(tmp_path: Any)
 
 
 # --------------------------------------------------------------------------- #
-# SUPERVISOR_LOST invariant: the RT core is autonomous of the Python thread (F29).
+# SUPERVISOR_LOST invariant: the RT core is autonomous of the Python thread.
 # --------------------------------------------------------------------------- #
 
 
@@ -456,7 +462,7 @@ def test_supervisor_lost_core_stays_autonomous(tmp_path: Any) -> None:
         rig.driver._supervisor.shutdown()  # noqa: SLF001
 
         # The C++ core keeps its 125 Hz loop with NO Python supervision: it holds,
-        # and its autonomous gate still faults to SAFE_FOLLOW on an e-stop (F29) —
+        # and its autonomous gate still faults to SAFE_FOLLOW on an e-stop —
         # proving the safety reaction never depended on the Python thread.
         assert rig.driver.core.get_snapshot()["mode"] == int(Mode.HOLD)
         rig.controller.press_estop()

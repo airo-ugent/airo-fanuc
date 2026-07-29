@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Integration tests for :class:`airo_fanuc.rmi_client.RmiClient` (PLAN §P4a).
+"""Integration tests for :class:`airo_fanuc.rmi_client.RmiClient`.
 
-Drives the ported-and-restructured (F3+F5) RMI client against a *real socket*
-served by :class:`~airo_fanuc.testing.FakeCRXController`'s RMI emulator, covering
-every incident-derived behavior the ``dries`` client encodes plus the F3+F5
-structural split:
+Drives the RMI client against a *real socket* served by
+:class:`~airo_fanuc.testing.FakeCRXController`'s RMI emulator. The central
+structural property under test is the split between the **commands-only
+session** any caller may use (status polls, register reads/writes) and the
+**supervisor-only session lifecycle** (``FRC_Initialize`` / ``FRC_Abort``), which
+must never be reached from the transport's own recovery paths. Covered:
 
 * commands-only session (Connect_STMO → redirect hop → GetStatus / registers
   work pre-Initialize, and no FRC_Initialize is ever sent);
-* emitted request JSON byte-matches the P1a goldens;
+* emitted request JSON byte-matches the committed RMI wire goldens;
 * :class:`RmiError` carries the correct ErrorID + decoded text;
 * the Init recovery ladder (pass 1 GetStatus→Reset→GetStatus→Init; pass 2
   Abort→Reset→GetStatus→Init on 2556943) + SequenceID reseed, and a stale
@@ -54,7 +56,7 @@ def _client(c: FakeCRXController, **kwargs: Any) -> RmiClient:
 
 
 def _golden_wire(name: str) -> bytes:
-    """The exact on-wire bytes pinned by the P1a golden ``name``."""
+    """The exact on-wire bytes pinned by the RMI wire golden ``name``."""
     data = json.loads((_GOLDENS_DIR / f"{name}.json").read_text(encoding="utf-8"))
     return data["wire"].encode("ascii")
 
@@ -142,7 +144,7 @@ class _RecordingRmiClient(RmiClient):
 
 
 # ---------------------------------------------------------------------------
-# Session open + commands work pre-Initialize (F3+F5 commands-only session)
+# Session open + commands work pre-Initialize (the commands-only session)
 # ---------------------------------------------------------------------------
 
 
@@ -169,11 +171,11 @@ def test_commands_only_session_works_before_initialize() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Emitted request JSON byte-matches the P1a goldens
+# Emitted request JSON byte-matches the committed RMI wire goldens
 # ---------------------------------------------------------------------------
 
 
-def test_emitted_request_bytes_match_p1a_goldens() -> None:
+def test_emitted_request_bytes_match_wire_goldens() -> None:
     sink: list[bytes] = []
     with FakeCRXController() as c:
         rmi = _RecordingRmiClient(c.sm.host, c.rmi_port, sink=sink)
@@ -283,11 +285,12 @@ def test_async_system_fault_push_surfaces_via_poll() -> None:
 
 def test_rx_loop_survives_malformed_line_and_still_surfaces_push() -> None:
     """A malformed JSON line (json.JSONDecodeError) or a non-ASCII byte
-    (UnicodeDecodeError) — both ``ValueError`` subclasses — used to propagate out of
-    ``_read_one_json`` and KILL the sole daemon RX reader thread, silently disabling
-    async fault-push surfacing until an unrelated later request timed out. The reader
-    must skip the bad line, stay alive, and still surface a following
-    ``FRC_SystemFault`` push. Driven over a socketpair (no controller needed)."""
+    (UnicodeDecodeError) — both ``ValueError`` subclasses — must not escape
+    ``_read_one_json``. Letting one out kills the sole daemon RX reader thread, and
+    the failure is silent: async fault-push surfacing simply stops, and nothing
+    reports it until some unrelated later request times out. The reader must skip
+    the bad line, stay alive, and still surface a following ``FRC_SystemFault``
+    push. Driven over a socketpair (no controller needed)."""
     reader_end, controller_end = socket.socketpair()
     rmi = RmiClient("127.0.0.1", 16001)  # never .start()ed — we drive the RX loop directly
     rmi._sock = reader_end  # noqa: SLF001 - install the reader socket in isolation
@@ -296,7 +299,8 @@ def test_rx_loop_survives_malformed_line_and_still_surfaces_push() -> None:
         rx = rmi._rx_thread  # noqa: SLF001
         assert rx is not None and rx.is_alive()
 
-        # Malformed JSON, then a non-ASCII byte — both used to be fatal to the reader.
+        # Malformed JSON, then a non-ASCII byte — either one alone kills an
+        # unguarded reader thread.
         controller_end.sendall(b"{this is not valid json}\r\n")
         controller_end.sendall(b"\xff\xfe not ascii text\r\n")
 
@@ -340,8 +344,8 @@ def test_transport_auto_reopen_without_initialize() -> None:
             reopened = rmi.get_status()
             assert reopened.servo_ready is True
 
-            # Auto-reopen must NEVER issue Initialize or Abort (F3+F5): a
-            # worker's socket blip must not restart the session.
+            # Auto-reopen must NEVER issue Initialize or Abort: a socket blip in one
+            # caller must not restart the session or abort another caller's motion.
             assert "FRC_Initialize" not in seen
             assert "FRC_Abort" not in seen
             # Only GetStatus / Connect_STMO crossed the wire during recovery —

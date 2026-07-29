@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// PLL-clocked TX phase servo — see pll.hpp. Ported from spike/rt_loop.cpp.
+// PLL-clocked TX phase servo — see pll.hpp.
 
 #include "rt_core/pll.hpp"
 
@@ -20,6 +20,8 @@ std::int64_t Pll::next_tick(std::int64_t scheduled_tick_ns, bool have_fresh_rx, 
   if (have_fresh_rx) {
     // Phase error: how far the scheduled tick is AHEAD of (rx + lead). Pulling
     // the tick toward that target keeps TX phase-locked to the controller ITP.
+    // The clamp is what bounds the resulting tick spacing to tick_ns ± cap_ns, so
+    // two sends can never land in one window no matter what `err` comes out as.
     const std::int64_t err = scheduled_tick_ns - (last_rx_mono_ns + rx_lead_ns_);
     const std::int64_t corr = clamp_i64(static_cast<std::int64_t>(kp_ * static_cast<double>(err)), -cap_ns_, cap_ns_);
     last_correction_ns_ = corr;

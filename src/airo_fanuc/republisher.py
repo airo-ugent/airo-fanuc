@@ -1,32 +1,36 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Zenoh-free state republisher for the driver-hosting process (PLAN §5.4, D9).
+"""Zenoh-free state republisher for the driver-hosting process.
 
-Re-publishes the driver's live state onto the surviving Zenoh topics that
-independent consumers (cockpit, perception capture, rrd recorder,
-scene_perception) still read after the ROS2/bridge removal:
+Re-publishes the driver's live state as telemetry on a set of fixed Zenoh
+topics, so independent consumers (an operator UI, a perception capture stage, a
+recorder) can observe the robot without holding a handle on the driver:
 
 * ``fanuc/joint_states``  100 Hz — ``positions_deg`` / ``velocities_deg_s`` +
   ``t_meas_ns`` / ``age_ms`` / ``stale`` / ``source``.
-* ``fanuc/robot_status``  10 Hz — every ``dries`` status key +
+* ``fanuc/robot_status``  10 Hz — the controller safety/status keys +
   ``lifecycle_state`` / ``fault_reason`` / ``operator_hint`` / ``command_epoch``
   / ``owner`` / ``tick_p99_ms``.
 * ``fanuc/external_force`` 50 Hz — force/moment/magnitude + ``age_ms``.
 * ``fanuc/ext_status``     1 Hz — override / speed-clamp / control-mode.
-* ``grocery/log/event`` — typed toast events, preserving the EXACT pinned
-  triples (R3 C3): ``("SYSTEM","BRIDGE:MOTION_POSSIBLE","FAIL")`` and
-  ``("SYSTEM","BRIDGE:FAULT", None)`` (matched on ``(kind, tag, status)``,
-  ``tag = "{system}:{feature}"``).
+* :data:`TOPIC_LOG_EVENT` — typed toast events. A consumer's toast whitelist
+  matches on the exact ``(kind, tag, status)`` triple, so the two triples this
+  module emits are a pinned contract, not a formatting choice:
+  ``("SYSTEM","BRIDGE:MOTION_POSSIBLE","FAIL")`` and
+  ``("SYSTEM","BRIDGE:FAULT", None)`` (``tag = "{system}:{feature}"``).
 
-**No zenoh import (D14 wheel purity).** The concrete sink is injected as a
-:class:`Publisher` (duck-typed to a ``zenoh.Session``: ``declare_publisher(key)``
-→ handle with ``put(payload)``), wired at grocery integration (P5). Tests inject
+**No zenoh import.** The package's only runtime dependency is numpy, so the
+concrete sink is injected as a :class:`Publisher` (duck-typed to a
+``zenoh.Session``: ``declare_publisher(key)`` → handle with ``put(payload)``).
+The hosting application supplies the real session; tests inject
 :class:`FakePublisher`.
 
 Snapshot contract
 -----------------
-The driver (P4b) passes a ``snapshot() -> dict`` callable returning the current
-state. All keys are optional and None-safe (missing/None ⇒ annotated, never
-suppressed — D13 "publish-always, annotate"):
+The driver passes a ``snapshot() -> dict`` callable returning the current state.
+All keys are optional and None-safe, and the republisher is **publish-always,
+annotate**: a missing or None value is published as an explicit annotation
+rather than suppressed, so a consumer can always tell "no data" from "stale
+data" and never has to infer either from silence.
 
     q_meas_deg, qd_meas_deg (None ⇒ velocity_valid=False, NEVER zeros),
     joint_names, t_meas_ns, source,
@@ -38,9 +42,11 @@ suppressed — D13 "publish-always, annotate"):
     wrench = {"force":[x,y,z], "moment":[x,y,z], "magnitude_n":float} | None,
     control_mode, in_motion, drives_powered.
 
-Every republished payload serializes to < 3072 B (B1 SHM-drop guard); a unit
-test asserts it. ``joints_at_wall`` is the Python-side accessor contract for the
-C++-owned (mono_ns, wall_ns) ring — see :meth:`joints_at_wall`.
+Every republished payload serializes to < 3072 B: zenoh silently drops samples
+above its shared-memory threshold, so an oversized payload would vanish without
+an error. A unit test asserts the bound. ``joints_at_wall`` is the Python-side
+accessor contract for the C++-owned (mono_ns, wall_ns) ring — see
+:meth:`joints_at_wall`.
 """
 
 from __future__ import annotations
@@ -60,7 +66,7 @@ TOPIC_JOINT_STATES = "fanuc/joint_states"
 TOPIC_ROBOT_STATUS = "fanuc/robot_status"
 TOPIC_EXTERNAL_FORCE = "fanuc/external_force"
 TOPIC_EXT_STATUS = "fanuc/ext_status"
-TOPIC_LOG_EVENT = "grocery/log/event"
+TOPIC_LOG_EVENT = "fanuc/log/event"
 
 # -- Rates (Hz) --------------------------------------------------------------
 JOINT_STATES_HZ = 100.0
@@ -68,14 +74,17 @@ ROBOT_STATUS_HZ = 10.0
 EXTERNAL_FORCE_HZ = 50.0
 EXT_STATUS_HZ = 1.0
 
-#: Staleness annotation threshold (D13): age > this ⇒ ``stale=True`` (never suppressed).
+#: Staleness annotation threshold: age > this ⇒ ``stale=True``. The sample is
+#: still published — annotated, never suppressed.
 STALE_MS = 200.0
 
-#: B1 SHM-drop guard: zenoh drops samples above the SHM threshold, so every
-#: republished payload must stay under it.
+#: Payload ceiling: zenoh silently drops samples above its shared-memory
+#: threshold, so every republished payload must stay under it.
 MAX_PAYLOAD_BYTES = 3072
 
-# -- Pinned toast triple identifiers (R3 C3). tag = "{system}:{feature}". -----
+# -- Pinned toast triple identifiers -----------------------------------------
+# A consumer's toast whitelist matches on the exact (kind, tag, status) triple,
+# so these strings cannot be reworded without breaking it. tag = "{system}:{feature}".
 EVENT_KIND_SYSTEM = "SYSTEM"
 TAG_BRIDGE_MOTION_POSSIBLE = "BRIDGE:MOTION_POSSIBLE"
 TAG_BRIDGE_FAULT = "BRIDGE:FAULT"
@@ -93,9 +102,10 @@ class Publisher(Protocol):
     """A zenoh-session-shaped sink (duck-typed to ``zenoh.Session``).
 
     The republisher calls :meth:`declare_publisher` once per topic at
-    :meth:`Republisher.start` and reuses the returned handle — exactly how
-    ``dries`` used ``session.declare_publisher(topic)`` then ``pub.put(bytes)``.
-    P5 passes the real ``zenoh.Session``; tests pass :class:`FakePublisher`.
+    :meth:`Republisher.start` and reuses the returned handle for every
+    subsequent ``put(bytes)`` — re-declaring per sample would repeat the
+    session-side setup at up to 100 Hz. The hosting application passes the real
+    ``zenoh.Session``; tests pass :class:`FakePublisher`.
     """
 
     def declare_publisher(self, topic: str) -> PublisherHandle: ...
@@ -244,7 +254,7 @@ class Republisher:
         snap = self._snapshot()
         t_meas_ns = snap.get("t_meas_ns")
         payload: dict[str, Any] = {
-            # dries keys
+            # Controller safety / status keys
             "e_stopped": bool(snap.get("e_stopped", False)),
             "in_error": bool(snap.get("in_error", False)),
             "tp_enabled": bool(snap.get("tp_enabled", False)),
@@ -258,7 +268,7 @@ class Republisher:
             "system_fault_event_id": int(snap.get("system_fault_event_id", 0)),
             "gen_override_pct": _opt_int(snap.get("gen_override_pct")),
             "speed_clamp_limit_pct": _opt_float(snap.get("speed_clamp_limit_pct")),
-            # new lifecycle keys
+            # Driver lifecycle keys
             "lifecycle_state": snap.get("lifecycle_state"),
             "fault_reason": snap.get("fault_reason"),
             "operator_hint": snap.get("operator_hint"),
@@ -274,7 +284,7 @@ class Republisher:
         snap = self._snapshot()
         wrench = snap.get("wrench")
         if wrench is None:
-            return  # fs_type unavailable — no force to publish (dries skip)
+            return  # fs_type unavailable — there is no wrench to publish
         force = list(wrench.get("force", (0.0, 0.0, 0.0)))
         moment = list(wrench.get("moment", (0.0, 0.0, 0.0)))
         mag = wrench.get("magnitude_n")
@@ -299,7 +309,7 @@ class Republisher:
         self._put(TOPIC_EXT_STATUS, payload)
 
     # ------------------------------------------------------------------
-    # Toast events (grocery/log/event) — exact pinned triples (R3 C3)
+    # Toast events (TOPIC_LOG_EVENT) — exact pinned triples
     # ------------------------------------------------------------------
 
     def _emit_status_toasts(self, snap: dict[str, Any]) -> None:
@@ -343,12 +353,14 @@ class Republisher:
         )
 
     def emit_event(self, kind: str, tag: str, status: str, specifics: str = "") -> None:
-        """Publish one structured event on ``grocery/log/event``.
+        """Publish one structured event on :data:`TOPIC_LOG_EVENT`.
 
-        The payload mirrors ``grocery_bot.events.LogEvent.to_dict`` (``kind`` /
-        ``tag`` / ``status`` / ``specifics`` + timestamps) so the cockpit toast
-        whitelist matches on the exact ``(kind, tag, status)`` triple — but the
-        shape is reproduced here without importing grocery (D14).
+        The payload carries ``kind`` / ``tag`` / ``status`` / ``specifics`` plus
+        the three timestamp forms (ns, ms, ISO-8601) consumers index on. A
+        consumer's toast whitelist matches on the exact ``(kind, tag, status)``
+        triple, so this shape and the triple constants above are part of the
+        published contract. The shape is reproduced here rather than imported so
+        the package carries no dependency on any consumer.
         """
         ts_ns = int(self._now_ns())
         payload = {
@@ -363,26 +375,26 @@ class Republisher:
         self._put(TOPIC_LOG_EVENT, payload)
 
     # ------------------------------------------------------------------
-    # joints_at wall-clock accessor contract (R3 C2)
+    # joints_at wall-clock accessor contract
     # ------------------------------------------------------------------
 
     def joints_at_wall(self, t_wall_ns: int) -> Any:
-        """Joint configuration at a CAMERA-GRAB WALL timestamp (R3 C2).
+        """Joint configuration at a CAMERA-GRAB WALL timestamp.
 
         The C++ core owns the ``(mono_ns, wall_ns)`` ring (wall captured off the
         RT thread at packet ingest); this is the Python-side accessor contract
         for it. Consumers pass a camera grab-shutter wall stamp
         (``time.time_ns()`` domain) — the FK-at-shutter contract that guards the
         phantom-voxel class — and the driver interpolates on the paired mono
-        stamps. The C++ ``(mono_ns, wall_ns)`` ring IS implemented
-        (``StreamCore.joints_at_wall``) and the driver wires the callable at
-        construction; :class:`NotImplementedError` fires only when a
-        :class:`Republisher` is built without it (e.g. a bare unit test).
+        stamps. ``StreamCore.joints_at_wall`` implements the ring and the driver
+        wires the callable in at construction; :class:`NotImplementedError` fires
+        only when a :class:`Republisher` is built without it (e.g. a bare unit
+        test).
         """
         if self._joints_at_wall_fn is None:
             raise NotImplementedError(
                 "joints_at_wall requires the driver's (mono_ns, wall_ns) ring "
-                "accessor (C++ core, wired at P4b/P5)"
+                "accessor (C++ core, wired by the driver at construction)"
             )
         return self._joints_at_wall_fn(int(t_wall_ns))
 
@@ -393,7 +405,8 @@ class Republisher:
     def _put(self, topic: str, payload: dict[str, Any]) -> None:
         data = _encode(payload)
         if len(data) >= MAX_PAYLOAD_BYTES:
-            # B1: a payload at/over the SHM threshold would be silently dropped.
+            # A payload at/over the SHM threshold would be dropped by zenoh with
+            # no error, so drop it here loudly instead.
             logger.error(
                 "republisher: %s payload is %d B (>= %d B SHM guard) — dropping",
                 topic,

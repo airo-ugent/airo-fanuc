@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 — TickCore basics + the zero-allocation-on-the-hot-path proof (PLAN.md
-// §5.2). A global operator-new hook counts EVERY heap allocation; the pure tick
+// Unit test — TickCore basics + the zero-allocation-on-the-hot-path proof. A
+// global operator-new hook counts EVERY heap allocation; the pure tick
 // path (HOLD and TRAJECTORY playback) must add ZERO after warmup.
 
 #include <array>

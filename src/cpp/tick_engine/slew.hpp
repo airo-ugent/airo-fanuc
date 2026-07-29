@@ -1,20 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// airo_fanuc — per-tick position slew clip (P3a). PLAN.md §5.2; dries B15.
+// airo_fanuc — per-tick position slew clip.
 //
 // Last-line defense against swap/merge discontinuities the CRX DCS reads as
 // disturbance torque: clip |Δq| ≤ SLEW_FACTOR·v_lim·ITP_S per joint, IN PLACE,
 // count the clips, and raise a diagnostic "sustained-clip" bit. This NEVER
-// FAULTS — it is a clamp, not a gate (P3b decides what to do with the counters).
+// FAULTS — it is a clamp, not a gate (the tick core decides what to do with the
+// counters).
 //
-// ┌─────────────────────────────────────────────────────────────────────────┐
-// │ ACCEL-CAP IS BANNED. This limiter clips ONLY the per-tick POSITION delta. │
-// │ It holds NO velocity/acceleration state and NEVER caps Δ(derived          │
-// │ velocity)/dt. The reverted accel-cap anti-pattern (Δv/dt cap on derived   │
-// │ velocity) caused a runaway 22° drift into the DCS envelope (2026-05-16,   │
-// │ dries B15). Do NOT add velocity/accel members here. `test_slew` asserts   │
-// │ the clip is a pure function of (prev_q, q_desired) — history-independent. │
-// └─────────────────────────────────────────────────────────────────────────┘
+// ┌───────────────────────────────────────────────────────────────────────────┐
+// │ ACCEL-CAP IS BANNED — this is a safety constraint, not a style choice.    │
+// │                                                                           │
+// │ This limiter clips ONLY the per-tick POSITION delta. It holds NO velocity │
+// │ or acceleration state and NEVER caps Δ(derived velocity)/dt.              │
+// │                                                                           │
+// │ Why: an accel cap has to differentiate the command and carry velocity     │
+// │ state, so the emitted position becomes a function of the limiter's own    │
+// │ integrated velocity instead of the desired position. Once it starts       │
+// │ clipping, the output no longer tracks the input — it keeps generating     │
+// │ motion of its own and the error accumulates every tick. That is a         │
+// │ runaway, and it happened: a Δv/dt cap on derived velocity drove a 22°     │
+// │ drift off the commanded path and into the DCS envelope (2026-05-16).      │
+// │                                                                           │
+// │ A stateless position clip cannot do this: the output is at most one       │
+// │ max-step away from the last command, so the error is bounded by           │
+// │ construction and vanishes as soon as the input comes back in range.       │
+// │ Do NOT add velocity/accel members here. `test_slew` asserts the clip is a │
+// │ pure function of (prev_q, q_desired) — history-independent.               │
+// └───────────────────────────────────────────────────────────────────────────┘
 
 #pragma once
 

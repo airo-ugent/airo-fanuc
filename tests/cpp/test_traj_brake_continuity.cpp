@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 — brake qdd-seed continuity ACROSS THE ACTUAL TickCore TRAJECTORY→BRAKE
-// transition (R1 C1). test_brake proves the brake PRIMITIVE is accel-continuous
-// when seeded with an analytic qdd; this proves the CORE actually wires the live
+// Brake qdd-seed continuity ACROSS THE ACTUAL TickCore TRAJECTORY→BRAKE
+// transition. test_brake proves the brake PRIMITIVE is accel-continuous when
+// seeded with an analytic qdd; this proves the CORE actually wires the live
 // analytic acceleration (`qdd_cmd_` from the Hermite sampler) into that seed at a
-// real mid-segment stop_j — i.e. a regression that seeds qdd=0 in begin_brake
-// (the old dries behaviour that latched the CRX contact-stop) would be caught
-// here even though the primitive test stays green.
+// real mid-segment stop_j. Without this test a regression that seeds qdd=0 in
+// begin_brake would leave the primitive test green while every real stop_j put an
+// acceleration step on the wire — which the CRX collaborative-stop monitor reads
+// as a collision and latches a contact stop on.
 //
 // Observable: TickCore exposes qd_cmd() only, so acceleration is recovered as the
 // per-tick finite difference of the commanded velocity. Continuity = the accel
@@ -103,8 +104,8 @@ TEST(TrajBrakeContinuity, AccelContinuousAcrossMidSegmentStopJ) {
   const double qd_brake0 = tc.qd_cmd()[0];
   const double accel_brake0 = (qd_brake0 - qd_last) / itp;
 
-  // R1 C1 — acceleration is CONTINUOUS across the splice: the first brake accel
-  // is within a few jerk-limited steps of the trajectory accel it seeded from.
+  // Acceleration is CONTINUOUS across the splice: the first brake accel is within
+  // a few jerk-limited steps of the trajectory accel it seeded from.
   const double j_env0 = cfg.tick.stop_scale_j * cfg.tick.limits.j[0];
   const double jerk_step = j_env0 * itp;  // ~0.04 rad/s²
   const double accel_step = std::abs(accel_brake0 - accel_traj_last);
@@ -141,7 +142,7 @@ namespace {
 // commanded accel (finite diff of qd_cmd) on the last pre-brake tick; the core
 // is left with `qd_cmd()==qd_last` and its qdd_cmd_ analytic seed. Issues stop_j,
 // steps ONE tick (the first BRAKE command) and asserts the first brake accel is
-// continuous with `accel_pre` — the R1 C1 invariant a qdd=0 seed would violate.
+// continuous with `accel_pre` — the invariant a qdd=0 seed would violate.
 void assert_brake_seed_continuous(TickCore& tc, double itp, double accel_pre, double qd_last,
                                   const char* what) {
   // Precondition: the pre-brake accel is meaningfully non-zero, so "no step" is a
@@ -159,8 +160,8 @@ void assert_brake_seed_continuous(TickCore& tc, double itp, double accel_pre, do
   const double j_env0 = cfg.tick.stop_scale_j * cfg.tick.limits.j[0];
   const double jerk_step = j_env0 * itp;
   const double accel_step = std::abs(accel_brake0 - accel_pre);
-  // R1 C1: continuous within a few jerk-limited steps AND a small FRACTION of the
-  // accel magnitude (an unseeded qdd=0 begin_brake would step the full decel in).
+  // Continuous within a few jerk-limited steps AND a small FRACTION of the accel
+  // magnitude (an unseeded qdd=0 begin_brake would step the full decel in).
   EXPECT_LE(accel_step, 4.0 * jerk_step)
       << what << ": accel step across the splice within jerk-limited continuity "
       << "(seed=" << accel_pre << " brake0=" << accel_brake0 << ")";
@@ -183,9 +184,10 @@ void assert_brake_seed_continuous(TickCore& tc, double itp, double accel_pre, do
 
 }  // namespace
 
-// R1 C1 — braking OUT OF CAPTURE must seed the analytic capture acceleration, not
-// 0. Regression: begin_brake used qdd_cmd_==Vec6{} out of CAPTURE (capture.qdd was
-// not stored), stepping the full capture-class decel into the brake in one tick.
+// Braking OUT OF CAPTURE must seed the analytic capture acceleration, not 0. The
+// failure mode this guards: if capture.qdd is not stored, begin_brake reads
+// qdd_cmd_==Vec6{} out of CAPTURE and steps the full capture-class decel into the
+// brake in a single tick.
 TEST(TrajBrakeContinuity, AccelContinuousAcrossCaptureStopJ) {
   RtCoreConfig cfg;
   const double itp = cfg.tick.itp_s;
@@ -237,9 +239,9 @@ TEST(TrajBrakeContinuity, AccelContinuousAcrossCaptureStopJ) {
   assert_brake_seed_continuous(tc, itp, accel_pre, qd_last, "CAPTURE→BRAKE");
 }
 
-// R1 C1 — braking OUT OF the qd_end BLEND must seed the blend's analytic accel
-// (constant −qd_end/T), not 0. Regression: begin_brake used qdd_cmd_==Vec6{} in
-// kEndBlend, stepping the blend decel into the brake.
+// Braking OUT OF the qd_end BLEND must seed the blend's analytic accel (constant
+// −qd_end/T), not 0. The failure mode this guards: begin_brake reading
+// qdd_cmd_==Vec6{} while in kEndBlend, stepping the blend decel into the brake.
 TEST(TrajBrakeContinuity, AccelContinuousAcrossEndBlendStopJ) {
   RtCoreConfig cfg;
   const double itp = cfg.tick.itp_s;

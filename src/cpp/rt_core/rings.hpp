@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// airo_fanuc — lock-free rings for the RT core (P3b). PLAN.md §5.2.
+// airo_fanuc — lock-free rings for the RT core.
 //
 // The RT tick path must never allocate, free, or take a blocking lock. These
 // fixed-capacity, pre-allocated rings carry data across the RT ↔ Python boundary
@@ -12,7 +12,8 @@
 //     Multiple Python producers are serialised by RealtimeCore's submit mutex
 //     (OFF the RT path), so the RT side sees a single producer.
 //   * JointsAtRing           — RT writer, many readers; per-slot seqlock so a
-//     reader never observes a torn (mono, q) pair (camera FK-at-shutter, R3 C2).
+//     reader never observes a torn (mono, q) pair (camera FK-at-shutter: a torn
+//     pair would place the tool at a pose it never held at that timestamp).
 
 #pragma once
 
@@ -77,7 +78,8 @@ class SpscRing {
 // RX ingest. Readers look up the entry nearest a queried monotonic timestamp
 // (camera↔FK sync). Each slot carries a per-slot seqlock so a reader never
 // observes a mono paired with a different tick's q. `wall_ns` conversion is done
-// by the caller (RealtimeCore holds an off-RT-sampled mono↔wall offset — R3 C2).
+// by the caller (RealtimeCore samples the mono↔wall offset off-RT, so the RT
+// thread never has to read a second clock).
 // ---------------------------------------------------------------------------
 class JointsAtRing {
  public:

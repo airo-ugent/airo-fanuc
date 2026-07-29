@@ -1,27 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
 """First-order-lag joint plant + deviation watchdog for the FakeCRXController.
 
-This is the **behavior-model** half of the executable spec (PLAN.md §8 "L2
-(FakeCRX): behavior-model spec is normative"; R4 disposition contract (c)
-"FakeCRX plant model"). Given a stream of commanded joint angles at the
-controller ITP (8 ms), it produces the *measured* joint angles the controller
-would report back in its status packet (type-202 at the default v3; type-204 at
-v4) — modeling the servo tracking lag that our drift guard, capture math, and
-HIL lag-measurement all depend on.
+This is the **behavior-model** half of the executable spec: where this model and
+a test disagree, the model is normative, because it is what the driver is
+specified against. Given a stream of commanded joint angles at the controller ITP
+(8 ms), it produces the *measured* joint angles the controller would report back
+in its status packet (type-202 at the default v3; type-204 at v4) — modeling the
+servo tracking lag that the drift guard, the capture math, and the on-hardware
+lag measurement all depend on.
 
-Three modeled effects, each traceable to a P-1 probe fact:
+Three modeled effects, each pinned to a value measured on the physical
+controller:
 
 * **First-order servo lag** — ``q_meas`` relaxes toward ``q_cmd`` with time
-  constant ``tau_s`` (INTERIM_FACTS.tracking_lag_s = 0.025 s, MEASURED P-1 E9;
-  was 0.107 s interim).
+  constant ``tau_s`` (measured servo lag: 25 ms, held in
+  ``INTERIM_FACTS.tracking_lag_s``).
 * **Deviation watchdog** — a commanded per-tick position *step* larger than
-  ``deviation_watchdog_deg`` (INTERIM_FACTS.deviation_watchdog_deg = 5.0 deg,
-  MEASURED P-1 E6: worst overrun 4.63° @ 49.9°/s → 5.0° well-supported) trips a
-  controller fault. This emulates the CRX deviation watchdog that our per-tick
+  ``deviation_watchdog_deg`` (``INTERIM_FACTS.deviation_watchdog_deg`` = 5.0 deg;
+  worst measured overrun was 4.63° at 49.9°/s, so 5.0° is well-supported) trips a
+  controller fault. This emulates the CRX deviation watchdog that the per-tick
   slew clip + C1-continuity exist to avoid; a smooth ramp (small per-tick delta)
   never trips it, an un-ramped step does.
 * **TX-silence backstop** — with no fresh command, the controller does NOT
-  fast-decel (MEASURED P-1 E6: NO-GO — ``tx_silence_backstop_ok=False``). It
+  fast-decel (measured: ``INTERIM_FACTS.tx_silence_backstop_ok`` is False). It
   coasts at the last commanded velocity ~120 ms then hard-stops on the deviation
   watchdog. The knob defaults to the measured (coast) case; set it True only to
   model a hypothetical fast-backstop controller.
@@ -121,14 +122,14 @@ class JointPlant:
         initial_q_deg: np.ndarray | list[float] | None = None,
     ) -> None:
         # τ — servo tracking lag; reads INTERIM_FACTS.tracking_lag_s
-        # (MEASURED P-1 E9 = 0.025 s).
+        # (measured servo lag: 25 ms).
         self.tau_s: float = float(tau_s if tau_s is not None else INTERIM_FACTS.tracking_lag_s)
         if self.tau_s <= 0.0:
             raise ValueError(f"tau_s must be > 0 (got {self.tau_s})")
 
         # Deviation-watchdog per-tick step threshold; reads
-        # INTERIM_FACTS.deviation_watchdog_deg (MEASURED P-1 E6 = 5.0°, worst
-        # overrun 4.63° @ 49.9°/s). Modeled as a per-tick step bound.
+        # INTERIM_FACTS.deviation_watchdog_deg (5.0°; worst measured overrun
+        # 4.63° at 49.9°/s). Modeled as a per-tick step bound.
         self.deviation_watchdog_deg: float = float(
             deviation_watchdog_deg
             if deviation_watchdog_deg is not None
@@ -204,7 +205,7 @@ class JointPlant:
     def silence_step(self, dt: float, *, backstop_ok: bool) -> None:
         """Integrate one tick with NO fresh command (TX-silence).
 
-        ``backstop_ok=False`` is the E6-MEASURED (NO-GO) behavior and the default:
+        ``backstop_ok=False`` is the measured controller behavior and the default:
         no active backstop — the plant keeps tracking the last command with the
         servo lag (the controller coasts, does not fast-decel). ``backstop_ok=True``
         models a hypothetical fast-backstop controller that decelerates ``qd``

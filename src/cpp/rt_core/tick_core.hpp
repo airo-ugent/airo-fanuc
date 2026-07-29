@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// airo_fanuc — TickCore: the PURE, I/O-free 125 Hz motion tick (P3b).
-// PLAN.md §5.2 + design doc 07 §3. NO threads, sockets, clocks, or heap.
+// airo_fanuc — TickCore: the PURE, I/O-free 125 Hz motion tick.
+// NO threads, sockets, clocks, or heap.
 //
 // This is where ALL safety logic lives so it is unit-testable in plain C++ by
 // feeding hand-crafted RX samples and asserting the emitted command + events +
@@ -82,12 +82,12 @@ class TickCore {
   // `rx`      : freshest RX this window, or nullptr (RX-silence tick).
   // `pending` : the latest target drained from the mailbox this window, or
   //             nullptr. Consumed AFTER gate/fault processing so a target that
-  //             raced a fault (tagged the pre-bump epoch) is rejected (R2 F4).
+  //             raced a fault (tagged the pre-bump epoch) is rejected.
   // `consume_superseded` : true iff `pending` was superseded by a stop_j issued
   //             AFTER it was submitted (caller-causal stop-generation check;
   //             RealtimeCore computes it). A superseded TRAJECTORY/SERVO does NOT
-  //             activate — the stop wins (finding-1). Defaults false so pure
-  //             TickCore tests keep the pre-guard semantics unless they opt in.
+  //             activate — the stop wins. Defaults false so tests that do not
+  //             exercise stop precedence need not thread the flag through.
   Command tick(const RxSample* rx, const Target* pending, bool consume_superseded = false);
 
   // ---- control ops (RT-thread; RealtimeCore forwards its cross-thread atomics
@@ -109,7 +109,7 @@ class TickCore {
   MotionStatus active_motion_status() const { return active_status_; }
   std::uint64_t total_slew_clips() const { return slew_.total_clips(); }
 
-  // ---- epoch bump-event table (R2 F4; L1-tested) ----
+  // ---- epoch bump-event table (one C++ unit test per reason) ----
   std::uint64_t bump_count(BumpReason r) const { return bump_counts_[static_cast<std::size_t>(r)]; }
 
   // ---- events (RT-thread single consumer: RealtimeCore or the test) ----
@@ -173,7 +173,7 @@ class TickCore {
   // --- commanded anchor (continuity by construction) ---
   Vec6 q_cmd_{};    // last commanded position (radians, post-slew) — the hold/continuity anchor
   Vec6 qd_cmd_{};   // last commanded velocity (wire, radians/s) — brake seed
-  Vec6 qdd_cmd_{};  // last commanded acceleration (wire) — brake seed (R1 C1)
+  Vec6 qdd_cmd_{};  // last commanded acceleration (wire) — brake seed
   bool streaming_{false};
 
   // --- measured (from last RX) ---

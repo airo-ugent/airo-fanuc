@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Single source of truth for CRX-10iA/L kinematic limits and P-1-gated controller facts.
+"""Single source of truth for CRX-10iA/L kinematic limits and measured controller facts.
 
 Every constant whose *true* value is measured on the physical controller lives here,
-each carrying a ``MEASURED(P-1 Exx)`` marker naming the probe that confirmed it. The
-**P-1 HIL probe day** (`docs/reference/airo-fanuc/p_minus_1/`) ran 2026-07-06 and the
-values below were transcribed from its output (``confirmed=True``). Two facts remain
-deferred and keep their safe defaults — **E1** (e-stop continuation path A unproven,
-the SM stream was down) and **E3** (J2/J3 representation, not run on hardware). If a
+each carrying a ``MEASURED`` marker and the observation that produced it. The values
+below were transcribed from a hardware-in-the-loop probe run on 2026-07-06
+(``confirmed=True``). Two facts are still UNVERIFIED and keep their safe defaults:
+e-stop continuation path A (unprovable during the probe — the Stream Motion status
+feed never came up) and the J2/J3 representation (never exercised on hardware). If a
 value here ever changes, update it in ONE place (this module) and re-run the affected
 tests.
 
@@ -16,8 +16,8 @@ at construction. The C++ side holds only mirror-comment copies used by its own u
 if you change a value here that a C++ test hardcodes, grep ``controller_facts`` in the C++
 tree and update the mirror comment + test.
 
-References: PLAN.md §5 (binding contracts), `docs/controller-notes.md` (P-1 fact table),
-`docs/reference/hil-probe-runbook.md`.
+The narrative behind these facts — alarm texts, recovery procedures, the raw probe
+observations — is in ``docs/controller-notes.md``.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Stream Motion timing (fixed by the R-30iB controller class; NOT a P-1 unknown)
+# Stream Motion timing (fixed by the R-30iB controller class; not a measured unknown)
 # ---------------------------------------------------------------------------
 
 #: Interpolation period of the R-30iB controller in seconds (8 ms ITP = 125 Hz).
@@ -43,14 +43,13 @@ COMMAND_DATA_STYLE: int = 0xFFFF
 # ---------------------------------------------------------------------------
 # CRX-10iA/L kinematic limits (rad, rad/s, rad/s², rad/s³)
 #
-# THE single source of truth for this arm's limits. Everything else derives from
-# here: the C++ tick engine brakes with these values, and the curobo planner's
-# cspace envelope in configs/curobo/crx10ial.yml is generated from them by
-# scripts/fit_spheres.py (guarded by tests/test_robot_limits_parity.py).
+# THE single source of truth for this arm's limits. Everything downstream derives
+# from here: the C++ tick engine brakes with these values, and any consumer that
+# needs a motion envelope (a planner's cspace limits, say) should read them from this
+# module rather than restating them.
 #
-# Provenance matters here because FANUC publishes only joint SPEEDS for the CRX
-# series — acceleration and jerk are engineering derivations, so the reasoning is
-# recorded rather than just the numbers:
+# Only velocity comes straight off a FANUC datasheet; acceleration and jerk are
+# engineering derivations, so the reasoning is recorded rather than just the numbers:
 #
 #   * Velocity — FANUC Europe datasheet MDS-04018: J1,J2 = 120°/s; J3-J6 = 180°/s.
 #   * Acceleration = 2× velocity (~1 s to reach max velocity, typical for cobots).
@@ -59,116 +58,136 @@ COMMAND_DATA_STYLE: int = 0xFFFF
 #   * Jerk = 8× acceleration (~0.125 s to max accel). Conservative; some aggressive
 #     cobot configs target ~33× accel.
 #
+# FANUC does also publish accelerations for this arm, and they are much lower than
+# these: the vendored MoveIt config
+# (`vendor/fanuc_driver/fanuc_moveit_config/config/joint_limits.yaml`, headed "Joint
+# limits for CRX-10iA and CRX-10iA/L") gives max_acceleration 0.4 rad/s² for J1-J3 and
+# 1.0 rad/s² for J4-J6, with velocities identical to ours — i.e. 6-16× below the
+# derived values here. The two numbers are not the same kind of thing: FANUC's are
+# *planning* limits, a target profile a planner shapes trajectories to, whereas these
+# are *clamps* — the ceiling above which the RT core refuses to pass a command
+# through — so they are deliberately looser, to avoid silently mangling a legitimate
+# planned motion. Whether that gap is the right size is an OPEN QUESTION: what this
+# controller actually tolerates has not been measured, and if a measurement lands near
+# FANUC's planning figures then these clamps are too permissive to be a useful net.
+# Resolve it with hardware measurement, not by picking one of the two numbers.
+#
+# A planner feeding this driver should shape trajectories with a SOFTER jerk than the
+# clamp here (~3× accel rather than 8×). The CRX collaborative-stop monitor infers
+# contact force from motor disturbance torque, so a sharp jerk ramp reads as a phantom
+# contact mid-transit. Jerk is the trip trigger; acceleration is not.
+#
 # Sources:
 #   * FANUC Europe datasheet MDS-04018 (CRX-10iA family)
-#   * mathemonads/fanuc_crx10ial_moveit_config — a community MoveIt config that
-#     leaves acceleration disabled, confirming FANUC publishes no accel limits
+#   * vendor/fanuc_driver/fanuc_moveit_config/config/joint_limits.yaml (FANUC's own
+#     published planning velocity + acceleration limits)
 #   * https://forum.universal-robots.com/t/maximum-axis-speed-acceleration/13338
 #   * https://answers.ros.org/question/406533/how-to-make-fanuc-crx-10ial-move-faster/
 #
-# The PLANNER deliberately uses a softer jerk (3× accel, not 8×) — see
-# scripts/fit_spheres.py. The CRX collaborative-stop monitor infers contact force
-# from motor disturbance torque, so a sharp acceleration ramp reads as a phantom
-# contact mid-transit. Jerk is the trip trigger; acceleration is not.
-#
-# P-1 cross-check (E5 / HIL-L9): the controller's $PARAM_GROUP / $MRR_GRP.$JNTVELLIM
-# may report different active limits than the datasheet; flag divergence but do NOT
-# auto-adopt.
+# Worth cross-checking on any new controller: the active limits it reports in
+# $PARAM_GROUP / $MRR_GRP.$JNTVELLIM may differ from the datasheet. Flag any
+# divergence but do NOT auto-adopt it.
 # ---------------------------------------------------------------------------
 
 CRX10IAL_VELOCITY_LIMITS: np.ndarray = np.array([2.094, 2.094, 3.142, 3.142, 3.142, 3.142], dtype=np.float64)
 CRX10IAL_ACCELERATION_LIMITS: np.ndarray = 2.0 * CRX10IAL_VELOCITY_LIMITS
 CRX10IAL_JERK_LIMITS: np.ndarray = 8.0 * CRX10IAL_ACCELERATION_LIMITS
 
-# Brake / stop envelope scale factors (PLAN.md decision 5; dries B15).
-# Split v/a vs jerk: the CRX collaborative-stop monitor estimates contact force from motor
-# disturbance torque, so a high jerk ramp flags a phantom contact (observed 2026-05-16).
+# Brake / stop envelope scale factors. Split v/a vs jerk: the CRX collaborative-stop
+# monitor estimates contact force from motor disturbance torque, so a high jerk ramp reads
+# as a contact and trips a phantom stop (observed 2026-05-16). Jerk is therefore scaled
+# harder than v/a.
 STOP_LIMIT_SCALE_VA: float = 0.4
 STOP_LIMIT_SCALE_J: float = 0.15
 
-# Per-tick slew clip: |Δq| ≤ SLEW_FACTOR × v_limit × ITP per joint (dries; last-line defense
-# vs swap/merge discontinuities the CRX DCS reads as disturbance torque). Clip+count, never
-# fault. The accel-cap on derived velocity stays BANNED (reverted anti-pattern, 22° drift).
+# Per-tick slew clip: |Δq| ≤ SLEW_FACTOR × v_limit × ITP per joint — the last-line defense
+# against swap/merge discontinuities the CRX DCS reads as disturbance torque. Clip+count,
+# never fault. Capping acceleration on the *derived* velocity instead is BANNED: it
+# integrates into a 22° position drift.
 SLEW_FACTOR: float = 1.2
 
 
 @dataclass(frozen=True)
 class P1Facts:
-    """Controller facts measured at the P-1 HIL probe day.
+    """Controller facts measured on the physical CRX.
 
-    Values are the P-1-measured facts (probe day 2026-07-06); each field names the
-    probe (Exx) that confirmed it. ``confirmed`` was flipped to ``True`` once the
-    probe output was transcribed. The two deferred facts (E1 e-stop path A, E3 J2/J3
+    Each field carries the observation that produced it. ``confirmed`` is ``True``
+    because these values are transcribed from a hardware probe (2026-07-06) rather
+    than guessed. The two UNVERIFIED facts (e-stop continuation path A, the J2/J3
     representation) keep their safe defaults; code paths that would be unsafe under a
     wrong guess still assert on them (e.g. the calibration loader hard-rejects RMI
     joints while ``rmi_joints_identical_to_stream`` is False).
     """
 
-    confirmed: bool = True  # P-1 HIL probe day 2026-07-06: values transcribed from probe output
+    confirmed: bool = True  # values transcribed from the 2026-07-06 hardware probe output
 
-    # --- E9 / H11: servo tracking lag (first-order) ---
+    # --- servo tracking lag (first-order) ---
     # Used by: drift guard (plan @ now − lag), FakeCRX plant τ, DriverConfig.tracking_lag_s.
-    tracking_lag_s: float = 0.025  # MEASURED(P-1 E9): xcorr 25 ms (verify runs 20 ms); was 0.107 interim
+    tracking_lag_s: float = 0.025  # MEASURED: cross-correlation 25 ms (verification runs 20 ms)
 
-    # --- E6 / H3 / HIL-L10: TX-silence backstop — THE go/no-go ---
-    # MEASURED(P-1 E6): NO-GO. On TX silence the controller does NOT fast-decel within 2-3 ITPs; it
+    # --- TX-silence backstop — THE go/no-go for host-death safety ---
+    # MEASURED: NO-GO. On TX silence the controller does NOT fast-decel within 2-3 ITPs; it
     # coasts at the last commanded velocity, then drops motion_possible (DEVIATION-triggered, not fixed-time):
     #   15.3 deg/s -> overrun 2.10 deg, motion_possible drop 121 ms, no clean decel onset (abrupt stop);
     #   49.9 deg/s -> overrun 4.63 deg, motion_possible drop 71 ms, decel onset 86.7 ms (10.8 ITPs).
     # No alarm, no runaway; stop within ~110-130 ms; overrun grows SUB-linearly with speed.
-    # => in-process design may NOT rely on the controller as a FAST host-death backstop; the pre-committed
-    #    fallback (external RMI-abort watchdog and/or DCS zone tightening) is REQUIRED. Deadman ~120 ms coast.
-    tx_silence_backstop_ok: bool = False  # MEASURED(P-1 E6): NO-GO (decel onset ~10 ITPs, not <=3)
+    # => in-process design may NOT rely on the controller as a FAST host-death backstop; an external
+    #    fallback (an RMI-abort watchdog and/or DCS zone tightening) is REQUIRED. Deadman ~120 ms coast.
+    tx_silence_backstop_ok: bool = False  # MEASURED: NO-GO (decel onset ~10 ITPs, not <=3)
     # Deviation-watchdog threshold the controller uses to fault a frozen (un-ramped) command
     # stream; also calibrates the FakeCRX deviation-watchdog emulation. deg.
-    deviation_watchdog_deg: float = 5.0  # MEASURED(P-1 E6): worst overrun 4.63 deg @ 49.9 deg/s
+    deviation_watchdog_deg: float = 5.0  # MEASURED: worst overrun 4.63 deg @ 49.9 deg/s
 
-    # --- E1 / HIL-L1: e-stop continuation ---
+    # --- e-stop continuation ---
     # "B" = full SM re-handshake (always-safe default). "A" = fast resume (behind policy,
-    # only after HIL-L1 confirms the session survives e-stop).
-    # P-1 E1: INCONCLUSIVE — SM status never streamed during the probe (STREAM_MOTN was aborted during an
-    # earlier HOST-380 recovery), so path A could not be proven or refuted. Ship the safe default B.
+    # only once a measurement confirms the SM session survives an e-stop).
+    # UNVERIFIED — INCONCLUSIVE on hardware: SM status never streamed during the probe (STREAM_MOTN
+    # had been aborted during an earlier HOST-380 recovery), so path A could be neither proven nor
+    # refuted. Ship the safe default B.
     # (E-stop alarm text: SRVO-002 "Teach Pendant E-stop" + SRVO-289; FRC_Continue -> ErrorID 0 OK.)
     # Re-test path A once a live motion_possible session is available (post power-cycle it is).
-    estop_continuation_path: str = "B"  # P-1 E1: default B retained (A unproven — SM stream was down)
-    sm_session_survives_estop: bool = False  # P-1 E1: not proven (stream never came up during probe)
+    estop_continuation_path: str = "B"  # UNVERIFIED: default B retained (A unproven — SM stream was down)
+    sm_session_survives_estop: bool = False  # UNVERIFIED: not proven (stream never came up)
 
-    # --- E3 / HIL-L7 / H4: J2/J3 representation ---
+    # --- J2/J3 representation ---
     # Until proven identical, RMI-sourced joints are tagged rmi_unconverted and calibration
     # HARD-REJECTS them (a wrong guess = silent J2-sized FK error). Vendor lib is known to
     # apply J3 += J2 on RMI reads; stream carries the coupled interaction angle unconverted.
-    # P-1 E3: DEFERRED (not run on hardware) — single RMI session + single SM peer + AUTO-only (no T1 on
-    # this CRX) + RMI-init locks hand-guidance made a clean simultaneous stream-vs-RMI capture impractical.
-    # Safe default RETAINED (calibration still hard-rejects RMI joints). Resolve at P2'/L3 driver bring-up.
-    rmi_joints_identical_to_stream: bool = False  # P-1 E3: deferred; keep hard-reject default
-    rmi_j3_plus_j2_conversion: bool = True  # P-1 E3: deferred; vendor default kept (UNVERIFIED)
+    # UNVERIFIED — never run on hardware: a single RMI session + a single SM peer + AUTO-only (no T1 on
+    # this CRX) + RMI-init locking hand-guidance made a clean simultaneous stream-vs-RMI capture
+    # impractical. Safe default RETAINED (calibration still hard-rejects RMI joints). Resolve during
+    # on-hardware driver bring-up.
+    rmi_joints_identical_to_stream: bool = False  # UNVERIFIED: keep hard-reject default
+    rmi_j3_plus_j2_conversion: bool = True  # UNVERIFIED: vendor default kept
 
-    # --- E8: RMI angle read quantization ---
+    # --- RMI angle read quantization ---
     # Calibration stillness gate is 0.1 deg/s; quantization budget ≤ 0.0067 deg/read.
-    rmi_angle_resolution_deg: float = 0.001  # MEASURED(P-1 E8): FRC_ReadJointAngles 3-decimal precision
-    rmi_velocity_needs_lsq: bool = False  # MEASURED(P-1 E8): instantaneous OK (0 noise when still)
+    rmi_angle_resolution_deg: float = 0.001  # MEASURED: FRC_ReadJointAngles 3-decimal precision
+    rmi_velocity_needs_lsq: bool = False  # MEASURED: instantaneous OK (0 noise when still)
 
-    # --- E5 / HIL-L9: static facts ---
-    controller_p_level: str = "V9.40/P82"  # MEASURED(P-1 E5): orderfile (WARN band); TP fw P/84, boot P/77
+    # --- static facts ---
+    controller_p_level: str = "V9.40/P82"  # MEASURED: orderfile (WARN band); TP fw P/84, boot P/77
     p_level_min_warn: str = "V9.40P84"
     p_level_min_hard: str = "V9.40P81"
 
-    # --- E2 / HIL-L3: RMI single-session ---
-    rmi_single_session: bool = True  # MEASURED(P-1 E2): confirmed (2nd times out on redirect port)
+    # --- RMI single-session ---
+    rmi_single_session: bool = True  # MEASURED: confirmed (2nd times out on redirect port)
 
-    # --- E4 / HIL-L8: RMI in T1 ---
-    rmi_reads_ok_in_t1: bool = True  # MEASURED(P-1 E4): 450/450 reads track live motion @ 15 Hz (AUTO; no T1)
+    # --- RMI reads under live motion ---
+    rmi_reads_ok_in_t1: bool = True  # MEASURED: 450/450 reads track live motion @ 15 Hz (AUTO; no T1)
 
 
-#: The P-1-measured fact set used throughout the codebase (single-sourced from here).
-#: Name kept as ``INTERIM_FACTS`` for call-site stability; values are P-1 final (2026-07-06).
+#: The measured fact set used throughout the codebase (single-sourced from here).
+#: Despite the ``INTERIM_FACTS`` name — stable because every call site imports it —
+#: these values are the hardware-measured ones (2026-07-06), not placeholders.
 INTERIM_FACTS = P1Facts()
 
 
 @dataclass(frozen=True)
 class SettlePolicy:
-    """End-of-trajectory settle criteria (PLAN.md §5.1). Production call sites override
-    the defaults (dries used 1.5° / 1.5-3 s); H11 re-measures the constants."""
+    """End-of-trajectory settle criteria. Production call sites routinely override the
+    defaults — 1.5° with a 1.5-3 s timeout is a field-proven pair for coarser moves.
+    These constants are worth re-measuring on hardware against the servo lag."""
 
     tol_deg: float = 0.5
     vel_eps_deg_s: float = 2.0
@@ -176,40 +195,41 @@ class SettlePolicy:
 
 
 # ---------------------------------------------------------------------------
-# Capture / servo / brake / RX-silence / anti-flap constants (PLAN.md §5)
+# Capture / servo / brake / RX-silence / anti-flap constants
 # ---------------------------------------------------------------------------
 
-# CAPTURE-or-REJECT splice (decision 6, R3 A2): bridge commanded → new-trajectory (q0,qd0)
-# via a deterministic Ruckig profile, collision-checked in Python before handoff.
-CAPTURE_TOL_DEG: float = 5.0  # = dries re-anchor deadband; REJECT beyond, typed error
-CAPTURE_RATE_DEG_S: float = 15.0  # = dries STARVATION_RE_ANCHOR_RATE; SAFE_FOLLOW envelope
+# CAPTURE-or-REJECT splice: bridge commanded → new-trajectory (q0,qd0) via a
+# deterministic Ruckig profile, collision-checked in Python before handoff.
+CAPTURE_TOL_DEG: float = 5.0  # re-anchor deadband; REJECT beyond, typed error
+CAPTURE_RATE_DEG_S: float = 15.0  # starvation re-anchor rate; also the SAFE_FOLLOW envelope
 
-# servo_j replace-not-queue window (R1 C3): typed reject if |q_target − q_cmd| > this.
+# servo_j replace-not-queue window: typed reject if |q_target − q_cmd| > this.
 SERVO_WINDOW_DEG: float = 5.0
 SERVO_LIMIT_SCALE: float = 1.0
 
-# Graduated RX-silence (decision 7, R1 A3). Mid-TRAJECTORY:
+# Graduated RX-silence response, mid-TRAJECTORY:
 RX_SILENCE_BLIND_HOLD_MS: float = 100.0  # → kill-type entry: blind qd-ramp to hold
 RX_SILENCE_QD_RAMP_MS: float = 60.0  # duration of the qd → 0 ramp
 RX_SILENT_PARK_MS: float = 500.0  # → RX_SILENT fault, park TX
 
-# Anti-flap dwell (R2 F7): DEGRADED → STREAMING requires all-clear sustained ≥ this
+# Anti-flap dwell: DEGRADED → STREAMING requires all-clear sustained ≥ this
 # (covers measured ~300 ms contact-stop / motion_possible bit-skew).
 ANTIFLAP_DWELL_MS: float = 500.0
 
-# qd_end blend (R1 B3): on trajectory exhaustion with non-zero terminal velocity, one
+# qd_end blend: on trajectory exhaustion with non-zero terminal velocity, one
 # Hermite blend (q_end,qd_end) → (q_end,0) over at least this long.
 QD_END_BLEND_MIN_MS: float = 25.0
 
-# Calibration stillness gate (R2 F30): hand_eye ground truth.
+# Calibration stillness gate — the hand-eye capture ground truth.
 CALIB_STILLNESS_DEG_S: float = 0.1
 CALIB_LSQ_WINDOW_S: float = 0.5
 
 # ---------------------------------------------------------------------------
-# In-process safety watchdogs wired at P-1 finalization (2026-07-06). Both
-# FaultReasons (SUPERVISOR_LOST, DRIFT) existed but were never SET; P-1 E6 (host
-# death rides a ~120 ms controller coast — no external watchdog) + E9 (25 ms lag)
-# motivated wiring them in the C++ RT core. Mirrored in rt_core_config.hpp.
+# In-process safety watchdogs. Both FaultReasons (SUPERVISOR_LOST, DRIFT) are raised
+# by the C++ RT core, and both exist because of the measurements above: host death
+# rides a ~120 ms controller coast, so the controller is not a fast host-death
+# backstop, and the 25 ms servo lag sets the drift alignment.
+# Mirrored in rt_core_config.hpp.
 # ---------------------------------------------------------------------------
 
 # SUPERVISOR_LOST: the RT core latches this + holds if the Python supervisor's
@@ -219,9 +239,8 @@ CALIB_LSQ_WINDOW_S: float = 0.5
 # beat interval to tolerate GIL-storm / GC pauses without a false trip. seconds.
 SUPERVISOR_LOST_S: float = 3.0
 
-# DRIFT: sustained commanded↔measured divergence fault (the 22°-runaway guard;
-# dries executor MAX_DRIFT). deg + consecutive ticks. The lag alignment uses
-# tracking_lag_s (E9: 25 ms ≈ 3 ticks), so the threshold is genuine divergence,
-# not the servo lag itself.
+# DRIFT: sustained commanded↔measured divergence fault — the guard against the 22°
+# runaway. deg + consecutive ticks. The lag alignment uses tracking_lag_s (the measured
+# 25 ms ≈ 3 ticks), so the threshold catches genuine divergence, not the servo lag itself.
 DRIFT_FAULT_DEG: float = 10.0
 DRIFT_FAULT_TICKS: int = 5

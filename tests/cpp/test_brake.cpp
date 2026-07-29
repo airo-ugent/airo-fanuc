@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 golden — Ruckig-online brake. The headline assertion is R1 C1: seeding the
-// analytic Hermite qdd makes the commanded ACCELERATION continuous across the
-// trajectory→brake transition (an accel step latches the CRX contact-stop).
+// Unit test — Ruckig-online brake. The headline assertion: seeding the analytic
+// Hermite qdd makes the commanded ACCELERATION continuous across the
+// trajectory→brake transition. This matters because the CRX collaborative-stop
+// monitor infers contact force from motor disturbance torque, so a step in
+// commanded acceleration reads as a collision and latches a contact stop.
 
 #include <array>
 #include <cmath>
@@ -32,11 +34,11 @@ double max_abs(const Vec6& v) {
 }
 }  // namespace
 
-// R1 C1 — accel continuity across traj→brake. A realistic mid-segment sample
-// gives (q_cmd, qd_cmd, qdd_cmd) with qdd within the brake accel envelope;
-// seeding qdd_cmd keeps the first brake accel within one jerk-limited step of it
-// (continuous), whereas seeding qdd=0 (the old dries behaviour) produces a large
-// accel STEP.
+// Accel continuity across traj→brake. A realistic mid-segment sample gives
+// (q_cmd, qd_cmd, qdd_cmd) with qdd within the brake accel envelope; seeding
+// qdd_cmd keeps the first brake accel within one jerk-limited step of it
+// (continuous), whereas seeding qdd=0 discards the accel the robot is actually
+// carrying and produces a large accel STEP.
 TEST(Brake, QddSeedGivesAccelContinuity) {
   TickEngineConfig cfg;
 
@@ -64,7 +66,7 @@ TEST(Brake, QddSeedGivesAccelContinuity) {
   ASSERT_FALSE(s1.error);
   const double disc_seeded = std::abs(s1.qdd[0] - mid.qdd[0]);
 
-  // Wrong seed: qdd = 0 (old dries behaviour).
+  // Wrong seed: qdd = 0 — throws away the in-flight acceleration.
   Brake brake0(cfg);
   brake0.seed(mid.q, mid.qd, Vec6{});
   const BrakeStep s0 = brake0.step();

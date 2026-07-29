@@ -1,4 +1,4 @@
-# ThreadSanitizer suppressions for the airo_fanuc RT core (P3c).
+# ThreadSanitizer suppressions for the airo_fanuc RT core.
 #
 # SCOPE: narrowly the by-design lock-free "racy snapshot" surfaces, and ONLY
 # those. Everything else (the SpscRing mailbox/events/retire, the atomic epoch,
@@ -33,6 +33,6 @@ race:airo_fanuc::rt_core::RealtimeCore::timing
 # --- JointsAtRing per-slot seqlock (rings.hpp) -----------------------------
 # Same per-slot version-counter design as Seqlock: nearest()/push() race on the
 # (mono_ns, q) payload, torn-free via the per-slot seq. Not exercised
-# concurrently by the current gtests, but scoped here so the P4b joints_at_wall
+# concurrently by the current gtests, but scoped here so a future joints-at-wall
 # concurrency test inherits the correct, narrow suppression rather than a blanket.
 race:airo_fanuc::rt_core::JointsAtRing

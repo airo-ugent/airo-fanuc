@@ -1,15 +1,15 @@
 """Recovery-ladder full-RMI-reconnect tier (a SystemFault that wedges RMI).
 
 A ``FRC_SystemFault`` can leave RMI unresponsive, so ``FRC_Reset`` / ``FRC_Call``
-time out (``RmiSessionDown``). The recovery ladder used to hard-``return False``
-there and freeze the arm. These tests cover the new escalation: on
-``RmiSessionDown`` the ladder falls back to a bounded full RMI reconnect (the
-bring-up "flush stale SystemFault" sequence — ``rmi.stop`` → reconnect → reset →
-reseed → ``FRC_Call``) and retries, gated by
+time out (``RmiSessionDown``). A ladder that treated that as terminal would
+hard-``return False`` and leave the arm frozen, so it escalates instead: on
+``RmiSessionDown`` it falls back to a bounded full RMI reconnect (the bring-up
+"flush stale SystemFault" sequence — ``rmi.stop`` → reconnect → reset → reseed →
+``FRC_Call``) and retries, gated by
 ``DriverPolicy.recovery_reconnect_attempts``.
 
 Unit-level by design: the socket-based ``FakeCRXController`` can't easily model
-a wedged transport, so these drive the new ``Supervisor`` logic directly against
+a wedged transport, so these drive the ``Supervisor`` logic directly against
 a fake RMI client (``__init__`` bypassed, only the reconnect tier's collaborators
 wired up).
 """
@@ -79,6 +79,8 @@ class TestRelaunchViaReconnect:
         assert rmi.calls.index("stop") < rmi.calls.index(f"call:{_STREAM_MOTN}")
 
     def test_zero_budget_is_the_old_bail(self):
+        """A zero reconnect budget opts out of the escalation entirely: bail
+        immediately, without touching the RMI session."""
         rmi = _FakeRmi()
         sup = _bare_supervisor(rmi, reconnect_attempts=0)
         assert sup._relaunch_stream_motn_via_reconnect() is False

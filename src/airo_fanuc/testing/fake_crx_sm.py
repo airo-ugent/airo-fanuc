@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stream Motion UDP server for the FakeCRXController (PLAN.md §5.2, §8, D13).
+"""Stream Motion UDP server for the FakeCRXController.
 
 A strict-conformance emulator of the controller's Stream Motion side:
 
-* Handshake state machine matching ``dries`` ``stream_motion.py``: defensive
+* Handshake state machine the driver must follow: defensive
   StopPacket (type 2) → GetCapability (type 7, negotiate ``available_version``,
   ``sampling_rate=8``) → StartPacket (type 200) → optional ForceSensorConfig
   (type 205, accepted only when negotiated v >= 4) → stream status.
@@ -12,33 +12,35 @@ A strict-conformance emulator of the controller's Stream Motion side:
   safety_scale and measured joints from the
   :class:`~airo_fanuc.testing.plant.JointPlant`. **Version-correct**: at the
   default negotiated v3 it emits **legacy type-202** (388 B, NO force block — what
-  the P-1 controller actually streams, proven by the E6 pcap); only at v >= 4 does
-  it emit **type-204** (416 B, +force/moment/fs_type). Set
+  the physical controller streams, confirmed by packet capture); only at v >= 4
+  does it emit **type-204** (416 B, +force/moment/fs_type). Set
   ``FakeCRXConfig.available_version=4`` to exercise the force path.
 * Consumes **type-201 CommandPackets**, feeds the commanded joints to the plant,
   and — in strict mode — asserts every per-packet invariant that the real
   controller (or our own driver) must satisfy, most importantly
   ``dataStyle == 0xFFFF`` (the 0-dataStyle Cartesian-slew bug, incident
-  2026-05-06) and the **min inter-TX spacing** guard (R1 A1). The spacing check
+  2026-05-06) and the **min inter-TX spacing** guard. The spacing check
   reads the **kernel RX timestamp** of every command (``SO_TIMESTAMPNS`` +
   ``recvmsg``/CMSG), so it flags a genuine double-send (two TXs < 1 ms apart)
   while NOT false-flagging two legitimate ~8 ms-apart TXs that the fake's own
-  ~125 Hz tick clock happened to bin into one drain (the fixed-window count
-  check did — two independent clocks jitter across the window boundary). The
-  threshold is ``0.5 · itp`` (4 ms): a double-send is < 1 ms, the nominal cadence
-  is ~8 ms, so 4 ms cleanly separates them. The **first inter-command interval of
-  each (re)started stream** is the exception: the host RT core's PLL re-locks phase
-  on the first RX after a StartPacket and legitimately compresses that one interval
-  (measured ≥ 0.57 ms), so it is checked against a tighter same-instant floor
-  (``itp / 80``) that still flags a genuine ~simultaneous double-send while
-  tolerating the PLL transient — see :attr:`_first_interval_floor_ns`.
+  ~125 Hz tick clock happened to bin into one drain — the fake and the driver run
+  on independent clocks that jitter across a drain-window boundary, so a
+  per-window count of commands cannot distinguish the two cases and kernel
+  timestamps can. The threshold is ``0.5 · itp`` (4 ms): a double-send is < 1 ms,
+  the nominal cadence is ~8 ms, so 4 ms cleanly separates them. The **first
+  inter-command interval of each (re)started stream** is the exception: the host
+  RT core's PLL re-locks phase on the first RX after a StartPacket and
+  legitimately compresses that one interval (measured ≥ 0.57 ms), so it is
+  checked against a tighter same-instant floor (``itp / 80``) that still flags a
+  genuine ~simultaneous double-send while tolerating the PLL transient — see
+  :attr:`_first_interval_floor_ns`.
 
 ``motion_possible`` (status bit 0) asserts only after a StartPacket AND the RMI
 side has accepted ``FRC_Call("STREAM_MOTN")`` — the two subsystems are coupled
 through the shared :class:`ControllerState` on the facade.
 
-Byte encode/decode is delegated to the committed ``airo_fanuc.testing.wire``
-oracle; this module never hand-packs bytes (it only *decodes* the inbound
+Byte encode/decode is delegated to the ``airo_fanuc.testing.wire`` oracle, whose
+layout the goldens pin; this module never hand-packs bytes (it only *decodes* the inbound
 CommandPacket, whose layout it re-derives from the wire codec's documented
 struct and cross-checks against ``wire.COMMAND_PACKET_SIZE`` at import).
 """
@@ -82,7 +84,7 @@ _RX_BUF_BYTES = 2048
 # |qd| above which we assert status bit 3 (motion_in_progress), deg/s.
 _MOTION_IN_PROGRESS_EPS_DEG_S = 1.0
 
-# Kernel RX timestamping (R1 A1 min-inter-TX-spacing check). Python's socket
+# Kernel RX timestamping (for the min-inter-TX-spacing check). Python's socket
 # module does NOT expose these Linux SOL_SOCKET constants on every build, so we
 # fall back to the fixed x86-64 Linux values (SO_TIMESTAMPNS == SCM_TIMESTAMPNS
 # == 35). The RT core is Linux-only (timerfd/epoll), so this is not a portability
@@ -123,7 +125,7 @@ class FakeStreamMotionServer:
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((host, port))
         self._sock.setblocking(False)
-        # Kernel RX timestamps for the min-inter-TX-spacing check (R1 A1). Guarded
+        # Kernel RX timestamps for the min-inter-TX-spacing check. Guarded
         # so a non-Linux build degrades to "no spacing check" rather than crashing.
         try:
             self._sock.setsockopt(socket.SOL_SOCKET, _SO_TIMESTAMPNS, 1)
@@ -132,7 +134,7 @@ class FakeStreamMotionServer:
             self._rx_timestamping = False
         self.host, self.port = self._sock.getsockname()[:2]
 
-        # Min inter-arrival spacing (R1 A1): two consecutive commands drained in
+        # Min inter-arrival spacing: two consecutive commands drained in
         # the SAME window that arrive (kernel RX time) closer than this are a
         # double-send. Scoped within one drain batch — that is exactly where the
         # fake-vs-core clock jitter can bin two commands together, and it keeps
@@ -171,7 +173,7 @@ class FakeStreamMotionServer:
         self._cmds_this_window = 0
         self._ticks_since_cmd = 0
 
-        # Outbound status-stream perturbation (S-DROP taxonomy).
+        # Outbound status-stream perturbation (drop / seq gap / duplicate).
         self._drop_status_countdown = 0
         self._pending_seq_gap = 0
         self._dup_next = False
@@ -203,7 +205,7 @@ class FakeStreamMotionServer:
         Uses ``recvmsg`` + ``SO_TIMESTAMPNS`` so each CommandPacket carries its
         KERNEL arrival timestamp (not the drain-return time). Batched draining
         must NOT lose true inter-arrival spacing — that is why kernel timestamps
-        are required for the min-inter-TX-spacing check (R1 A1). The spacing
+        are required for the min-inter-TX-spacing check. The spacing
         reference is reset per drain: only commands drained together (where the
         fake/core clock-jitter binning happens) are compared.
         """
@@ -296,7 +298,7 @@ class FakeStreamMotionServer:
     def _on_force_sensor_config(self, buf: bytes) -> None:
         _ptype, version, _do_reset, fs_type = struct.unpack(_FMT_FSCONFIG, buf)
         if self._negotiated_version < 4:
-            # On v < 4 the real controller raises HOST-380 (design doc 08 row 10).
+            # On v < 4 the real controller raises HOST-380.
             with self._state.lock:
                 self._state.raise_alarm("HOST-380", "System error 0x19,0x0")
                 self._state.in_error = True
@@ -321,7 +323,7 @@ class FakeStreamMotionServer:
         self._last_cmd_is_last = bool(is_last)
 
         if self._cfg.strict:
-            # Min inter-TX spacing (R1 A1): a genuine double-send emits two TXs
+            # Min inter-TX spacing: a genuine double-send emits two TXs
             # < 1 ms apart; kernel RX timestamps separate that from two legit
             # ~8 ms TXs jittered into one drain. Compared within the drain only.
             if kernel_ns is not None and self._last_cmd_kernel_ns is not None:
@@ -337,7 +339,7 @@ class FakeStreamMotionServer:
                     self._record_violation(
                         f"consecutive CommandPackets {spacing_ns / 1e6:.3f} ms apart "
                         f"< min inter-TX spacing {threshold / 1e6:.1f} ms — "
-                        "the one-TX-per-window / double-send guard (R1 A1), measured "
+                        "the one-TX-per-window / double-send guard, measured "
                         "from kernel RX timestamps"
                     )
             if data_style != wire.COMMAND_DATA_STYLE:
@@ -384,10 +386,11 @@ class FakeStreamMotionServer:
         RECORDS the violation and KEEPS STREAMING (an integration test can assert
         on ``violations`` without the core going RX-silent).
 
-        The min-inter-TX-spacing / double-send guard (R1 A1) is now enforced
-        per-packet in :meth:`_on_command` from kernel RX timestamps — NOT by a
-        fixed per-tick window count (which false-positived under two independent
-        ~125 Hz clocks binning two legit ~8 ms TXs into one drain).
+        The min-inter-TX-spacing / double-send guard is enforced per-packet in
+        :meth:`_on_command` from kernel RX timestamps, NOT by a fixed per-tick
+        window count: the fake and the driver run on independent ~125 Hz clocks
+        that drift across a window boundary, so a count check bins two legitimate
+        ~8 ms-apart TXs into one drain and false-positives.
         """
         dt = self.itp_s if dt is None else float(dt)
         n_viol_start = len(self._violations)
@@ -422,7 +425,7 @@ class FakeStreamMotionServer:
         if self._ticks_since_cmd > self._cfg.tx_silence_threshold_ticks:
             with self._state.lock:
                 self._state.tx_silent = True
-            # E6 MEASURED NO-GO (tx_silence_backstop_ok reads
+            # Measured controller behavior (tx_silence_backstop_ok reads
             # INTERIM_FACTS.tx_silence_backstop_ok = False): the controller coasts
             # at the last commanded velocity, it does not fast-decel.
             self._plant.silence_step(dt, backstop_ok=self._cfg.tx_silence_backstop_ok)
@@ -499,8 +502,8 @@ class FakeStreamMotionServer:
                 fs_type=fs_type,
             )
         else:
-            # v3 (the P-1 controller): legacy type-202 status — NO force block. This
-            # is what a real V9.40/P82 CRX streams (388 B; proven by the E6 pcap).
+            # v3: legacy type-202 status — NO force block. This is what a real
+            # V9.40/P82 CRX streams (388 B; confirmed by packet capture).
             # Emitting it here is what makes the default fake exercise the real wire.
             pkt = wire.build_status_v3_packet(
                 version_no=self._negotiated_version,

@@ -1,22 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// airo_fanuc — CAPTURE-or-REJECT splice generator (P3a). PLAN.md decision 6 /
-// R3 A2.
+// airo_fanuc — CAPTURE-or-REJECT splice generator.
 //
-// When a new trajectory arrives, the bridge must splice the COMMANDED state
+// When a new trajectory arrives, the driver must splice the COMMANDED state
 // (q_cmd, qd_cmd) to the new trajectory start (q0, qd0). This generator emits a
 // DETERMINISTIC Ruckig<6> position-mode profile at ITP resolution:
 //   target        = (q0, qd0)
 //   v_max         = capture_rate_rad_s (15°/s) per joint
 //   a / j         = brake-class (STOP_LIMIT_SCALE_VA·a_lim / STOP_LIMIT_SCALE_J·j_lim)
 //
-// "THE CHECKED PATH IS THE EXECUTED PATH" (PLAN.md §5.1): this is ONE function.
-// The Python pre-flight collision check (via the P4 binding) and the C++ RT
-// execution BOTH call `generate_capture_path`; determinism is structural (one
-// code path, fixed inputs, fixed delta_time → identical Ruckig output). The L1
-// golden `test_capture` asserts (a) identical output on repeated calls and
-// (b) that replaying the generated knots reproduces them exactly. No separate
-// "synthesis vs execution" implementation exists to drift.
+// ═══ INVARIANT: THE CHECKED PATH *IS* THE EXECUTED PATH ═══════════════════
+// The splice is real arm motion that no planner produced, so it must be
+// collision-checked before it runs — and the path that was checked must be,
+// provably, the path that executes. A path that is merely *similar* to the
+// checked one is not good enough: the splice sweeps through free space nobody
+// planned, and any divergence between check and execution is arm motion through
+// geometry the checker never saw.
+//
+// The guarantee is structural rather than argued: there is exactly ONE splice
+// generator. The Python pre-flight collision check (through the pybind binding)
+// and the C++ RT execution BOTH call `generate_capture_path`, with the same
+// inputs and the same fixed delta_time, so Ruckig emits identical output. No
+// separate "synthesis" and "execution" implementations exist that could drift
+// apart. The C++ unit test `test_capture` pins this: (a) repeated calls produce
+// identical output, and (b) replaying the generated knots reproduces them
+// exactly.
+//
+// Consequences to respect when editing: keep this function PURE (no clock, no
+// RNG, no ambient state), keep the Ruckig instance local so no internal state is
+// carried between calls, and never add a code path that only one of the two
+// callers takes.
+// ══════════════════════════════════════════════════════════════════════════
 //
 // The generator allocates NOTHING on the heap: `CapturePath` owns a fixed-
 // capacity std::array buffer and a local Ruckig<6> (StandardVector = std::array)
@@ -47,9 +61,10 @@ struct CapturePath {
   std::array<Vec6, kMaxKnots> q{};
   std::array<Vec6, kMaxKnots> qd{};
   // Analytic wire acceleration at each knot (Ruckig new_acceleration; knot[0] is
-  // the seeded current_acceleration = 0). R1 C1: braking OUT of CAPTURE seeds the
-  // Ruckig brake with this so the commanded accel is continuous across the
-  // capture→brake handoff (an accel STEP latches the CRX contact-stop).
+  // the seeded current_acceleration = 0). Braking OUT of CAPTURE seeds the Ruckig
+  // brake with this so the commanded accel is continuous across the capture→brake
+  // handoff — an accel STEP reads as motor disturbance torque and latches the CRX
+  // collaborative contact-stop.
   std::array<Vec6, kMaxKnots> qdd{};
   int count{0};
   ruckig::Result result{ruckig::Result::Working};

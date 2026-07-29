@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""L2 scenario matrix — the C++ ``StreamCore`` driven against the REAL
-``FakeCRXController`` in realtime mode (PLAN.md §8, report 09 §4 S-* matrix).
+"""FakeCRX integration scenarios — the C++ ``StreamCore`` driven against the REAL
+``FakeCRXController`` in realtime mode.
 
-This is the regression wall that keeps the RT core correct as P4b/P5 build on
-it. Unlike ``test_fake_crx_scenarios.py`` (which manual-ticks the fake to prove
-the *fake* is faithful), every test here spins up the fake's wall-paced 125 Hz
-thread AND the C++ core's real RT thread and asserts real state transitions
-observed through ``get_snapshot`` / ``motion_status`` / ``poll_events`` — never
-sleeps-and-hope. Fault scenarios use the FakeCRX injectors + explicit polling.
+This is the regression wall that keeps the RT core correct as higher layers are
+built on it. Unlike ``test_fake_crx_scenarios.py`` (which manual-ticks the fake
+to prove the *fake* is faithful), every test here spins up the fake's wall-paced
+125 Hz thread AND the C++ core's real RT thread and asserts real state
+transitions observed through ``get_snapshot`` / ``motion_status`` /
+``poll_events`` — never sleeps-and-hope. Fault scenarios use the FakeCRX
+injectors + explicit polling.
 
 **Strict conformance is always-on**: the fake runs ``strict=True`` and every
 test asserts, at teardown, that the core emitted ZERO wire-conformance
@@ -15,41 +16,44 @@ violations (dataStyle 0xFFFF, one-TX min-inter-spacing, monotone seq, version
 echo, ...) and that the fake's realtime loop recorded no error. A single
 violation fails the owning test — a conformant core is the invariant.
 
-Coverage vs the report-09 / §8 matrix (row → status):
+What each scenario reproduces (row → status):
 
-    Bring-up (preroll→HOLD, wait_ready, rx freshness)  → covered
-    Trajectory CAPTURE→TRAJECTORY→settle→DONE + tracking → covered
-    speed_scale 0.5 halves velocity                     → covered
-    S-B4 strict-mode always-on (zero violations)        → covered (every test)
-    S-B12 stop_j during running trajectory → STOPPED    → covered
-    S-B15 preempt-at-speed brake reaches rest           → covered
-    S-LIFE e-stop → SAFE_FOLLOW(E_STOP) → recover→HOLD   → covered
-    S-LIFE contact_stop ∈ {2,4} kill → SAFE_FOLLOW       → covered
-    S-LIFE safety_scale clamp → SAFE_FOLLOW(SAFETY_CLAMP) → covered
-    S-LIFE TEACH toggle → SAFE_FOLLOW(TEACH_MODE)        → covered
-    S-LIFE motion_possible drop → SAFE_FOLLOW            → covered
-    S-LIFE FRC_SystemFault push (RMI async ring)         → covered (RMI-plane)
-    S-DROP 100 ms → in-flight FAULTED(RX_DEGRADED)       → covered
-    S-DROP 500 ms → RX_SILENT (TX parked)                → covered
-    S-DROP seq-gap + duplicate (counter/no-crash)        → covered
-    S-VERS v3 + v4 bring-up (version echo, FSConfig gate) → covered
-    Capture settle→3° executes; capture-or-reject >5°    → covered
-    Capture ≥200 ms splice executes                      → covered
-    Servo sine + direction reversal (no dwell)           → covered
-    Servo 5° distance-guard reject                       → covered
-    S-FLAP dries 9-flap / 7-oscillation dwell (F7)       → covered (constructed)
+    Bring-up: preroll → HOLD, wait_ready, RX freshness      → covered
+    Trajectory CAPTURE→TRAJECTORY→settle→DONE + plant tracking → covered
+    speed_scale 0.5 halves peak velocity                    → covered
+    Strict wire conformance, zero violations                → covered (every test)
+    stop_j during a running trajectory → STOPPED            → covered
+    Preempt at speed: braking from real velocity reaches rest → covered
+    E-stop → SAFE_FOLLOW(E_STOP) → recover → HOLD           → covered
+    Contact stop (STOP=2 / ESCP=4) → SAFE_FOLLOW            → covered
+    safety_scale under the floor → SAFE_FOLLOW(SAFETY_CLAMP) → covered
+    TEACH (T1) toggle → SAFE_FOLLOW(TEACH_MODE)             → covered
+    motion_possible drop → SAFE_FOLLOW                      → covered
+    FRC_SystemFault async push landing on the RMI ring       → covered (RMI-plane)
+    100 ms of status silence → in-flight FAULTED(RX_DEGRADED) → covered
+    500 ms of status silence → RX_SILENT (TX parked)         → covered
+    Status seq gap and byte-identical duplicate (counted, no fault) → covered
+    Bring-up on Stream Motion v3 and v4 (version echo, FSConfig gate) → covered
+    Capture: a 3° splice executes; a > 5° splice is rejected → covered
+    Capture: a splice long enough to span ≥ 200 ms executes  → covered
+    Servo sine sweep with a direction reversal and no dwell  → covered
+    Servo target beyond the 5° window → typed REJECT         → covered
+    Rapid contact-stop flap (repeated stop/clear oscillation
+      faster than the dwell) exercising the anti-flap dwell   → covered (constructed)
+    Sustained-streaming conformance soak (CI-short)           → covered
 
-Deferred to HIL (L4) / P4b, noted where relevant:
-    * ``MotionHandle.trajectory_start_mono_ns`` post-capture anchor value — the
-      P4b FanucDriver surface; StreamCore exposes no per-motion anchor, so the
+Deferred to hardware-in-the-loop testing, noted where relevant:
+    * ``MotionHandle.trajectory_start_mono_ns`` post-capture anchor value — a
+      FanucDriver-level surface; StreamCore exposes no per-motion anchor, so the
       ≥200 ms capture row asserts the *executed* capture duration instead.
-    * FRC_SystemFault → supervisor lifecycle reaction (P4b): StreamCore is
-      SM-only, so the push is asserted on the RMI async ring; the SM-plane
-      in_error that accompanies a real system fault is covered separately.
-    * FSConfig actually emitted on v4 (force streaming) — the P3b StreamCore
-      does not send type-205, so fs_type stays Unavailable; the v4 row asserts a
-      clean version-4 handshake (the gate that matters for HOST-380 on v3).
-    * pcap trajectory-diff, physical lag ±20 ms, brake distance vs Ruckig — HIL.
+    * FRC_SystemFault → supervisor lifecycle reaction: StreamCore is SM-only, so
+      the push is asserted on the RMI async ring; the SM-plane in_error that
+      accompanies a real system fault is covered separately.
+    * FSConfig actually emitted on v4 (force streaming) — StreamCore does not
+      send type-205, so fs_type stays Unavailable; the v4 row asserts a clean
+      version-4 handshake (the gate that matters for HOST-380 on v3).
+    * pcap trajectory-diff, physical lag ±20 ms, brake distance vs Ruckig — these
+      need the real controller and robot.
 """
 
 from __future__ import annotations
@@ -90,7 +94,7 @@ class Rig:
     """Bring up FakeCRX (realtime) + RMI STREAM_MOTN + StreamCore; tear all down.
 
     Asserts (on close) zero strict violations and no fake realtime error — the
-    always-on wire-conformance guarantee for every L2 scenario.
+    always-on wire-conformance guarantee for every scenario in this file.
     """
 
     def __init__(
@@ -238,7 +242,7 @@ def test_speed_scale_half_halves_peak_velocity(rig: Rig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# stop_j during a running trajectory (S-B12 / S-B15)
+# stop_j during a running trajectory — universal preempt, including at speed
 # ---------------------------------------------------------------------------
 
 
@@ -246,7 +250,7 @@ def test_stop_j_during_trajectory_brakes_and_resolves_stopped(rig: Rig) -> None:
     times, q, qd = _traj(1.0, duration_ns=3_000_000_000)
     mid = rig.core.submit_trajectory(times, q, qd, 1.0)
     assert rig.wait_mode(Mode.TRAJECTORY, 1.5)
-    time.sleep(0.25)  # let it build real velocity (preempt-at-speed, S-B15)
+    time.sleep(0.25)  # let it build real velocity, so this preempts AT SPEED
     moving_qd = abs(rig.core.get_snapshot()["qd_cmd"][0])
     assert moving_qd > 0.05, "trajectory is actually moving before stop_j"
     rig.core.stop_j()
@@ -259,7 +263,7 @@ def test_stop_j_during_trajectory_brakes_and_resolves_stopped(rig: Rig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# S-LIFE — fault matrix
+# Safety-lifecycle fault matrix
 # ---------------------------------------------------------------------------
 
 
@@ -313,7 +317,8 @@ def test_teach_toggle_kills_to_safe_follow_and_states_flow(rig: Rig) -> None:
     rig.controller.set_teach(True)  # TEACH (T1)
     assert rig.wait_mode(Mode.SAFE_FOLLOW, 2.0)
     assert rig.fault() == FaultReason.TEACH_MODE
-    # States keep flowing in TEACH — RX stays fresh (S-B16 / B19 T1-freeze fix).
+    # Status packets keep flowing while the controller sits in TEACH, so RX stays
+    # fresh: a T1 toggle must read as TEACH_MODE, never as an RX-silence fault.
     assert rig.core.get_snapshot()["rx_fresh"] is True
     assert rig.core.get_snapshot()["tp_enabled"] is True
     rig.controller.set_teach(False)
@@ -334,7 +339,7 @@ def test_motion_possible_drop_kills_to_safe_follow(rig: Rig) -> None:
 
 
 def test_system_fault_push_on_rmi_ring_and_in_error_kills_sm(rig: Rig) -> None:
-    # FRC_SystemFault is an RMI-plane async push (P4b supervisor consumes it);
+    # FRC_SystemFault is an RMI-plane async push (the supervisor consumes it);
     # StreamCore is SM-only, so assert the push landed on the RMI ring...
     assert rig.controller.push_system_fault(event_id=9) is True
     # ...and that the SM-plane in_error that a real system fault raises drives the
@@ -349,7 +354,7 @@ def test_system_fault_push_on_rmi_ring_and_in_error_kills_sm(rig: Rig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# S-DROP — graduated RX-silence + seq-gap / duplicate taxonomy
+# Graduated RX-silence + seq-gap / duplicate taxonomy
 # ---------------------------------------------------------------------------
 
 
@@ -385,7 +390,7 @@ def test_status_duplicate_tolerated(rig: Rig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# S-VERS — v3 + v4 bring-up (version echo + FSConfig gate)
+# Stream Motion v3 + v4 bring-up (version echo + FSConfig gate)
 # ---------------------------------------------------------------------------
 
 
@@ -434,7 +439,8 @@ def test_capture_beyond_tolerance_rejected(rig: Rig) -> None:
 def test_capture_long_splice_takes_at_least_200ms(rig: Rig) -> None:
     # A ~4.5° (0.078 rad) splice at the 15°/s capture rate takes ≥ ~300 ms; assert
     # the CAPTURE phase actually spans ≥ 200 ms before TRAJECTORY (the anchor-math
-    # window; MotionHandle.trajectory_start_mono_ns value itself is a P4b surface).
+    # window; the MotionHandle.trajectory_start_mono_ns value itself is exposed at
+    # the FanucDriver level, not by StreamCore).
     times, q, qd = _traj(0.2, duration_ns=600_000_000, start0=0.078)
     mid = rig.core.submit_trajectory(times, q, qd, 1.0)
     assert rig.wait_mode(Mode.CAPTURE, 1.0), "enters CAPTURE for a > tol-rate splice"
@@ -446,15 +452,17 @@ def test_capture_long_splice_takes_at_least_200ms(rig: Rig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Servo — sine tracking + direction reversal (C2); 5° distance guard (C3)
+# Servo — sine tracking + direction reversal; 5° distance guard
 # ---------------------------------------------------------------------------
 
 
 def test_servo_sine_tracks_and_reverses_without_dwell(rig: Rig) -> None:
     # Drive a sine on J0 via replace-not-queue servo targets at ~50 Hz. Assert the
-    # core enters SERVO, the commanded velocity REVERSES sign (a direction flip —
-    # the C2 overshoot-reverse case), and never dwells at zero velocity through the
-    # sweep (the C2 stutter the minimum_duration fix removes).
+    # core enters SERVO, the commanded velocity REVERSES sign (the overshoot-then-
+    # reverse case, where a new target lands behind the current motion), and never
+    # dwells at zero velocity through the sweep. A dwell would mean the online
+    # profiler reached each target early and froze until the next one arrived,
+    # producing a visible per-step stutter instead of a smooth sweep.
     amp = 0.08  # rad (~4.6°, each 20 ms step ≪ 5° servo window)
     period = 0.6
     hz = 50.0
@@ -483,29 +491,33 @@ def test_servo_sine_tracks_and_reverses_without_dwell(rig: Rig) -> None:
 
 
 def test_servo_distance_guard_rejects_far_target(rig: Rig) -> None:
-    # |q_target − q_cmd| > 5° servo window → typed REJECT (imports no ur_rtde jump).
+    # |q_target − q_cmd| > 5° servo window → typed REJECT, never a silent jump to
+    # the far target.
     mid = rig.core.submit_servo([0.9, 0, 0, 0, 0, 0], 0.5)  # ~51° from ~0
     assert rig.wait_status(mid, MotionStatus.REJECTED, 1.5)
     assert rig.mode() in (Mode.HOLD, Mode.SERVO)
 
 
 # ---------------------------------------------------------------------------
-# S-FLAP — dries 9-flap / 7-oscillation anti-flap dwell (R2 F7)
+# Rapid contact-stop flap — the anti-flap recovery dwell
 # ---------------------------------------------------------------------------
 
 
 def test_contact_flap_storm_holds_dwell_no_premature_recovery(rig: Rig) -> None:
-    """Replay a rapid contact-stop flap (the dries 9-flap / 7-oscillation class):
-    the condition toggles faster than the 500 ms anti-flap dwell, so the core must
-    NOT flap back to STREAMING — DEGRADED→STREAMING requires all-clear sustained
-    ≥ 500 ms (F7). Assert bounded mode transitions (no per-flap re-recovery)."""
+    """Rapid contact-stop flap: a light, marginal contact makes the controller's
+    contact-stop signal oscillate — set, cleared, set again — faster than the
+    500 ms anti-flap dwell. The core must NOT flap back to STREAMING with it:
+    DEGRADED→STREAMING requires the all-clear to be sustained for ≥ 500 ms, so
+    each brief clear is swallowed. Assert bounded mode transitions (no per-flap
+    re-recovery), because recovering per flap would re-enter and re-abort motion
+    nine times in a row instead of settling once."""
     times, q, qd = _traj(1.0, duration_ns=3_000_000_000)
     rig.core.submit_trajectory(times, q, qd, 1.0)
     assert rig.wait_mode(Mode.TRAJECTORY, 1.5)
     rig.core.poll_events()  # drain pre-flap events
 
     # 9 flaps of contact-stop, each shorter than the dwell, with recover() poked
-    # each time an outsider might (mirrors the demo keep_trying retry loop).
+    # each time — as an outside caller's keep-trying retry loop would.
     for _ in range(9):
         rig.controller.set_contact_stop(2)
         assert rig.wait_mode(Mode.SAFE_FOLLOW, 1.0)
@@ -530,7 +542,7 @@ def test_contact_flap_storm_holds_dwell_no_premature_recovery(rig: Rig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# S-SOAK — CI-short conformance soak (the R1 A1 fix regression wall)
+# CI-short conformance soak — sustained streaming holds the TX cadence
 # ---------------------------------------------------------------------------
 
 
@@ -538,18 +550,19 @@ def test_soak_short_conformance_and_cadence(rig: Rig) -> None:
     """A few seconds of SUSTAINED 125 Hz streaming (one move, then steady HOLD)
     must hold the wire-conformance + one-TX-per-window invariants: ZERO strict
     violations and ``double_send_guard == 0`` over ~500 TX windows. This is the
-    fast CI canary for the FakeCRX min-inter-TX-spacing fix — the fix's exact
-    target is the steady stream where two independent ~125 Hz clocks must NOT
-    manufacture a phantom double-send, which HOLD exercises continuously. The FULL
-    3-min ``-m soak_short`` and the 30-min adversarial soak run on olifant (L3,
-    report 09 §2.4 / §8) — not on jittery CI runners.
+    fast CI canary for the FakeCRX min-inter-TX-spacing check — its exact target
+    is the steady stream, where the core's TX clock and the fake's ~125 Hz status
+    clock run independently and must NOT drift into a window that looks like a
+    phantom double-send. Steady HOLD exercises that continuously, which is why the
+    soak spends most of its time there. Longer soaks (multi-minute, and an
+    adversarial variant) belong on a quiet dedicated host, not on jittery CI
+    runners, so this one is deliberately short.
 
-    NOTE: this soak does a SINGLE trajectory submit for cadence focus. Rapid
-    re-submission ORIGINALLY hit a submit_mu_ re-lock deadlock in reap_retired_
-    that this soak first surfaced; it is now FIXED by splitting out
-    reap_retired_locked_() for the submit paths (realtime_core.cpp). The active
-    regression guard is ``test_submit_trajectory_deadlocks_after_buffer_retirement``
-    below (it runs and passes — not skipped).
+    NOTE: this soak does a SINGLE trajectory submit to keep the focus on cadence.
+    Rapid re-submission is exercised by
+    ``test_submit_trajectory_deadlocks_after_buffer_retirement`` below, which
+    guards the submit-path locking discipline (the submit paths call
+    ``reap_retired_locked_()`` because they already hold ``submit_mu_``).
     """
     # One real move to exercise CAPTURE→TRAJECTORY→settle, then hold-stream.
     times, q, qd = _traj(0.3, duration_ns=800_000_000)
@@ -575,12 +588,13 @@ def test_submit_trajectory_deadlocks_after_buffer_retirement() -> None:
     """REGRESSION guard for the submit_mu_/reap_retired_ self-deadlock.
 
     Repro (deterministic): submit a trajectory, wait DONE, sleep so the RT thread
-    supersedes+retires the completed buffer, repeat. Submits #1 and #2 return;
-    submit #3 blocks forever inside the C++ ``submit_trajectory`` because
-    ``reap_retired_()`` (line ~647) re-locks ``submit_mu_`` already held at line
-    ~646. Suggested fix: a ``reap_retired_locked_()`` helper for the submit paths
-    (which already hold the lock), or make ``submit_mu_`` recursive. Once fixed,
-    all five submits below return and this test passes.
+    supersedes+retires the completed buffer, repeat. The third submit is the one
+    that bites: only by then is there a retired buffer to reap, so
+    ``submit_trajectory`` takes the reap path while already holding ``submit_mu_``.
+    If that path calls the plain ``reap_retired_()``, it re-locks the non-recursive
+    ``submit_mu_`` and blocks forever. The submit paths must therefore use
+    ``reap_retired_locked_()``, which assumes the lock is already held. All five
+    submits below must return.
     """
     r = Rig()
     assert r.wait_mode(Mode.HOLD, 3.0)
@@ -596,7 +610,7 @@ def test_submit_trajectory_deadlocks_after_buffer_retirement() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Finding 6 (R4(b)) — superseded (mailbox-coalesced) handles resolve PREEMPTED
+# Superseded (mailbox-coalesced) handles resolve PREEMPTED
 # ---------------------------------------------------------------------------
 
 
@@ -604,13 +618,15 @@ def test_rapid_supersede_resolves_superseded_handles_preempted(rig: Rig) -> None
     """A burst of submits fired faster than the 8 ms RT tick coalesces in the
     mailbox: the drain loop keeps only the LAST target, so only it reaches
     ``TickCore::consume``. Every superseded (coalesced-away) handle MUST resolve
-    ``PREEMPTED`` — never hang ``PENDING`` (R4(b)).
+    ``PREEMPTED`` — never hang ``PENDING``.
 
-    Pre-fix, the drain loop recorded no terminal resolution for the coalesced
-    ids, so ``motion_status`` returned ``PENDING`` forever → ``MotionHandle.wait``
-    (which polls ``motion_status``) blocked indefinitely / raised ``TimeoutError``.
-    Reproduced with 7 back-to-back submits (ids 1-6 stuck PENDING); this fires 12,
-    kept under the 16-slot mailbox so none are dropped-at-submit.
+    The resolution has to be recorded by the drain loop itself: a coalesced target
+    never reaches ``consume``, so the consume-time preempt path never sees it. With
+    no terminal status written, ``motion_status`` would return ``PENDING`` forever
+    and ``MotionHandle.wait`` (which polls ``motion_status``) would block
+    indefinitely / raise ``TimeoutError``. Seven back-to-back submits are already
+    enough to leave the first six stuck; this fires 12, kept under the 16-slot
+    mailbox so none are dropped at submit time.
     """
     n = 12
     ids: list[int] = []
@@ -625,7 +641,7 @@ def test_rapid_supersede_resolves_superseded_handles_preempted(rig: Rig) -> None
         f"survivor {survivor} never resolved (status={rig.status(survivor).name})"
     )
 
-    # Every handle is now terminal — NONE stuck PENDING (the finding-6 hang).
+    # Every handle is terminal — NONE stuck PENDING (the indefinite-wait hang).
     statuses = {mid: rig.status(mid) for mid in ids}
     pending = [mid for mid, s in statuses.items() if s == MotionStatus.PENDING]
     assert not pending, (

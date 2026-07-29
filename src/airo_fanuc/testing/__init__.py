@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""airo_fanuc.testing — wire-protocol oracle + FakeCRXController (ships in the wheel; see PLAN.md D11).
+"""airo_fanuc.testing — wire-protocol oracle + FakeCRXController.
+
+Ships in the wheel, not just the source tree, so downstream code can be tested
+against the emulator without a controller on the bench.
 
 * :mod:`airo_fanuc.testing.wire` — byte-exact Stream Motion + RMI codec oracle.
 * :class:`FakeCRXController` — strict-conformance software emulator of the FANUC
   CRX-10iA/L controller (Stream Motion UDP + RMI TCP + first-order-lag plant,
   with fault injection). The executable spec the C++ core + Python lifecycle are
-  tested against (PLAN.md §8 "L2 (FakeCRX): behavior-model spec is normative").
+  tested against: where the emulator's behavior model and a test disagree, the
+  behavior model is normative.
 """
 
 from airo_fanuc.testing.fake_crx import (

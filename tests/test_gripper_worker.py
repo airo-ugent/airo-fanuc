@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for :class:`airo_fanuc.gripper_worker.GripperWorker` (PLAN §5.4, R2 F32).
+"""Tests for :class:`airo_fanuc.gripper_worker.GripperWorker`.
 
 Covers the GRIPDISP register sequence happy path against the real
 :class:`~airo_fanuc.testing.FakeCRXController` + :class:`RmiClient`, plus the
@@ -119,7 +119,8 @@ def test_register_poke_sequence_order() -> None:
     with GripperWorker(rmi, dispatch_timeout_s=1.0) as worker:
         result = worker.open_gripper_and_wait(open_state=OPEN_MID, timeout=2.0)
     assert result is not None and result["success"] is True
-    # Poke order: R[3]=modifier, R[2]=action, R[1]=1 (dries sequence).
+    # Poke order matters: R[3]=modifier and R[2]=action must both be settled BEFORE
+    # R[1]=1 triggers GRIPDISP, which reads them on the same scan.
     assert rmi.write_log == [(REG_R3, float(OPEN_MID)), (REG_ACTION, float(ACTION_OPEN)), (REG_CMD, 1.0)]
 
 
@@ -152,7 +153,7 @@ def test_write_failure_returns_dict_fail() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Recovery fast-reject (R2 F32)
+# Recovery fast-reject
 # ---------------------------------------------------------------------------
 
 

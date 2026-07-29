@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 golden — Ruckig-online servo (R1 C2/C3). Asserts the minimum_duration fix
-// (no reach-early freeze), no zero-velocity dwell on a streamed ramp, bounded
-// qdd on a sine + a direction reversal, the 5° distance guard, and starvation
-// rest via re-issue. Parameters are deliberately gentle: an aggressive velocity
-// feedforward toward a nearby target from rest is infeasible without runway and
-// makes Ruckig reverse to gain it (the "overshoot-reverse" C2 also names) — that
-// is correct Ruckig behaviour, not a servo bug, but it is not what these
-// property tests are probing.
+// Unit test — Ruckig-online servo. Asserts the minimum_duration behaviour (no
+// reach-early freeze), no zero-velocity dwell on a streamed ramp, bounded qdd on
+// a sine + a direction reversal, the 5° distance guard, and starvation rest via
+// re-issue. Parameters are deliberately gentle: an aggressive velocity
+// feedforward toward a nearby target from rest is infeasible without runway, so
+// Ruckig reverses to gain that runway ("overshoot-reverse") — correct Ruckig
+// behaviour, not a servo bug, but not what these property tests are probing.
 
 #include <array>
 #include <cmath>
@@ -30,7 +29,7 @@ Vec6 axis0(double x) { return Vec6{x, 0, 0, 0, 0, 0}; }
 constexpr double kTwoPi = 2.0 * 3.141592653589793;
 }  // namespace
 
-// R1 C2 — minimum_duration = duration prevents the reach-early freeze sawtooth.
+// minimum_duration = duration prevents the reach-early freeze sawtooth.
 // A tiny move whose time-optimal profile is ≪ duration is spread across the full
 // duration: at ~half the duration the command is still en route, and arrival
 // takes many ticks (not 1-2).
@@ -155,7 +154,7 @@ TEST(Servo, DirectionReversalBounded) {
   EXPECT_GE(q_min, 0.0 - 0.02) << "no large overshoot below the bottom target";
 }
 
-// R1 C3 — distance guard: reject a target farther than the servo window (5°)
+// Distance guard: reject a target farther than the servo window (5°)
 // from the current commanded position; no state change on reject; the accepted
 // target still executes (forward progress).
 TEST(Servo, DistanceGuardRejectsFarTarget) {
@@ -182,8 +181,9 @@ TEST(Servo, DistanceGuardRejectsFarTarget) {
   }
 }
 
-// Starvation-safety via re-issue (ur_rtde hold-last-target model): re-sending the
-// SAME target zeroes the velocity feedforward → the commanded position rests.
+// Starvation-safety via re-issue. The servo holds its last target instead of
+// requiring a fresh one every tick, so a stalled command stream is safe: re-sending
+// the SAME target zeroes the velocity feedforward → the commanded position rests.
 TEST(Servo, RestsWhenLastTargetReissued) {
   TickEngineConfig cfg;
   Servo servo(cfg);

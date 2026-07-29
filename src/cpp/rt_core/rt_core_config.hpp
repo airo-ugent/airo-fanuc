@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// airo_fanuc — RT core configuration, enums and POD command/gate/target types
-// (P3b). PLAN.md §5.2 + design doc 07 §3.5.
+// airo_fanuc — RT core configuration, enums and POD command/gate/target types.
 //
 // `RtCoreConfig` MIRRORS the single-sourced Python constants in
-// `airo_fanuc.controller_facts` (see PLAN.md §5.1). Every RX-silence / dwell /
-// re-anchor field carries a comment naming its `controller_facts` symbol. The
-// Python `DriverConfig.to_rt_core_config()` POPULATES the protocol + watchdog
+// `airo_fanuc.controller_facts`. Every RX-silence / dwell / re-anchor field carries
+// a comment naming its `controller_facts` symbol. The Python
+// `DriverConfig.to_rt_core_config()` POPULATES the protocol + watchdog
 // fields from `controller_facts` and `FanucDriver` passes the struct into the C++
 // `StreamCore` at construction; the C++ defaults still mirror the rest so the pure
 // `TickCore` logic is testable stand-alone. If you change a value in
@@ -32,7 +31,7 @@ using tick_engine::kNumJoints;
 using tick_engine::Vec6;
 
 // ---------------------------------------------------------------------------
-// Motion mode (design doc 07 §3.5). Orthogonal to health (FaultReason).
+// Motion mode. Orthogonal to health (FaultReason).
 //   STREAM_DOWN → PREROLL → HOLD ⇄ {CAPTURE → TRAJECTORY, SERVO, BRAKE} → HOLD
 //   + SAFE_FOLLOW (re-anchor commanded→measured ≤15°/s, 5° deadband; entered on
 //     fault/DEGRADED; exited only via recover()).
@@ -50,7 +49,7 @@ enum class Mode : std::uint8_t {
   RX_SILENT,
 };
 
-// Latched health cause (design doc 07 §3.5). NONE = OK.
+// Latched health cause. NONE = OK.
 enum class FaultReason : std::uint8_t {
   NONE,
   E_STOP,
@@ -69,7 +68,7 @@ enum class FaultReason : std::uint8_t {
   INTERNAL,
 };
 
-// Per-motion result (mirrors MotionResult / MotionStatus in PLAN.md §5.1).
+// Per-motion result (mirrors MotionResult / MotionStatus on the Python side).
 enum class MotionStatus : std::uint8_t {
   PENDING,
   RUNNING,
@@ -81,8 +80,9 @@ enum class MotionStatus : std::uint8_t {
   REJECTED,
 };
 
-// Condition bitmask (F8: conditions are a SET). Snapshot exposes this alongside
-// the primary latched FaultReason.
+// Condition bitmask. Conditions are a SET — several can be live at once (e-stop
+// while in TEACH, say), so the snapshot exposes the whole mask alongside the
+// single primary latched FaultReason.
 enum Condition : std::uint32_t {
   kCondNone = 0,
   kCondEStop = 1u << 0,
@@ -93,15 +93,15 @@ enum Condition : std::uint32_t {
   kCondSafetyClamp = 1u << 5,
   kCondRxDegraded = 1u << 6,
   kCondRxSilent = 1u << 7,
-  kCondSustainedSlew = 1u << 8,  // F35 diagnostic (never faults)
+  kCondSustainedSlew = 1u << 8,  // diagnostic only (never faults)
 };
 
 // ---------------------------------------------------------------------------
-// Epoch bump-event table (R2 F4). Exactly these nine scenarios bump the core
-// epoch; each is L1-tested in isolation (test_epoch.cpp). A stale target (tagged
-// with a pre-bump epoch) is structurally unexecutable — rejected at CONSUME.
-// (kSupervisorLost + kDriftFault added at P-1 finalization; see the P-1
-// controller-notes E6/E9 gaps — both were defined-but-never-set fault sources.)
+// Epoch bump-event table. Exactly these nine scenarios bump the core epoch; each
+// is covered in isolation by a C++ unit test (test_epoch.cpp). A stale target
+// (tagged with a pre-bump epoch) is structurally unexecutable — rejected at
+// CONSUME — which is how a target that raced one of these events is prevented from
+// activating against state it was never planned for.
 // ---------------------------------------------------------------------------
 enum class BumpReason : std::uint8_t {
   kNone = 0,
@@ -118,10 +118,10 @@ enum class BumpReason : std::uint8_t {
 };
 
 // ---------------------------------------------------------------------------
-// Gates — pure decode of a type-204 status (the six autonomy gates that run
-// GIL-free in C++, R2 F29). NOTE: OVERRIDE_LOW is NOT here — TP override % is
-// absent from type-204 (it arrives via 1 Hz RMI ext-status), so the Python
-// supervisor lowers it and calls stop_j(). See PLAN.md §5.2 / design doc §1.3.
+// Gates — pure decode of a type-204 status: the autonomy gates, decided in C++ on
+// the RT thread so no gate decision can ever wait on the Python GIL. NOTE:
+// OVERRIDE_LOW is NOT here — TP override % is absent from type-204 (it arrives via
+// 1 Hz RMI ext-status), so the Python supervisor lowers it and calls stop_j().
 // ---------------------------------------------------------------------------
 struct Gates {
   bool e_stopped{false};        // robot_status & 0x4
@@ -140,43 +140,54 @@ struct Gates {
 struct RtCoreConfig {
   tick_engine::TickEngineConfig tick{};  // all cubic-Hermite / brake / servo / slew / settle knobs
 
-  // --- Graduated RX-silence (decision 7 / R1 A3), controller_facts ---
+  // --- Graduated RX-silence: an RX gap is escalated in stages rather than
+  //     treated as an immediate fault, so ordinary packet loss costs nothing while
+  //     a real stream loss still ends in a parked TX. ---
   double rx_silence_blind_hold_ms{100.0};  // controller_facts.RX_SILENCE_BLIND_HOLD_MS
   double rx_silence_qd_ramp_ms{60.0};      // controller_facts.RX_SILENCE_QD_RAMP_MS
   double rx_silent_park_ms{500.0};         // controller_facts.RX_SILENT_PARK_MS
 
-  // --- Anti-flap dwell (R2 F7): recover() succeeds only once all kill gates
-  //     have been clear this long. ---
+  // --- Anti-flap dwell: recover() succeeds only once all kill gates have been
+  //     clear this long, so a gate that is chattering cannot be recovered out of
+  //     and straight back into a fault. ---
   double antiflap_dwell_ms{500.0};  // controller_facts.ANTIFLAP_DWELL_MS
 
-  // --- SAFE_FOLLOW re-anchor (dries starvation stage-2) ---
-  double safe_follow_rate_rad_s{deg2rad(15.0)};   // controller_facts.CAPTURE_RATE_DEG_S (= STARVATION_RE_ANCHOR_RATE)
-  double safe_follow_deadband_rad{deg2rad(5.0)};  // dries STARVATION_RE_ANCHOR_DRIFT_RAD
+  // --- SAFE_FOLLOW re-anchor: walk the commanded pose back onto the measured one
+  //     slowly enough that the re-anchor itself is not a motion command. ---
+  double safe_follow_rate_rad_s{deg2rad(15.0)};   // controller_facts.CAPTURE_RATE_DEG_S
+  double safe_follow_deadband_rad{deg2rad(5.0)};  // below this divergence, leave q_cmd alone
 
-  // --- Supervisor liveness (SUPERVISOR_LOST, P-1 finalization) ---
+  // --- Supervisor liveness (SUPERVISOR_LOST) ---
   // The Python supervisor beats from a DEDICATED lightweight thread (no RMI, no
   // locks); if the core sees no heartbeat for this long *while streaming* (after
-  // the first beat arms it), it latches FAULTED(SUPERVISOR_LOST) and holds — the
-  // RT core is independent of the supervisor (F28/F29), so this makes "the
-  // supervisor thread/process died" observable + safe. Generous vs the beat
+  // the first beat arms it), it latches FAULTED(SUPERVISOR_LOST) and holds. The RT
+  // core keeps ticking without the supervisor by design, which is exactly why the
+  // supervisor dying has to be detected here — otherwise the core would happily
+  // stream on with nothing watching the gates it cannot see. Generous vs the beat
   // interval (~100 ms) to tolerate GIL-storm / GC pauses without a false trip.
   double supervisor_lost_s{3.0};  // controller_facts.SUPERVISOR_LOST_S
 
-  // --- Drift guard (DRIFT, P-1 finalization) ---
+  // --- Drift guard (DRIFT) ---
   // Lag-aligned commanded↔measured divergence: q_meas(now) vs q_cmd(now − lag).
   // Sustained divergence > drift_fault_rad for drift_fault_ticks → FAULTED(DRIFT)
-  // → SAFE_FOLLOW (re-anchor + recover). This is the 22°-runaway protection the
-  // dries executor had (MAX_DRIFT); E9 fixed the lag to 25 ms (≈3 ticks) so the
-  // prediction is accurate. drift_lag_ticks is set from tracking_lag_s / ITP.
+  // → SAFE_FOLLOW (re-anchor + recover). This is the runaway guard: if the arm
+  // silently stops tracking the commanded stream, nothing else notices, and the
+  // commanded pose walks tens of degrees away from where the arm actually is.
+  // Aligning against the measured servo lag (25 ms ≈ 3 ticks) is what makes the
+  // threshold mean genuine divergence rather than ordinary tracking lag.
+  // drift_lag_ticks is set from tracking_lag_s / ITP.
   int drift_lag_ticks{3};                     // round(controller_facts.tracking_lag_s / ITP_S) = round(0.025/0.008)
   double drift_fault_rad{deg2rad(10.0)};      // controller_facts.DRIFT_FAULT_DEG
   int drift_fault_ticks{5};                   // controller_facts.DRIFT_FAULT_TICKS
 
   // --- Gates ---
-  double safety_scale_min{0.05};  // dries executor SAFETY_CLAMP threshold (<0.05)
+  // SAFETY_CLAMP threshold: a safety_scale under 5 % means the controller is
+  // rescaling commanded motion so hard that the stream is no longer being tracked
+  // in any useful sense, so treat it as a kill condition rather than slow motion.
+  double safety_scale_min{0.05};
 
   // --- Preroll (SM handshake wait for motion_possible) ---
-  double preroll_timeout_s{5.0};  // dries STREAM_MOTION_PREROLL_TIMEOUT_S
+  double preroll_timeout_s{5.0};  // mirrors DriverConfig.preroll_timeout_s
 
   // --- RealtimeCore I/O + PLL (not used by pure TickCore) ---
   std::string host{"127.0.0.1"};
@@ -185,8 +196,8 @@ struct RtCoreConfig {
   bool sched_fifo{false};   // raise the RT thread to SCHED_FIFO (graceful on EPERM)
   bool mlock{false};        // mlockall the process (graceful on EPERM)
   double pll_rx_lead_us{300.0};  // PLL target: fire tick this long after RX
-  double pll_kp{0.20};           // PLL proportional gain
-  bool reply_on_receive{false};  // H2 comparison flag (raw reply-on-receive instead of PLL-clocked)
+  double pll_kp{0.20};           // PLL proportional gain (tuned; rationale in pll.hpp)
+  bool reply_on_receive{false};  // diagnostic: send in direct reply to each RX instead of PLL-clocked
   std::uint32_t sm_version{3};   // fallback default; GetCapability negotiation adopts the controller's available_version at handshake
 };
 
@@ -205,7 +216,7 @@ struct Command {
 // Target — a POD mailbox payload (latest-wins single slot). Trajectory arrays
 // are allocated/owned by the submitter and referenced by pointer (RT thread
 // never allocates/frees — retire ring frees off-RT). `epoch` is tagged at submit
-// and re-checked at CONSUME (R2 F4).
+// and re-checked at CONSUME.
 // ---------------------------------------------------------------------------
 enum class TargetKind : std::uint8_t { kNone, kHold, kTrajectory, kServo, kBrake };
 
@@ -213,7 +224,7 @@ struct Target {
   TargetKind kind{TargetKind::kNone};
   std::uint64_t motion_id{0};
   std::uint64_t epoch{0};  // core epoch at submit time (CONSUME re-checks vs live epoch)
-  std::uint64_t stop_gen{0};  // caller stop-generation at submit (finding-1: a later stop_j supersedes this target)
+  std::uint64_t stop_gen{0};  // caller stop-generation at submit (a later stop_j supersedes this target)
   const void* buffer_owner{nullptr};  // opaque handle to the owning TrajBuffer (RealtimeCore retire; TickCore ignores)
 
   // Trajectory (non-owning view; must outlive the motion).
@@ -266,8 +277,8 @@ enum class EventType : std::uint16_t {
   kMotionRejected,
   kMotionRunning,
   kGateEdge,  // value = Condition bit that changed; reason = mapped fault
-  kSupervisorLost,  // supervisor heartbeat lapsed (P-1 finalization)
-  kDrift,           // commanded↔measured divergence fault (P-1 finalization)
+  kSupervisorLost,  // supervisor heartbeat lapsed
+  kDrift,           // commanded↔measured divergence fault
 };
 
 struct Event {
@@ -279,9 +290,9 @@ struct Event {
 };
 
 // ---------------------------------------------------------------------------
-// Gate decode (pure). robot_status/status bit layout from PLAN.md §A (verified
-// against dries packets.py): robot_status 0x1 in_error / 0x2 tp_enabled /
-// 0x4 e_stopped; status 0x1 motion_possible / 0x8 motion_in_progress.
+// Gate decode (pure). Bit layout of the Stream Motion status packet's two flag
+// bytes: robot_status 0x1 in_error / 0x2 tp_enabled / 0x4 e_stopped;
+// status 0x1 motion_possible / 0x8 motion_in_progress.
 // ---------------------------------------------------------------------------
 inline Gates decode_gates(std::uint8_t status, std::uint8_t robot_status, std::uint8_t contact_stop_status,
                           double safety_scale, double safety_scale_min) {

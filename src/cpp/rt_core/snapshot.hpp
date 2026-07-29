@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// airo_fanuc — seqlock state snapshot (P3b). PLAN.md §5.2 / design doc 07 §4.
+// airo_fanuc — seqlock state snapshot.
 //
 // The RT thread publishes a POD `StateSnapshot` every tick via a seqlock; any
 // number of Python-side readers get a torn-free read WITHOUT blocking the RT
 // writer (poll-only — NO RT-thread callbacks into Python, ever). Staleness is
-// annotated (rx_mono_ns / ages), never suppressed: a getter reports the age so a
-// stale value is never presented as fresh (T1 keeps flowing with honest ages).
+// annotated (rx_mono_ns / ages), never suppressed: a getter reports the age, so a
+// stale value is never presented as fresh AND telemetry keeps flowing during an
+// RX gap instead of stalling or throwing.
 
 #pragma once
 

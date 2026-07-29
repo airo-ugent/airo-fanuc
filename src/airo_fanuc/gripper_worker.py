@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Serialized Robotiq 2F-85 gripper worker over the driver's ``RmiClient``.
 
-Ports the ``dries`` ``MotionSubprocess._execute_gripper_command`` GRIPDISP
-register sequence verbatim (design 08 §8), restructured as a standalone worker
-object driven by the :class:`~airo_fanuc.gripper_worker.GripperWorker` API
-instead of a Zenoh subscriber callback. The register contract itself is in
+Drives the controller's ``GRIPDISP`` TP program by writing its trigger registers
+and polling for completion. The register contract itself — and the fact that the
+R[3] modifier means a *width bucket* on open and a *force class* on close — is in
 :mod:`airo_fanuc.gripper`.
 
 Sequence (one physical command):
@@ -18,7 +17,11 @@ Sequence (one physical command):
 5. Poll ``rmi.read_register(REG_CMD)`` at ``poll_hz`` (20 Hz) until it clears
    to 0 (success) or ``dispatch_timeout_s`` (5 s) elapses (timeout).
 
-Design invariants (PLAN §5.4, R2 F32):
+Polling R[1] is the only completion signal available: the protocol exposes no
+width feedback, so "done" means the TP program cleared the trigger, not that a
+measured width was reached.
+
+Design invariants:
 
 * **Serialized** — one physical gripper, so a single-worker
   :class:`~concurrent.futures.ThreadPoolExecutor` runs the sequence; concurrent
@@ -28,17 +31,17 @@ Design invariants (PLAN §5.4, R2 F32):
   5 s poll loop, which would otherwise hold the RMI path and stall the
   recovery ladder's ``FRC_Reset``).
 * **Never hang** — a stuck GRIPDISP times out into ``{"success": False, ...}``.
-* **Result is dict-or-None** ``{"success": bool, "message": str}`` (R3 A6
-  facade compat); :meth:`wait_gripper_done` returns ``None`` only if it times
-  out waiting for the worker (distinct from the worker's own dict-fail).
+* **Result is dict-or-None** ``{"success": bool, "message": str}``;
+  :meth:`wait_gripper_done` returns ``None`` only if it times out waiting for the
+  worker, which is a distinct outcome from the worker's own dict-fail and must
+  stay distinguishable by callers.
 * Bad ``open_state`` / ``close_force`` (out of range, or a ``bool``) raise
-  :class:`ValueError` synchronously — programmer error, fail loud (matches the
-  ``dries`` ``crx10ial`` high-level API).
+  :class:`ValueError` synchronously — programmer error, fail loud rather than
+  silently gripping at some other bucket.
 
-Wheel-standalone: stdlib ``logging`` / ``threading`` / ``concurrent.futures``
-(never loguru — D14 numpy-only deps). The injected RMI client is duck-typed
-(:class:`GripperRmi`), so the real :class:`~airo_fanuc.rmi_client.RmiClient` and
-a test double both satisfy it.
+Dependency-light: stdlib ``logging`` / ``threading`` / ``concurrent.futures``
+only. The injected RMI client is duck-typed (:class:`GripperRmi`), so the real
+:class:`~airo_fanuc.rmi_client.RmiClient` and a test double both satisfy it.
 """
 
 from __future__ import annotations
@@ -63,13 +66,14 @@ from airo_fanuc.gripper import (
 
 logger = logging.getLogger("airo_fanuc.gripper")
 
-# Gripper protocol timing (dries: GRIPPER_TRIGGER_SETTLE_S / GRIPPER_POLL_HZ /
-# GRIPPER_DISPATCH_TIMEOUT_S). Reproduced here as the worker defaults.
+# Gripper protocol timing — the worker defaults for the settle window before the
+# first poll, the poll cadence, and the bound on one dispatch (see the module
+# docstring's sequence).
 GRIPPER_TRIGGER_SETTLE_S = 0.1
 GRIPPER_POLL_HZ = 20.0
 GRIPPER_DISPATCH_TIMEOUT_S = 5.0
 
-#: Result type: dict-or-None ``{"success": bool, "message": str}`` (R3 A6).
+#: Result type: dict-or-None ``{"success": bool, "message": str}``.
 GripperResult = dict[str, object]
 
 
@@ -113,8 +117,8 @@ class GripperWorker:
         self._exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="airo-fanuc-gripper")
         self._stop_evt = threading.Event()
 
-        # Latest-command completion signalling + result (dries _gripper_done /
-        # _gripper_result). Starts "done" so an early wait_gripper_done returns.
+        # Latest-command completion signalling + result. Starts "done" so a
+        # wait_gripper_done before any command returns instead of blocking.
         self._done = threading.Event()
         self._done.set()
         self._result_lock = threading.Lock()
@@ -134,7 +138,7 @@ class GripperWorker:
         While ``active``, :meth:`open_gripper` / :meth:`close_gripper` reject
         immediately with a ``{"success": False}`` result instead of submitting
         the 5 s poll loop, so the RMI path stays free for the recovery ladder's
-        ``FRC_Reset`` (R2 F32).
+        ``FRC_Reset``.
         """
         with self._recovery_lock:
             self._recovering = bool(active)
@@ -144,19 +148,20 @@ class GripperWorker:
             return self._recovering
 
     # ------------------------------------------------------------------
-    # Non-blocking submit API (dries crx10ial semantics)
+    # Non-blocking submit API
     # ------------------------------------------------------------------
 
     def open_gripper(self, open_state: int = OPEN_FULL) -> None:
         """Open the gripper (non-blocking). Result via :meth:`wait_gripper_done`.
 
-        ``open_state`` selects the open width via R[3]: ``OPEN_FULL`` (0,
-        POSITION 0, ~85 mm), ``OPEN_MID`` (1, POSITION 75, ~60 mm), or
-        ``OPEN_NARROW`` (2, POSITION 150, ~35 mm).
+        ``open_state`` selects the open width via R[3] — one of three discrete
+        buckets, never a width in millimetres: ``OPEN_FULL`` (0, POSITION 0,
+        ~85 mm), ``OPEN_MID`` (1, POSITION 75, ~60 mm), or ``OPEN_NARROW``
+        (2, POSITION 150, ~35 mm).
 
-        Raises :class:`ValueError` for an out-of-range value or a ``bool`` (a
-        stale ``open_state=True`` from an old wire format must fail loudly, not
-        silently map to 1).
+        Raises :class:`ValueError` for an out-of-range value or a ``bool``:
+        ``open_state=True`` would otherwise silently mean ``OPEN_MID`` (1),
+        opening to a width the caller never asked for.
         """
         self._validate_selector(open_state, VALID_OPEN_STATES, "open_state")
         self._submit("open", ACTION_OPEN, int(open_state))
@@ -164,10 +169,11 @@ class GripperWorker:
     def close_gripper(self, close_force: int = DEFAULT_CLOSE_FORCE) -> None:
         """Close the gripper (non-blocking). Result via :meth:`wait_gripper_done`.
 
-        ``close_force`` selects the close target/force pair via R[3]:
-        ``FORCE_LIGHT`` (0, POSITION 220 / FORCE 100; balls), ``FORCE_MEDIUM``
-        (1, POSITION 220 / FORCE 150; default), ``FORCE_HARD`` (2, POSITION 255
-        / FORCE 255; compressible items).
+        ``close_force`` selects the close target/force pair via R[3] — one of
+        three discrete force classes, never a force in newtons: ``FORCE_LIGHT``
+        (0, POSITION 220 / FORCE 100; rigid or easily-crushed objects),
+        ``FORCE_MEDIUM`` (1, POSITION 220 / FORCE 150; default), ``FORCE_HARD``
+        (2, POSITION 255 / FORCE 255; compressible objects).
 
         Raises :class:`ValueError` for an out-of-range value or a ``bool``.
         """
@@ -192,7 +198,7 @@ class GripperWorker:
         return self._done.is_set()
 
     # ------------------------------------------------------------------
-    # Blocking convenience API (dries *_and_wait)
+    # Blocking convenience API
     # ------------------------------------------------------------------
 
     def open_gripper_and_wait(
@@ -242,7 +248,7 @@ class GripperWorker:
     @staticmethod
     def _validate_selector(value: object, valid: tuple[int, ...], field: str) -> None:
         # bool is an int subclass — reject explicitly so True/False can't sneak
-        # in as 1/0 (dries F-note).
+        # in as 1/0 and select a bucket the caller never named.
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"{field} must be an int in {valid}, got {type(value).__name__} {value!r}")
         if value not in valid:

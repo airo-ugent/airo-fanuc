@@ -21,18 +21,19 @@ We vendor and compile **only the Stream Motion packet codec**:
 Everything else in the upstream tree is **unused**:
 
 - `fanuc_libs/stream_motion/src/stream.cpp` + `include/stream_motion/stream.hpp` —
-  their UDP socket layer (depends on `sockpp`). We own the RT socket loop (P3), so this is not compiled.
+  their UDP socket layer (depends on `sockpp`). We own the RT socket loop, so this is not compiled.
 - `fanuc_libs/stream_motion/src/byte_ops.cpp` — defines only `isLittleEndian()` and carries an
-  **unused** `#include <fmt/format.h>`. We do NOT compile it (see build note B1); our codec supplies
-  its own endianness probe. This avoids pulling `fmt` into the codec target.
-- `fanuc_libs/fanuc_client`, `fanuc_libs/rmi` — RMI stays in Python (dries `RmiClient`); no C++ RMI target.
+  **unused** `#include <fmt/format.h>`. We do NOT compile it (see the build-integration note below);
+  our codec supplies its own endianness probe. This avoids pulling `fmt` into the codec target.
+- `fanuc_libs/fanuc_client`, `fanuc_libs/rmi` — RMI is implemented in Python
+  (`airo_fanuc.rmi_client.RmiClient`); there is no C++ RMI target.
 - All ROS2 packages (`fanuc_hardware_interface`, `fanuc_controllers`, `fanuc_msgs`, `fanuc_moveit_config`, …) — no ROS.
-- No `Eigen`, no `reflect-cpp`, no `yaml-cpp`, no `sockpp` in our build (a configure-time D6 check
-  asserts the two vendored headers we compile against are Eigen-free).
+- No `Eigen`, no `reflect-cpp`, no `yaml-cpp`, no `sockpp` in our build (a configure-time check in
+  `CMakeLists.txt` asserts the two vendored headers we compile against are Eigen-free).
 
 ## Patch set
 
-**EMPTY.** As of P0 we carry **zero source patches** against the vendored FANUC files —
+**EMPTY.** We carry **zero source patches** against the vendored FANUC files —
 the codec is consumed header-only and needs no edits. The SPDX headers on the vendored
 files are intact and unmodified.
 
@@ -47,7 +48,7 @@ If a patch ever becomes necessary, record it here as:
 
 ## Build-integration notes (NOT source patches)
 
-- **B1 — `byte_ops.cpp` excluded from the codec target.** The vendored `byte_ops.cpp` only
+- **`byte_ops.cpp` is excluded from the codec target.** The vendored `byte_ops.cpp` only
   defines `stream_motion::isLittleEndian()` and includes `<fmt/format.h>` (unused). Compiling it
   would drag `fmt` into an otherwise dependency-free codec. Instead, the `fanuc_sm_codec` static
   target compiles our own thin wrapper TU (`src/cpp/codec/codec.cpp`) against the vendored headers,
@@ -59,6 +60,6 @@ If a patch ever becomes necessary, record it here as:
 
 1. Move the pin to the target upstream tag. If any P-SM patch exists, first create a fork
    branch off that tag, cherry-pick the patches, and repoint the submodule at the fork.
-2. Re-run L0 (codec goldens) + L1 (C++ unit) + L2 (FakeCRX matrix); fix drift.
+2. Re-run the codec golden tests, the C++ unit tests and the FakeCRX integration matrix; fix drift.
 3. `sizeof` static-asserts in `tests/cpp/test_codec_smoke.cpp` guard silent struct-layout changes.
 4. Dedicated PR + HIL retest before the pin moves on `main`.

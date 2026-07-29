@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Per-connect preflight gate (PLAN.md §5.3 / design doc 08 §9).
+"""Per-connect preflight gate.
 
-The design-doc-08 D14 ladder MINUS the recurring FTP checks (P-level / S636 /
-orderfil are one-time bench facts cached in ``docs/controller-notes.md`` and only
-re-run with ``full=True``). Every bring-up runs :func:`run_preflight` against an
-already-connected commands-only :class:`~airo_fanuc.rmi_client.RmiClient` and gets
-a structured :class:`PreflightReport` back — attached to the STARTUP event and, on
-a hard block, wrapped in :class:`~airo_fanuc.exceptions.FanucPreflightError` so the
+The full gate ladder MINUS the recurring FTP checks: P-level / S636 / orderfil are
+one-time bench facts recorded in ``docs/controller-notes.md``, so re-fetching them
+over FTP on every connect would add a slow, fallible step to every bring-up for
+facts that do not change; they are re-read on demand with ``full=True``.
+
+Every bring-up runs :func:`run_preflight` against an already-connected
+commands-only :class:`~airo_fanuc.rmi_client.RmiClient` and gets a structured
+:class:`PreflightReport` back — attached to the STARTUP event and, on a hard
+block, wrapped in :class:`~airo_fanuc.exceptions.FanucPreflightError` so the
 constructor surfaces *why* motion was refused before it is attempted.
 
 Checks (per-connect):
@@ -17,8 +20,9 @@ Checks (per-connect):
 * drives powered / e-stop — surfaced as warnings + the ReadError alarm text.
 * active-alarm classification — SYST-348 / SYST-322 are **hard blocks** with
   operator instructions; OVR% < 100 and DCS speed-clamp < 100 are warnings.
-* UI[2] — deliberately NOT read or gated on this SOP-less CRX (``UI[2]=0`` is
-  FANUC-normal here; fault-matrix row 22).
+* UI[2] — deliberately NOT read or gated: ``UI[2]=0`` is FANUC-normal on this
+  SOP-less CRX (observed on every ``FRC_GetStatus``), so gating on it would block
+  every bring-up.
 """
 
 from __future__ import annotations
@@ -34,12 +38,13 @@ logger = logging.getLogger("airo_fanuc.preflight")
 __all__ = ["PreflightReport", "run_preflight"]
 
 # FRC_GetStatus.TPMode values that mean AUTO. The standard FANUC AUTO code is 2,
-# but this SOP-less CRX reports 0 in its (permanent) AUTO (P-1 measured;
-# controller-notes §1.6). Both are AUTO here; only 1 (T1) / 3 (T2) are genuine
-# TEACH modes. Mirrors supervisor._TP_MODES_AUTO.
+# but this SOP-less CRX reports 0 in its (permanent) AUTO — measured on the
+# controller (docs/controller-notes.md §1.6). Both are AUTO here; only 1 (T1) /
+# 3 (T2) are genuine TEACH modes. Mirrors supervisor._TP_MODES_AUTO.
 _TP_MODES_AUTO = (0, 2)
 
-# Alarm-prefix classification (design doc 08 §9 / fault matrix rows 6/8).
+# Alarm-prefix classification: alarms that no amount of retrying will clear, so
+# bring-up must refuse rather than loop.
 _HARD_BLOCK_ALARMS: tuple[tuple[str, str], ...] = (
     (
         "SYST-348",
@@ -94,8 +99,8 @@ def run_preflight(rmi: RmiClient, *, full: bool = False) -> PreflightReport:
 
     Returns a :class:`PreflightReport`. Raises :class:`FanucPreflightError`
     (carrying the report) if any hard block is present. ``full=True`` is the hook
-    for the one-time FTP checks (P-level / S636 / orderfil) — deferred to P-1 /
-    ``--full``; the recurring path does not FTP.
+    for the one-time FTP checks (P-level / S636 / orderfil); the recurring
+    per-connect path does not FTP.
     """
     report = PreflightReport()
 
@@ -141,8 +146,8 @@ def run_preflight(rmi: RmiClient, *, full: bool = False) -> PreflightReport:
 
     if full:
         # One-time FTP facts (P-level >= V9.40P84, S636/orderfil, TP programs
-        # present) are cached in docs/controller-notes.md and only re-verified on
-        # demand. Wire the FTP fetch here at P-1; per-connect never FTPs (R4 cut).
+        # present) are recorded in docs/controller-notes.md and only re-verified on
+        # demand. Wire the FTP fetch here; the per-connect path never FTPs.
         report.warnings.append(
             "full preflight (FTP P-level/S636/orderfil) not implemented — see controller-notes.md"
         )

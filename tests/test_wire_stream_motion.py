@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""L0 byte-exact conformance tests for the Stream Motion wire codec.
+"""Byte-exact conformance tests for the Stream Motion wire codec.
 
 Two layers of assurance:
 
 1. **Golden fixtures** (``goldens/sm/*.bin``): each packet is encoded from
-   fixed known inputs and byte-compared against a committed ``.bin``. These
-   goldens double as the cross-language oracle for the future C++ codec — a
-   ``.bin`` that changes without an intended layout change is a regression.
+   fixed known inputs and byte-compared against a committed ``.bin``. The same
+   ``.bin`` files pin the C++ codec, so both language bindings are held to one
+   byte layout — a ``.bin`` that changes without an intended layout change is a
+   regression.
    Regenerate with ``AIRO_FANUC_REGEN_GOLDENS=1 pytest ...`` (writes the
    ``.bin`` files instead of asserting).
 

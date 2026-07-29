@@ -143,7 +143,7 @@ void TickCore::resolve_active(MotionStatus st) {
 
 void TickCore::begin_brake(MotionStatus motion_result, FaultReason reason) {
   resolve_active(motion_result);
-  brake_.seed(q_cmd_, qd_cmd_, qdd_cmd_);  // R1 C1: seed analytic wire qdd for accel continuity
+  brake_.seed(q_cmd_, qd_cmd_, qdd_cmd_);  // analytic wire qdd → acceleration-continuous brake entry
   mode_ = Mode::BRAKE;
   brake_dest_reason_ = reason;
   brake_is_motion_ = false;
@@ -165,7 +165,9 @@ void TickCore::enter_fault(FaultReason cause, BumpReason bump, MotionStatus moti
   fault_ = cause;
   resolve_active(motion_result);
   // 60 ms blind qd-ramp from the current commanded velocity, coasting forward to
-  // rest (identical displacement to dries starvation stage-1: ∫qd(1−t/T)dt = qd·T/2).
+  // rest. A linear ramp coasts exactly half the distance the current velocity
+  // would have covered over T (∫qd(1−t/T)dt = qd·T/2), so the stopping distance is
+  // known in closed form without needing a fresh measurement to plan against.
   qd_blend_.plan(q_cmd_, qd_cmd_, cfg_.rx_silence_qd_ramp_ms / 1000.0, itp());
   follow_phase_ = FollowPhase::kRamp;
   tau_follow_ns_ = 0;
@@ -190,7 +192,8 @@ void TickCore::enter_rx_silent() {
 }
 
 // ---------------------------------------------------------------------------
-// gates (edge detection + kill-vs-suspend, R2 F6) — GIL-free autonomy (F29)
+// gates (edge detection + kill-vs-suspend) — decided here in C++, so no autonomy
+// decision ever waits on the Python GIL
 // ---------------------------------------------------------------------------
 void TickCore::process_gates(const Gates& g) {
   // Rising edges vs the last observed gates.
@@ -220,9 +223,12 @@ void TickCore::process_gates(const Gates& g) {
 
   last_gates_ = g;
 
-  // Kill-vs-suspend (F6): every controller-ignores/rescales condition KILLS the
-  // active motion + bumps epoch (suspended-resume-at-τ = the 22° incident). Only
-  // react while streaming; before begin_streaming the gates are informational.
+  // Kill-vs-suspend: every condition under which the controller ignores or
+  // rescales our commands KILLS the active motion + bumps epoch. It must not
+  // merely suspend it: while the controller was ignoring the stream the arm fell
+  // behind τ, so resuming at the stored τ would command a jump of however far the
+  // motion advanced in the meantime — tens of degrees for a long stall. Only react
+  // while streaming; before begin_streaming the gates are informational.
   if (!streaming_) {
     return;
   }
@@ -243,7 +249,7 @@ void TickCore::process_gates(const Gates& g) {
 }
 
 // ---------------------------------------------------------------------------
-// graduated RX-silence (R1 A3)
+// graduated RX-silence
 // ---------------------------------------------------------------------------
 void TickCore::handle_rx_silence() {
   if (ticks_since_rx_ == 0) {
@@ -271,7 +277,7 @@ void TickCore::handle_rx_silence() {
 }
 
 // ---------------------------------------------------------------------------
-// deadman (TRAJECTORY only; caller-fed) — R4 deadman FIXED
+// deadman (TRAJECTORY only; caller-fed)
 // ---------------------------------------------------------------------------
 void TickCore::handle_deadman() {
   if (!deadman_armed_ || mode_ != Mode::TRAJECTORY) {
@@ -286,11 +292,13 @@ void TickCore::handle_deadman() {
 }
 
 // ---------------------------------------------------------------------------
-// supervisor liveness (SUPERVISOR_LOST) — P-1 finalization. The RT core outlives
-// its supervisor (F28/F29); a lapsed heartbeat latches FAULTED(SUPERVISOR_LOST)
-// and drives to a safe hold (SAFE_FOLLOW) so an app-entry watchdog can act. Armed
-// only after the supervisor's first beat, and the threshold exceeds a single RMI
-// round-trip so a slow supervisor tick never false-trips.
+// supervisor liveness (SUPERVISOR_LOST). The RT core keeps ticking whether or not
+// its supervisor is alive, which is precisely why a lapsed heartbeat must fault:
+// otherwise the core would stream on with nothing watching the conditions only the
+// supervisor can see. A lapse latches FAULTED(SUPERVISOR_LOST) and drives to a safe
+// hold (SAFE_FOLLOW) so a watchdog further up can act. Armed only after the
+// supervisor's first beat, and the threshold exceeds a single RMI round-trip so a
+// slow supervisor tick never false-trips.
 // ---------------------------------------------------------------------------
 void TickCore::handle_supervisor_liveness() {
   if (!streaming_ || !supervisor_hb_armed_) {
@@ -307,12 +315,14 @@ void TickCore::handle_supervisor_liveness() {
 }
 
 // ---------------------------------------------------------------------------
-// drift guard (DRIFT) — P-1 finalization. Lag-aligned commanded↔measured
-// divergence: compares the fresh q_meas against the commanded pose from
-// ~tracking_lag ago (drift_lag_ticks back in the ring). Sustained divergence >
-// drift_fault_rad for drift_fault_ticks → FAULTED(DRIFT). The 22°-runaway
-// protection (dries MAX_DRIFT); only meaningful while actively commanding a
-// tracked pose (skip SAFE_FOLLOW/BRAKE/RX_SILENT, which deliberately diverge).
+// drift guard (DRIFT). Lag-aligned commanded↔measured divergence: compares the
+// fresh q_meas against the commanded pose from ~tracking_lag ago (drift_lag_ticks
+// back in the ring). Sustained divergence > drift_fault_rad for drift_fault_ticks →
+// FAULTED(DRIFT). This is the runaway guard — if the arm silently stops following
+// the commanded stream, no gate reports it, and the commanded pose keeps advancing
+// until it is tens of degrees from where the arm actually is. Only meaningful while
+// actively commanding a tracked pose (skip SAFE_FOLLOW/BRAKE/RX_SILENT, which
+// deliberately diverge).
 // ---------------------------------------------------------------------------
 void TickCore::handle_drift(const RxSample& rx) {
   if (!streaming_) {
@@ -340,7 +350,8 @@ void TickCore::handle_drift(const RxSample& rx) {
 }
 
 // ---------------------------------------------------------------------------
-// force-guard (armed per-motion) — R1 D2, deterministic ≤1 tick
+// force-guard (armed per-motion) — deterministic: trips on the tick that sees the
+// over-threshold wrench, never later
 // ---------------------------------------------------------------------------
 void TickCore::handle_force_guard(const RxSample& rx) {
   if (!force_armed_ || !rx.wrench_valid) {
@@ -356,7 +367,7 @@ void TickCore::handle_force_guard(const RxSample& rx) {
 }
 
 // ---------------------------------------------------------------------------
-// consume (epoch-checked mailbox pop, R2 F4) — called AFTER fault processing so a
+// consume (epoch-checked mailbox pop) — called AFTER fault processing so a
 // target that raced a fault (tagged the pre-bump epoch) is structurally rejected.
 // `superseded_by_stop` is the causal-order stop-precedence signal (see below).
 // ---------------------------------------------------------------------------
@@ -376,26 +387,25 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
     return r;
   }
 
-  // Stop precedence (finding-1 root-cause fix; PLAN.md §5.2 — stop_j is the
-  // universal preempt, ≤1 tick, ALWAYS wins). stop_j is handled BEFORE consume
-  // (step 2), so absent this guard a trajectory/servo that raced a stop into the
-  // SAME 8 ms window (e.g. TrajectoryMonitor.stop_j() vs a concurrent
-  // move_trajectory) would activate right after the stop's brake and run — the
-  // stop would be structurally swallowed. request_stop() deliberately does NOT
-  // bump the motion epoch (a clean preempt, not a fault), so the epoch check
-  // above cannot catch it.
+  // Stop precedence. stop_j is the universal preempt: it takes effect within one
+  // tick and ALWAYS wins. It is handled BEFORE consume (step 2), so absent this
+  // guard a trajectory/servo that raced a stop into the SAME 8 ms window (e.g.
+  // TrajectoryMonitor.stop_j() vs a concurrent move_trajectory) would activate
+  // right after the stop's brake and run — the stop would be structurally
+  // swallowed. request_stop() deliberately does NOT bump the motion epoch (a clean
+  // preempt, not a fault), so the epoch check above cannot catch it.
   //
   // `superseded_by_stop` is the CAUSAL-ORDER signal RealtimeCore computes: it is
   // true iff a stop_j was issued by the caller AFTER this target was submitted
   // (target's tagged stop-generation < the live stop-generation). That precisely
   // distinguishes the two same-tick cases a bare "stop this tick" flag cannot:
-  //   * finding-1 hazard  — trajectory submitted, THEN stop_j → target predates
+  //   * submit-then-stop — trajectory submitted, THEN stop_j → target predates
   //     the stop → superseded → REJECTED (the stop wins). ✓
   //   * brake-then-submit — stop_j (quiesce), THEN move_trajectory → target
   //     carries the post-stop generation → NOT superseded → accepted, even when
   //     the robot was already at rest and the submit lands in the SAME tick as
-  //     the (no-op) stop. This is the load-bearing shim contract (a trajectory
-  //     from a braked state must run); a per-tick flag would wrongly reject it. ✓
+  //     the (no-op) stop. A trajectory issued from a braked state MUST run — a
+  //     bare per-tick "a stop happened" flag would wrongly reject it. ✓
   // When superseded, the brake/hold the stop installed MUST win — leave mode_
   // untouched and resolve the raced motion terminally (REJECTED, reusing the
   // consume-time reject machinery) so its MotionHandle doesn't hang PENDING.
@@ -441,7 +451,8 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
         emit(EventType::kMotionRejected, fault_, 0, t.motion_id);
         return r;
       }
-      // Distance guard vs current commanded (R1 C3).
+      // Distance guard vs current commanded: a servo target further away than the
+      // servo window is a jump, not a servo step, so reject rather than chase it.
       if (max_abs_diff(t.servo_q, q_cmd_) > cfg_.tick.servo_window_rad) {
         r.rejected_servo = true;
         active_motion_id_ = t.motion_id;
@@ -477,7 +488,7 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
         emit(EventType::kMotionRejected, FaultReason::INTERNAL, 0, t.motion_id);
         return r;
       }
-      // No new trajectory while faulted / following / parked (F6 "converging, retry").
+      // No new trajectory while faulted / following / parked ("converging, retry").
       if (fault_ != FaultReason::NONE || mode_ == Mode::SAFE_FOLLOW || mode_ == Mode::RX_SILENT) {
         active_motion_id_ = t.motion_id;
         active_status_ = MotionStatus::REJECTED;
@@ -486,7 +497,10 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
       }
       const Vec6& q0 = t.q[0];
       const Vec6& qd0 = t.qd[0];
-      // CAPTURE-or-REJECT (decision 6): |q_cmd − q0|∞ > capture_tol → typed reject.
+      // CAPTURE-or-REJECT: |q_cmd − q0|∞ > capture_tol → typed reject. Either the
+      // gap to the trajectory start is small enough to be bridged by a bounded
+      // capture splice, or the caller planned from a stale pose and must replan —
+      // there is no third option that silently moves the arm to meet the plan.
       if (tick_engine::capture_would_reject(q_cmd_, q0, cfg_.tick)) {
         r.rejected_capture = true;
         active_motion_id_ = t.motion_id;
@@ -582,8 +596,8 @@ Vec6 TickCore::dispatch_trajectory() {
   if (traj_phase_ == TrajPhase::kEndBlend) {
     const tick_engine::HermiteSample s = qd_blend_.sample(tau_blend_ns_);
     qd_cmd_ = s.qd;
-    // R1 C1: the blend's analytic accel (constant −qd_end/T), not 0, so a brake
-    // OUT of the qd_end blend is accel-continuous.
+    // The blend's analytic accel (constant −qd_end/T), not 0, so a brake OUT of
+    // the qd_end blend is acceleration-continuous.
     qdd_cmd_ = s.qdd;
     const Vec6 q = s.q;
     tau_blend_ns_ += itp_ns;
@@ -611,8 +625,9 @@ Vec6 TickCore::dispatch_trajectory() {
 
 Vec6 TickCore::dispatch_servo() {
   ++ticks_since_servo_set_;
-  // Staleness (P3a flag #2): re-issue the SAME target to zero the velocity
-  // feedforward so it does not extrapolate past the target and overshoot.
+  // Staleness: once the caller stops refreshing the servo target, re-issue the SAME
+  // target to zero the velocity feedforward — otherwise the feedforward keeps
+  // extrapolating past the last target and overshoots it.
   if (!servo_held_ && ticks_since_servo_set_ > servo_stale_ticks()) {
     servo_.set_target(servo_last_q_, servo_last_dur_);  // prev_target == q → ff = 0 → holds
     servo_held_ = true;
@@ -658,7 +673,8 @@ Vec6 TickCore::dispatch_safe_follow() {
     }
     return q;
   }
-  // kReanchor: step commanded → measured at ≤ rate·itp, 5° deadband (dries stage-2).
+  // kReanchor: step commanded → measured at ≤ rate·itp, with a 5° deadband so the
+  // re-anchor does not chatter against ordinary tracking error.
   qd_cmd_ = Vec6{};
   qdd_cmd_ = Vec6{};
   if (!have_meas_) {
@@ -694,8 +710,8 @@ Vec6 TickCore::dispatch_mode() {
       if (capture_idx_ < capture_.count) {
         const Vec6 q = capture_.q[static_cast<std::size_t>(capture_idx_)];
         qd_cmd_ = capture_.qd[static_cast<std::size_t>(capture_idx_)];
-        // R1 C1: seed the analytic capture accel so a brake OUT of CAPTURE is
-        // accel-continuous (was Vec6{} → a curvature STEP into the brake).
+        // Seed the analytic capture accel so a brake OUT of CAPTURE is
+        // acceleration-continuous; a zero here puts a curvature STEP into the brake.
         qdd_cmd_ = capture_.qdd[static_cast<std::size_t>(capture_idx_)];
         ++capture_idx_;
         return q;
@@ -798,8 +814,8 @@ Command TickCore::tick(const RxSample* rx, const Target* pending, bool consume_s
 
   // 7) consume the mailbox target (epoch-checked; AFTER fault processing).
   // `consume_superseded` is set by RealtimeCore when a stop_j was issued by the
-  // caller AFTER this target was submitted (finding-1 root-cause guard) — such a
-  // target is structurally superseded by the stop and must not activate.
+  // caller AFTER this target was submitted — such a target is structurally
+  // superseded by the stop and must not activate.
   if (pending != nullptr) {
     last_consume_ = consume(*pending, consume_superseded);
   } else {
@@ -809,7 +825,7 @@ Command TickCore::tick(const RxSample* rx, const Target* pending, bool consume_s
   // 8) mode dispatch → desired (pre-slew) command.
   const Vec6 q_desired = dispatch_mode();
 
-  // 9) slew clip (never faults; count; sustained-clip diagnostic bit — F35).
+  // 9) slew clip (never faults; count; sustained-clip diagnostic bit).
   const tick_engine::SlewResult sr = slew_.apply(q_desired);
   const bool sustained = slew_.sustained_clip();
   set_condition(kCondSustainedSlew, sustained);

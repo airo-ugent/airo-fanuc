@@ -4,7 +4,7 @@
 The lifecycle *policy* lives in :class:`airo_fanuc.supervisor.Supervisor`; this
 module holds the small, deterministic, unit-testable pieces it composes:
 
-* :class:`LifecycleState` — the mission states (design doc 08 §2).
+* :class:`LifecycleState` — the mission states.
 * :func:`classify` — the observed lifecycle state for a ``(mode, fault, rmi_down)``
   tuple (LOST is a ``classify`` output gated on ``rmi_down``). The supervisor
   overrides the result with RECOVERING / SHUTTING_DOWN when it knows more than the
@@ -14,7 +14,8 @@ module holds the small, deterministic, unit-testable pieces it composes:
   PENDING/RUNNING).
 * fault classification (``needs_rmi_ladder`` / ``requires_arm``), the priority
   ordering that turns the C++ condition bitmask into an ordered ``fault_reason``,
-  and the operator-hint catalog (fault-matrix "Operator action" column).
+  and the operator-hint catalog (one actionable teach-pendant instruction per
+  fault).
 
 Kept import-light on purpose (only the ``_core`` enums + :class:`MotionResult`) so
 ``tests/test_lifecycle.py`` can exercise every branch without a controller.
@@ -42,7 +43,7 @@ __all__ = [
 
 
 class LifecycleState(Enum):
-    """Mission states (design doc 08 §2). STREAMING is the only commandable one."""
+    """Mission states. STREAMING is the only commandable one."""
 
     DISCONNECTED = "disconnected"
     PREFLIGHT = "preflight"
@@ -58,7 +59,7 @@ class LifecycleState(Enum):
 
 
 # --------------------------------------------------------------------------- #
-# Fault classification (design doc 08 §2/§4).
+# Fault classification.
 # --------------------------------------------------------------------------- #
 
 #: Hard faults → FAULTED (need the RMI reset/relaunch ladder or SM re-handshake).
@@ -88,9 +89,13 @@ DEGRADED_FAULTS: frozenset[FaultReason] = frozenset(
 )
 
 #: Faults whose recovery ends in MOTION_INHIBITED — an explicit ``arm()`` is
-#: required before the next motion (R2 F1 / decision 10). E-stop + the latched
-#: in_error that survives an e-stop release are the human-in-the-loop cases;
-#: SYST-348 OPERATOR_REQUIRED arms via the supervisor's operator flag.
+#: required before the next motion. These are the human-in-the-loop faults:
+#: someone pressed the E-stop or is standing at the pendant clearing a latched
+#: alarm, so resuming motion the instant the fault clears would move the robot
+#: with a person inside its envelope. Recovery must therefore hand the decision
+#: back to the caller instead of auto-arming. E-stop and the latched in_error
+#: that survives an e-stop release are those cases here; SYST-348
+#: OPERATOR_REQUIRED arms the same gate via the supervisor's operator flag.
 ARM_FAULTS: frozenset[FaultReason] = frozenset(
     {
         FaultReason.E_STOP,
@@ -105,7 +110,8 @@ def needs_rmi_ladder(fault: FaultReason) -> bool:
 
 
 def requires_arm(fault: FaultReason) -> bool:
-    """True if recovery from ``fault`` must end in MOTION_INHIBITED (R2 F1)."""
+    """True if recovery from ``fault`` must end in MOTION_INHIBITED, so motion
+    stays refused until the caller explicitly ``arm()``s."""
     return fault in ARM_FAULTS
 
 
@@ -159,7 +165,7 @@ def motion_result_of(status: MotionStatus) -> MotionResult | None:
 
 
 # --------------------------------------------------------------------------- #
-# Human-facing strings (fault-matrix "Operator action" column).
+# Human-facing strings: for each fault, the action that clears it at the pendant.
 # --------------------------------------------------------------------------- #
 
 _FAULT_REASON_STRING: dict[FaultReason, str] = {
@@ -196,8 +202,8 @@ _OPERATOR_HINT: dict[FaultReason, str] = {
     FaultReason.INTERNAL: "Internal driver fault — capture the diagnostic dump and report.",
 }
 
-#: SYST-348 payload-monitor operator flow (fault-matrix row 6). Distinct from the
-#: generic IN_ERROR hint because RESET does NOT clear it — payload-confirm does.
+#: SYST-348 payload-monitor operator flow. Distinct from the generic IN_ERROR
+#: hint because RESET does NOT clear it — payload-confirm does.
 OPERATOR_REQUIRED_HINT: str = (
     "Confirm the payload on the teach pendant. Do NOT jog while recovering in AUTO — it re-raises SYST-328."
 )

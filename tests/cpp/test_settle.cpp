@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 golden — end-of-motion settle detection (SettlePolicy: 0.5°, 2°/s, 2 s).
+// Unit test — end-of-motion settle detection (SettlePolicy: 0.5°, 2°/s, 2 s).
 
 #include <gtest/gtest.h>
 

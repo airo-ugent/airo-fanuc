@@ -138,12 +138,12 @@ void RealtimeCore::send_stop_packet_() {
 }
 
 void RealtimeCore::send_handshake_() {
-  // Handshake (HIL-hardened): defensive Stop → drain → GetCapability → adopt the
-  // controller's available_version + sampling_rate → Start. The real R-30iB
-  // requires the GetCapability (type-7) exchange before it honours a StartPacket
-  // and streams status; the old P3b "minimal" handshake (Stop→Start, version
-  // pinned) worked against the FakeCRX but left motion_possible unasserted on
-  // hardware (HIL 2026-07-07). FSConfig(v≥4) is still deferred (v3 = no force).
+  // Handshake: defensive Stop → drain → GetCapability → adopt the controller's
+  // available_version + sampling_rate → Start. The real R-30iB requires the
+  // GetCapability (type-7) exchange before it honours a StartPacket and streams
+  // status: a bare Stop→Start with the version pinned is enough for a software
+  // stand-in, but on hardware it leaves motion_possible unasserted forever, so
+  // preroll never completes. FSConfig(v≥4) is not sent (v3 = no force).
   send_stop_packet_();
   // Drain any stale datagrams (including a stale capability reply).
   std::uint8_t scratch[1024];
@@ -162,8 +162,10 @@ void RealtimeCore::send_handshake_() {
     (void)::send(sockfd_, req, sizeof(req), 0);
 
     // Bounded wait for the type-7 reply; adopt available_version + sampling_rate.
-    // Best-effort: if no reply arrives we fall back to cfg_.sm_version (the old
-    // behaviour) and let the preroll timeout report the failure.
+    // Best-effort: if no reply arrives we fall back to cfg_.sm_version and let the
+    // preroll timeout report the failure, rather than failing start() here — the
+    // timeout is the one place that already reports "the controller never became
+    // ready", and it covers every cause, not just a missing capability reply.
     const std::int64_t deadline = now_ns() + 1'500'000'000LL;  // 1.5 s
     std::uint8_t rep[64];
     while (now_ns() < deadline) {
@@ -377,8 +379,8 @@ void RealtimeCore::rt_main_() {
           const ssize_t r = ::recv(sockfd_, rxbuf, sizeof(rxbuf), 0);
           if (r < 0) break;  // EAGAIN → drained
           // Dispatch on packet type + size (pre-checked so decode never throws).
-          // The P-1 controller streams type-202 (388 B, no force) at SM v3; the
-          // newer type-204 (416 B, +force) is accepted too for a v4/firmware-P84
+          // A Stream Motion v3 controller streams type-202 (388 B, no force); the
+          // newer type-204 (416 B, +force) is accepted too, for a v4 / firmware-P84
           // controller. Anything else (short / unknown) is dropped.
           const std::size_t rlen = static_cast<std::size_t>(r);
           const std::uint32_t rx_ptype = (rlen >= 4) ? be_load_u32(rxbuf) : 0u;
@@ -476,7 +478,7 @@ void RealtimeCore::rt_main_() {
     // buffers AND resolve superseded motion_ids. A coalesced-away target never
     // reaches TickCore::consume (only `last` does), so it has NO other resolution
     // path — record it PREEMPTED here + emit a synthetic kMotionPreempted event,
-    // otherwise its MotionHandle hangs PENDING forever (R4(b)).
+    // otherwise its MotionHandle hangs PENDING forever.
     Target last{};
     bool have_pending = false;
     bool superseded_events = false;
@@ -506,10 +508,10 @@ void RealtimeCore::rt_main_() {
     }
     const Target* pending = have_pending ? &last : nullptr;
 
-    // Stop precedence (finding-1): a stop_j issued AFTER this target was submitted
-    // (its stamped stop_gen is behind the live counter) supersedes it — the stop
-    // must win, so the target must not activate. Computed here (RealtimeCore owns
-    // the caller-side counter) and passed into consume via tick().
+    // Stop precedence: a stop_j issued AFTER this target was submitted (its
+    // stamped stop_gen is behind the live counter) supersedes it — the stop must
+    // win, so the target must not activate. Computed here (RealtimeCore owns the
+    // caller-side counter) and passed into consume via tick().
     const bool consume_superseded =
         have_pending && (last.stop_gen != stop_gen_.load(std::memory_order_acquire));
 
@@ -684,10 +686,11 @@ void RealtimeCore::drain_tick_events_() {
 }
 
 // Body of the reclaim. Caller MUST already hold submit_mu_ (live_buffers_ is
-// guarded by it). Split out from reap_retired_() to fix a self-deadlock: the
-// submit_* paths hold submit_mu_ and previously called reap_retired_(), which
-// re-locked the same non-recursive mutex whenever retire_ring_ was non-empty
-// (deadlocked on the 3rd trajectory once a completed buffer had been retired).
+// guarded by it). Kept separate from reap_retired_() so the submit_* paths — which
+// all run holding submit_mu_ — have a way to reap without re-locking a
+// non-recursive mutex and self-deadlocking. That deadlock is not hypothetical: it
+// needs only a non-empty retire_ring_, i.e. any submit after one trajectory has
+// completed and had its buffer retired.
 void RealtimeCore::reap_retired_locked_() {
   const void* owner = nullptr;
   while (retire_ring_.pop(owner)) {
@@ -713,10 +716,10 @@ std::uint64_t RealtimeCore::enqueue_(const Target& t, const void* owner) {
   Target tt = t;
   tt.motion_id = next_motion_id_.fetch_add(1, std::memory_order_relaxed);
   tt.epoch = published_epoch_.load(std::memory_order_acquire);
-  // Stamp the caller-side stop generation (finding-1). A stop_j that runs BEFORE
-  // this submit (brake-then-submit) is already reflected here → the target is
-  // NOT superseded; a stop_j that runs AFTER (finding-1 preempt) bumps stop_gen_
-  // past this stamp → superseded at consume. submit_mu_ (held across every submit)
+  // Stamp the caller-side stop generation. A stop_j that runs BEFORE this submit
+  // (brake-then-submit) is already reflected here → the target is NOT superseded;
+  // a stop_j that runs AFTER this submit bumps stop_gen_ past this stamp →
+  // superseded at consume. submit_mu_ (held across every submit)
   // serialises the two submit-side reads; stop_j() bumps stop_gen_ lock-free but
   // its increment is release-ordered so a same-thread submit sees it.
   tt.stop_gen = stop_gen_.load(std::memory_order_acquire);
@@ -812,7 +815,7 @@ std::uint64_t RealtimeCore::submit_hold() {
 }
 
 void RealtimeCore::stop_j() {
-  // Bump the caller-side stop generation FIRST (finding-1): a submit sequenced
+  // Bump the caller-side stop generation FIRST: a submit sequenced
   // after this stop_j will stamp the new value and so is NOT superseded, while a
   // target already submitted keeps the old stamp and is superseded at consume.
   stop_gen_.fetch_add(1, std::memory_order_acq_rel);

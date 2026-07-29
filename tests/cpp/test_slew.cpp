@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 golden — per-tick position slew clip. Verifies the clip + count + never-
+// Unit test — per-tick position slew clip. Verifies the clip + count + never-
 // fault behaviour AND the NO-ACCEL-CAP regression (the clip is a pure function
 // of (prev_q, q_desired); it caps |Δq| per tick only, NEVER Δ(derived velocity)).
-// The reverted accel-cap anti-pattern caused a 22° runaway drift (dries B15).
+// An accel cap here is a known anti-pattern: it withholds part of every commanded
+// step, and because the limiter feeds its own output back as prev_q, the withheld
+// error accumulates instead of being caught up — measured as a 22° runaway drift
+// away from the commanded path.
 
 #include <cmath>
 

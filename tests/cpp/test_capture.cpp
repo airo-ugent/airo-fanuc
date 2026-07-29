@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 golden — CAPTURE-or-REJECT splice generator (decision 6 / R3 A2). Asserts
+// Unit test — CAPTURE-or-REJECT splice generator. Asserts
 // (a) determinism: the ONE generator produces byte-identical output for
 // identical inputs — this is what makes "the checked path IS the executed path"
 // (Python pre-flight collision-check and C++ execution call this same function),
@@ -31,7 +31,7 @@ const Vec6 kQd0{};
 
 // The determinism property — same inputs → identical CapturePath, bit-for-bit.
 // A single deterministic generator is what guarantees the Python-checked path
-// equals the C++-executed path (PLAN.md §5.1).
+// equals the C++-executed path.
 TEST(Capture, DeterministicSameInputsIdenticalOutput) {
   TickEngineConfig cfg;
   CapturePath a;

@@ -101,7 +101,7 @@ class TestRecoverEscalation:
 
 
 class TestReconnectGripperGate:
-    """`reconnect()` holds the gripper fail-fast gate across the rebuild (R2 F32)."""
+    """`reconnect()` holds the gripper fail-fast gate across the rebuild."""
 
     def _rig(self, events: list[str], *, bringup_raises: bool = False) -> FanucDriver:
         d = _bare_driver()

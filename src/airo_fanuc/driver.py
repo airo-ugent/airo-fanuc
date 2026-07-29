@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``FanucDriver`` — the ur_rtde-shaped, construct-and-go public API (PLAN.md §5.1).
+"""``FanucDriver`` — the construct-and-go public API.
 
-One object combines the ur_rtde Control + Receive concerns over the FANUC
-CRX-10iA/L: the constructor brings the robot up to *commandable* (or raises with a
-real reason), :meth:`move_trajectory` / :meth:`servo_j` are the only motion
-surfaces, :meth:`stop_j` is the universal preempt, and the getters never raise and
-never lie (value + age). The C++ ``StreamCore`` owns the 125 Hz timeline; the
+The API takes the shape industrial-arm drivers usually take: a *receive* half (state
+getters that never block) and a *control* half (motion submission, usable blocking or
+non-blocking), both reachable through one object rather than two session handles. Over
+the FANUC CRX-10iA/L that means: the constructor brings the robot up to *commandable*
+(or raises with a real reason), :meth:`move_trajectory` / :meth:`servo_j` are the only
+motion surfaces, :meth:`stop_j` is the universal preempt, and the getters never raise
+and never lie (value + age). The C++ ``StreamCore`` owns the 125 Hz timeline; the
 :class:`~airo_fanuc.supervisor.Supervisor` owns lifecycle/recovery policy; this
 class is the thin, honest facade over both.
 
-Composition (all public attrs — the ur_rtde "reach through" doctrine):
+Composition — the collaborators are public attributes deliberately, so a caller can
+reach through to the layer it needs instead of waiting for a passthrough wrapper:
 ``driver.core`` (RT core), ``driver.rmi`` (RMI session), ``driver.gripper``.
 """
 
@@ -59,13 +62,13 @@ _STEADY_QD_EPS_RAD_S = math.radians(2.0)  # SettlePolicy vel_eps default
 
 
 class MotionHandle:
-    """Non-raising handle over one submitted motion (PLAN.md §5.1).
+    """Non-raising handle over one submitted motion.
 
     Maps the terminal C++ :class:`MotionStatus` (via
     :func:`airo_fanuc.lifecycle.motion_result_of`) to a :class:`MotionResult`.
     ``stop_j()`` during a blocking :meth:`wait` resolves it as ``STOPPED`` (the
-    core flips the active motion's status; :meth:`wait` observes it) — the
-    brake+replan contract (R3 A1).
+    core flips the active motion's status; :meth:`wait` observes it): a preempt
+    brakes and returns control to the caller to replan — it is never an exception.
     """
 
     def __init__(self, core: StreamCore, motion_id: int, submit_mono_ns: int) -> None:
@@ -142,7 +145,7 @@ class MotionHandle:
 
 
 class FanucDriver:
-    """Construct-and-go FANUC CRX-10iA/L driver (ur_rtde-shaped)."""
+    """Construct-and-go FANUC CRX-10iA/L driver: receive + control in one object."""
 
     def __init__(self, ip: str, policy: DriverPolicy | None = None) -> None:
         self._ip = ip
@@ -177,7 +180,7 @@ class FanucDriver:
             if self._policy.enable_gripper:
                 self.gripper = GripperWorker(self.rmi)
                 # Let the supervisor fail-fast-gate the gripper during a recovery
-                # ladder (R2 F32) — a gripper command must never actuate GRIPDISP
+                # ladder — a gripper command must never actuate GRIPDISP
                 # mid-recovery (e.g. just after an e-stop release).
                 self._supervisor.set_gripper(self.gripper)
             if self._policy.publisher is not None:
@@ -210,8 +213,9 @@ class FanucDriver:
         """Submit ONE whole trajectory (rad, ns-relative int64 times) — CAPTURE-or-REJECT
         splice, Hermite playback, settle → :class:`MotionHandle`.
 
-        Validation (per-violation typed errors, PLAN §5.1 / R4): strictly-increasing
-        int64 ns times, ≥2 knots, finite q/qd, ``|s·qd| ≤ v_lim``, ``s ≤ 1.0``.
+        Validation — every violation raises its own typed error naming the offending
+        joint/knot, never a generic reject: strictly-increasing int64 ns times, ≥2
+        knots, finite q/qd, ``|s·qd| ≤ v_lim``, ``s ≤ 1.0``.
         The CAPTURE collision-check hook runs when ``policy.capture_check`` is set.
         """
         self._require_commandable()
@@ -329,7 +333,7 @@ class FanucDriver:
         return max(abs(v) for v in snap["qd_est"]) < _STEADY_QD_EPS_RAD_S
 
     def wait_until_steady(self, timeout: float = 5.0) -> bool:
-        """Block until :meth:`is_steady` (R3 F1). Returns False on timeout."""
+        """Block until :meth:`is_steady`. Returns False on timeout."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.is_steady():
@@ -399,7 +403,7 @@ class FanucDriver:
         aborted/wedged (e.g. a collision that fired mid-close left ``R[1]`` set), and
         its benign OPEN neutralises the stale trigger + clears ``R[1]`` so the gripper
         comes back usable and open. The gripper fail-fast gate is held across the
-        rebuild so no gripper command actuates GRIPDISP mid-reconnect (R2 F32); the
+        rebuild so no gripper command actuates GRIPDISP mid-reconnect; the
         :class:`GripperWorker` object itself survives (same RMI ref, re-``start``ed
         inside ``bringup``), so there is no worker rebuild and no double fork."""
         self._require_open()
@@ -513,7 +517,7 @@ class FanucDriver:
     # ==================================================================
 
     def close(self) -> None:
-        """Ordered, poison-not-exit shutdown (R2 F2).
+        """Ordered, poison-not-exit shutdown.
 
         Quiesce → stop republisher → cancel gripper → join the supervisor thread →
         terminal Stop + join the RT thread → RMI disconnect → release ownership.
@@ -594,7 +598,7 @@ class FanucDriver:
         return {"pid": None, "mode": lock.mode, "since": lock.since}
 
     def _capture_gate(self, q_arr: np.ndarray, qd_arr: np.ndarray, asynchronous: bool) -> None:
-        """CAPTURE-or-REJECT + collision-check hook (decision 6 / R3 A2).
+        """CAPTURE-or-REJECT + collision-check hook.
 
         Synthesizes the EXACT capture path the C++ core will execute via
         :func:`airo_fanuc._core.generate_capture_path` (one code path — "the

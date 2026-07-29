@@ -33,7 +33,7 @@ void Servo::start(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& qdd_cmd) {
 }
 
 ServoAccept Servo::set_target(const Vec6& q_target, double duration_s) {
-  // Distance guard (R1 C3): compare against the CURRENT commanded position
+  // Distance guard: compare against the CURRENT commanded position
   // (inp_.current_position is kept current by pass_to_input each step()).
   for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
     if (std::abs(q_target[j] - inp_.current_position[j]) > cfg_.servo_window_rad) {
@@ -51,12 +51,12 @@ ServoAccept Servo::set_target(const Vec6& q_target, double duration_s) {
   }
   inp_.target_position = q_target;
   inp_.target_acceleration = Vec6{};
-  // minimum_duration = the call's duration (== servo update period == the
-  // "servo period" of R1 C2 == PLAN.md §5.1). It BINDS only when the
-  // time-optimal profile would be shorter than `duration` — i.e. exactly the
-  // reach-early case it is meant to fix (kills the freeze-until-next-target
-  // sawtooth). Replace-not-queue: this just updates the target; the next step()
-  // re-plans from the current commanded state (Ruckig online).
+  // minimum_duration = the call's duration (== the servo update period, i.e. the
+  // spacing between set_target calls). It BINDS only when the time-optimal profile
+  // would be shorter than `duration` — exactly the reach-early case it exists to
+  // fix (kills the freeze-until-next-target sawtooth). Replace-not-queue: this
+  // just updates the target; the next step() re-plans from the current commanded
+  // state (Ruckig online).
   inp_.minimum_duration = (duration_s > 0.0) ? std::optional<double>(duration_s) : std::nullopt;
 
   prev_target_ = q_target;
@@ -65,7 +65,7 @@ ServoAccept Servo::set_target(const Vec6& q_target, double duration_s) {
 
 ServoAccept Servo::set_target(const Vec6& q_target, const Vec6& qd_target,
                               const Vec6& qdd_target, double duration_s) {
-  // Distance guard (R1 C3) — identical to the position-only overload.
+  // Distance guard — identical to the position-only overload.
   for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
     if (std::abs(q_target[j] - inp_.current_position[j]) > cfg_.servo_window_rad) {
       return ServoAccept::kRejectedDistance;
@@ -107,7 +107,7 @@ ServoStep Servo::step() {
     out_.pass_to_input(inp_);
   } else {
     s.error = true;
-    s.q = inp_.current_position;  // hold last commanded; P3b faults + slew-limited hold
+    s.q = inp_.current_position;  // hold last commanded; the tick core faults + slew-limited hold
     s.qd = Vec6{};
     s.qdd = Vec6{};
   }

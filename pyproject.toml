@@ -6,14 +6,15 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "airo-fanuc"
 version = "0.1.0.dev0"
-description = "FANUC CRX-10iA/L driver: C++17 real-time Stream Motion core + ur_rtde-shaped Python API"
+description = "FANUC CRX-10iA/L driver: C++17 real-time Stream Motion core behind a Python receive/control API"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSES/*", "NOTICE"]
 authors = [{ name = "AIRO — Ghent University" }]
 keywords = ["fanuc", "crx", "stream-motion", "robot", "manipulator", "real-time"]
-# Runtime deps: numpy only (D14). No airo-robots / zenoh / loguru — the wheel
-# must install standalone for the eventual airo-mono split.
+# Runtime deps: numpy only. No airo-robots / zenoh / loguru — the wheel must
+# install standalone, so everything environment-specific (a messaging sink, a
+# collision checker, a kinematics provider) is injected by the caller instead.
 dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
@@ -49,7 +50,7 @@ build-type = "Release"
 AIRO_FANUC_BUILD_TESTS = "OFF"
 
 # ---------------------------------------------------------------------------
-# Lint / typecheck config (consumed by the CI `lint` job).
+# Lint / typecheck config (ruff + mypy).
 # ---------------------------------------------------------------------------
 [tool.ruff]
 line-length = 110

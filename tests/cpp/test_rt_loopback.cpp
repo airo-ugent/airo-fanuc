@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1/L2-lite — RealtimeCore UDP loopback smoke test (PLAN.md §5.2 "verify"). A
+// RealtimeCore UDP loopback smoke test — one step up from a unit test: it runs
+// the real RT thread and socket, against a stub peer rather than the full fake. A
 // throwaway in-process peer streams hand-built 416 B type-204 status; the core
 // prerolls to HOLD and TXes valid 344 B type-201 commands. Asserts: valid wire
 // framing (dataStyle 0xFFFF, do_motn_ctrl=1), the PLL invariants (one TX + one

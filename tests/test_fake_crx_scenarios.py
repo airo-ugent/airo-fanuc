@@ -1,20 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
-"""L2 scenario-matrix self-tests for the FakeCRXController (design doc 09).
+"""Integration self-tests for the FakeCRXController.
 
-End-to-end rows that exercise BOTH protocol planes together and the fault
-matrix. Coverage vs the S-* matrix:
+End-to-end scenarios that exercise BOTH protocol planes together plus the fault
+matrix. What is covered here:
 
-* **S-VERS** — full v3 and v4 bring-up: RMI FRC_Call(STREAM_MOTN) then the SM
-  handshake, ``motion_possible`` asserting only when both are satisfied.
-* **S-LIFE** — e-stop cycle (drop → latched in_error → FRC_Reset recovery),
-  contact stop {2,4}, SAFETY_CLAMP, motion_possible-drop-alone, TEACH toggle,
-  FRC_SystemFault push.
-* **S-DROP** — status drop / duplicate / sequence-gap taxonomy on the wire.
+* **Version bring-up** — full v3 and v4 bring-up: RMI FRC_Call(STREAM_MOTN) then
+  the Stream Motion handshake, with ``motion_possible`` asserting only once both
+  planes are satisfied.
+* **Safety lifecycle** — e-stop cycle (drop → latched in_error → FRC_Reset
+  recovery), contact stop (STOP=2 / ESCP=4), safety-scale clamp,
+  motion_possible-drop-alone, TEACH toggle, FRC_SystemFault push.
+* **Status-stream perturbation** — drop / duplicate / sequence-gap taxonomy on
+  the wire.
 
-Deferred (documented in the report): S-SOAK (long mixed-workload), S-FLAP
-(dries 9-flap/7-oscillation replays), S-API / S-B15 brake-on-wire and the
-servo-sine rows — those belong to the C++-core (L1) and driver (P4) layers that
-consume this fake, not to the fake's own self-tests.
+Deliberately NOT covered here: long mixed-workload soaks, contact-stop flap
+replays, brake-on-wire and servo-sine profiles. Those assert behaviour of the
+*consumers* of this fake — the C++ core and the driver — so they live in those
+layers' tests. These self-tests only prove the fake itself is a faithful
+controller: they manual-tick it, so they can pin exact per-tick wire content
+that a wall-paced test could not.
 """
 
 from __future__ import annotations
@@ -124,7 +128,7 @@ def _command_hold(c: FakeCRXController, cli: socket.socket, ver: int, seq: int) 
 
 
 # ---------------------------------------------------------------------------
-# S-VERS — full bring-up, both planes
+# Version bring-up — both planes
 # ---------------------------------------------------------------------------
 
 
@@ -154,7 +158,7 @@ def test_full_bringup_v4() -> None:
 
 
 # ---------------------------------------------------------------------------
-# S-LIFE — fault matrix rows
+# Safety lifecycle — fault matrix rows
 # ---------------------------------------------------------------------------
 
 
@@ -221,7 +225,8 @@ def test_teach_toggle_streams_state_and_flips_tp_enabled() -> None:
         c.set_teach(True)
         st = _command_hold(c, cli, ver, 1)
         assert st.tp_enabled is True
-        # Status keeps flowing in TEACH (T1) — no freeze (S-B16 invariant).
+        # Status keeps flowing in TEACH (T1): the stream must NOT freeze while the
+        # pendant holds control, or a mode toggle would read as RX silence.
         st2 = _command_hold(c, cli, ver, 2)
         assert st2.tp_enabled is True
         # RMI GetStatus reports T1 (TPMode 1) while tp_enabled.
@@ -244,7 +249,7 @@ def test_system_fault_push_during_streaming() -> None:
 
 
 # ---------------------------------------------------------------------------
-# S-DROP — status stream perturbation taxonomy
+# Status-stream perturbation taxonomy
 # ---------------------------------------------------------------------------
 
 

@@ -5,8 +5,9 @@ Two layers: the Stream Motion packet codec (``encode_command_packet`` /
 ``decode_status_204`` / ``decode_status_v3`` / ``generate_capture_path``) and the
 real-time ``StreamCore`` class + ``RtCoreConfig`` and the ``Mode`` /
 ``FaultReason`` / ``MotionStatus`` enums. ``StreamCore`` is the production RT-core
-surface the shipped, HIL-validated :class:`airo_fanuc.FanucDriver` drives (the
-codec surface is also what the ``wire.py`` oracle byte-compares against).
+surface the shipped, hardware-validated :class:`airo_fanuc.FanucDriver` drives (the
+codec surface is also what the pure-Python oracle in ``airo_fanuc.testing.wire``
+byte-compares against).
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ def generate_capture_path(
 
     All arguments are length-6 radian vectors. Returns the EXACT knots the RT core
     will execute (same code path, default ``TickEngineConfig`` → byte-identical),
-    so the Python collision check IS the executed path (PLAN.md §5.1). Keys:
+    so the Python collision check IS the executed path. Keys:
     ``would_reject`` (bool; ``|q_cmd − q0|∞`` beyond the 5° window), ``count``
     (int), ``finished`` (bool), ``overflow`` (bool), ``q`` / ``qd`` (lists of
     length-6 radian knot vectors, ITP-spaced; ``q[0] == q_cmd``).
@@ -62,17 +63,18 @@ def decode_status_204(data: bytes) -> dict[str, object]:
     """
 
 def decode_status_v3(data: bytes) -> dict[str, object]:
-    """Decode a legacy V3 type-202 RobotStatusPacket (388 B, big-endian; no force).
+    """Decode a V3 type-202 RobotStatusPacket (388 B, big-endian; no force block).
 
     Raises ``ValueError`` if ``data`` is shorter than 388 bytes or is not a
     type-202 packet. Same keys as :func:`decode_status_204`, but ``force_x/y/z`` /
     ``moment_x/y/z`` are ``0.0`` and ``fs_type`` is ``0xFFFFFFFF`` (Unavailable) —
-    the wire carries no force block. This is what the P-1 controller streams.
+    the wire carries no force block. This is what the CRX controller actually
+    streams: it negotiates ``available_version=3``, so type-204 never appears.
     """
 
 # ---------------------------------------------------------------------------
-# RT core (P3b). Internal units are RADIANS; the deg/9-pad/0xFFFF wire
-# conversion happens inside the C++ core.
+# RT core. Internal units are RADIANS; the deg/9-pad/0xFFFF wire conversion
+# happens inside the C++ core.
 # ---------------------------------------------------------------------------
 
 class Mode(enum.IntEnum):
@@ -114,8 +116,9 @@ class MotionStatus(enum.IntEnum):
     REJECTED = ...
 
 class RtCoreConfig:
-    """RT core knobs (mirror of ``airo_fanuc.controller_facts``; P4b populates
-    these from ``DriverConfig``). Defaults are the shipped CRX-10iA/L values."""
+    """RT core knobs (mirror of ``airo_fanuc.controller_facts``;
+    ``DriverConfig.to_rt_core_config`` fills these in). Defaults are the shipped
+    CRX-10iA/L values."""
 
     rx_silence_blind_hold_ms: float
     rx_silence_qd_ramp_ms: float

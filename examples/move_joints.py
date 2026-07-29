@@ -6,20 +6,22 @@ Moves ONE joint by a small delta (and optionally back), then reports the result.
 Runnable two ways:
 
   # Offline — no hardware. Spins up an in-process FakeCRX and drives it:
-  packages/airo_fanuc/.venv-dev/bin/python packages/airo_fanuc/examples/move_joints.py --fake
+  python examples/move_joints.py --fake
 
   # Real controller — operator AT THE ROBOT, E-STOP in hand, workspace clear:
-  packages/airo_fanuc/.venv-dev/bin/python packages/airo_fanuc/examples/move_joints.py \
+  python examples/move_joints.py \
       --ip 192.168.1.100 --joint 6 --delta-deg 10 --duration 4 --return
 
-The driver is ur_rtde-shaped; this is the joint-space slice of it. Mapping onto the
-airo-mono ``PositionManipulator`` ABC (the full ABC — TCP-pose moves + IK/FK — is the
-P9 milestone and needs an injected kinematics provider, since the wheel is numpy-only):
+The API is split into a receive side (state getters, never raise) and a control side
+(motion commands, blocking or non-blocking); this file is the joint-space slice of it:
 
-    get_joint_configuration()        -> driver.get_state()["q_meas"]   (rad)
-    move_to_joint_configuration(q)   -> driver.move_trajectory(times, q, qd)   (this file)
-    servo_to_joint_configuration(q)  -> driver.servo_j(q, dt)
-    (protective) stop                -> driver.stop_j()                (universal preempt)
+    read the current configuration  -> driver.get_state()["q_meas"]   (rad)
+    move to a configuration         -> driver.move_trajectory(times, q, qd)   (this file)
+    servo towards a configuration   -> driver.servo_j(q, dt)
+    (protective) stop               -> driver.stop_j()                (universal preempt)
+
+TCP-pose moves are deliberately absent: the wheel is numpy-only and ships no
+kinematics, so IK/FK — and therefore any Cartesian move — belongs to the caller.
 """
 
 from __future__ import annotations

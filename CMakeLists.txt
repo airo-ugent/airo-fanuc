@@ -6,14 +6,13 @@
 # brake / servo / settle / slew) and the rt_core (PLL + RealtimeCore), and exposes
 # the codec + the real-time StreamCore + generate_capture_path through the
 # `airo_fanuc._core` module.
-#
-# Design refs: docs/reference/airo-fanuc/PLAN.md §6,
-# docs/reference/airo-fanuc/reports/09-design-packaging-migration-testing.md (§2.3).
 
 cmake_minimum_required(VERSION 3.22)  # exact host minimum (cmake 3.22.1)
 project(airo_fanuc LANGUAGES CXX VERSION 0.1.0)
 
-set(CMAKE_CXX_STANDARD 17)  # C++17 — reflect-cpp/C++20 dropped with the rmi lib (D2)
+# C++17 is enough: the only vendored code that would force C++20 is upstream's
+# RMI library (reflect-cpp), which we do not compile — RMI lives in Python.
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # the codec is linked into a shared module
@@ -23,10 +22,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ---------------------------------------------------------------------------
-# ThreadSanitizer variant (P3c; B11 race gate). OFF by default so neither the
-# wheel build nor the normal ctest build is affected. When ON, every target
-# below (codec/tick_engine/rt_core/_core + the gtest suite) is instrumented, so
-# the L1/L2-lite gtests run under TSan. Must be set BEFORE any target is defined
+# ThreadSanitizer variant — the data-race gate for the RT core. OFF by default
+# so neither the wheel build nor the normal ctest build is affected. When ON,
+# every target below (codec/tick_engine/rt_core/_core + the gtest suite) is
+# instrumented, so the C++ unit tests and the UDP-loopback integration test run
+# under TSan. Must be set BEFORE any target is defined
 # (add_compile_options only applies to targets declared afterwards). The seqlock
 # StateSnapshot payload + the RT-owned timing histograms race by design; scope
 # those away with tests/tsan.supp (TSAN_OPTIONS=suppressions=...), NOT by
@@ -59,8 +59,8 @@ endif()
 set(PYBIND11_FINDPYTHON ON)
 
 # ---------------------------------------------------------------------------
-# Vendored FANUC driver source location (D3 — kept behind a cache var so the
-# submodule can be relocated/pointed elsewhere without editing this file).
+# Vendored FANUC driver source location — kept behind a cache var so the
+# submodule can be relocated/pointed elsewhere without editing this file.
 # ---------------------------------------------------------------------------
 set(FANUC_DRIVER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/fanuc_driver"
     CACHE PATH "Path to the vendored fanuc_driver fork (in-package submodule by default).")
@@ -76,21 +76,24 @@ if(NOT EXISTS "${_sm_packets}")
 endif()
 
 # ---------------------------------------------------------------------------
-# D6: verify at configure time that the codec headers we compile pull in NO
-# Eigen. We vendor ONLY packets.hpp (structs) + byte_ops.hpp (swap template);
-# both must remain dependency-light (<array>, <cstdint>, <algorithm>).
+# Verify at configure time that the codec headers we compile pull in NO Eigen.
+# We vendor ONLY packets.hpp (structs) + byte_ops.hpp (swap template); both must
+# stay dependency-light (<array>, <cstdint>, <algorithm>) so the codec target and
+# the wheel build need no third-party math library. A submodule bump that starts
+# including Eigen from these headers must fail loudly here, at configure time,
+# rather than silently adding a dependency to every consumer of the codec.
 # ---------------------------------------------------------------------------
 foreach(_hdr "${_sm_packets}" "${_sm_byteops}")
   file(READ "${_hdr}" _hdr_contents)
   string(FIND "${_hdr_contents}" "Eigen" _eigen_pos)
   if(NOT _eigen_pos EQUAL -1)
-    message(FATAL_ERROR "D6 violation: Eigen reference found in vendored codec header ${_hdr}")
+    message(FATAL_ERROR "Eigen reference found in vendored codec header ${_hdr}; the codec must stay dependency-free")
   endif()
 endforeach()
-message(STATUS "airo_fanuc: vendored Stream Motion codec is Eigen-free (D6 check passed).")
+message(STATUS "airo_fanuc: vendored Stream Motion codec is Eigen-free (configure-time check passed).")
 
 # ---------------------------------------------------------------------------
-# fanuc_sm_codec — the Stream Motion codec as OUR static target (D2).
+# fanuc_sm_codec — the Stream Motion codec as OUR static target.
 #
 # The vendored codec is effectively header-only: packets.hpp holds the
 # #pragma pack(1) wire structs and byte_ops.hpp holds the swap template. We do
@@ -159,22 +162,22 @@ if(AIRO_FANUC_BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
-# --- P3a/P3b add Ruckig FetchContent + rt_core/tick_engine sources below ---
+# Motion stack: Ruckig → the pure `tick_engine` → the `rt_core`.
 #
-# P3a lands here: Ruckig (pinned to v0.17.3, matching the repo's Python ruckig
-# 0.17.3) + the pure, I/O-free `tick_engine` static lib (cubic-Hermite resample,
-# Ruckig brake/servo/capture, slew clip, settle, qd_end blend). P3b adds the
-# rt_core (sockets/timerfd/threads) on top and links tick_engine into it.
-# The codec target, Python hint normalisation, pybind11 pin, install rule and
-# test gating above are reused unchanged.
+# tick_engine is the I/O-free tick math (cubic-Hermite resample, Ruckig
+# brake/servo/capture, slew clip, settle, qd_end blend); rt_core wraps it in the
+# sockets/timerfd/threads that make it real-time. The codec target, Python hint
+# normalisation, pybind11 pin, install rule and test gating above are shared by
+# both.
 # ---------------------------------------------------------------------------
 
-# Ruckig, pinned to v0.17.3 (== the repo's Python `ruckig` so brake/servo/capture
-# math is identical to the Python side). DOF-templated Ruckig<6> is used
-# everywhere so the tick path is stack-allocated / allocation-free
-# (StandardVector<double,6> == std::array<double,6>). Build only the library:
+# Ruckig, pinned to v0.17.3 so the brake/servo/capture profiles stay
+# reproducible — the C++ goldens encode the output of this exact version.
+# DOF-templated Ruckig<6> is used everywhere so the tick path is
+# stack-allocated / allocation-free (StandardVector<double,6> ==
+# std::array<double,6>). Build only the library:
 # examples/tests/benchmark/cloud-client/python-module OFF, and static so it links
-# into our static tick_engine + the _core module (PIC is on globally, line 16).
+# into our static tick_engine + the _core module (PIC is on globally, above).
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
@@ -201,14 +204,15 @@ add_library(tick_engine STATIC
 target_include_directories(tick_engine PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp")
 target_link_libraries(tick_engine PUBLIC fanuc_sm_codec ruckig::ruckig)
 target_compile_features(tick_engine PUBLIC cxx_std_17)
-# Bit-exact cubic-Hermite vs the dries Python oracle requires NO FP contraction:
-# an FMA fusing `a*b + c` would re-round and diverge from interpolator.py, which
-# evaluates each `*` and `+` as a separately-rounded IEEE op. PRIVATE so we do
-# not perturb P0's _core / bindings compilation.
+# Bit-exact cubic-Hermite requires NO FP contraction: the expected values in
+# tests/cpp/test_hermite.cpp are exact hexfloats from a reference implementation
+# that evaluates each `*` and `+` as a separately-rounded IEEE op, so an FMA
+# fusing `a*b + c` re-rounds and diverges. PRIVATE so the codec / _core /
+# bindings translation units are not perturbed.
 target_compile_options(tick_engine PRIVATE -ffp-contract=off)
 
 # ---------------------------------------------------------------------------
-# rt_core — the P3b real-time core: TickCore (pure I/O-free tick) + RealtimeCore
+# rt_core — the real-time core: TickCore (pure I/O-free tick) + RealtimeCore
 # (RT thread: epoll/timerfd/PLL-clocked TX/sockets, seqlock snapshot, rings).
 # Links tick_engine (Hermite/brake/servo/capture/slew/settle) + fanuc_sm_codec
 # (wire encode/decode). Depends on pthread (RT thread + affinity).

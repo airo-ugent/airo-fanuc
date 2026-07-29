@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Driver configuration + policy for the ur_rtde-shaped :class:`~airo_fanuc.driver.FanucDriver`.
+"""Driver configuration + policy for :class:`~airo_fanuc.driver.FanucDriver`.
 
-Two dataclasses (PLAN.md §5.1):
+Two dataclasses:
 
 * :class:`DriverConfig` — the *facts*: controller endpoints, kinematic limits and
   RT-hygiene knobs. Its limit defaults are single-sourced from
@@ -45,19 +45,20 @@ __all__ = [
 DEFAULT_SM_PORT: int = 60015
 DEFAULT_RMI_PORT: int = 16001
 
-#: The CAPTURE collision-check hook (decision 6 / R3 A2). Grocery wires this to
-#: curobo's ``check_trajectory_collision``; it receives the *synthesized capture
-#: path* (the exact knots the C++ core will execute — see
+#: The CAPTURE collision-check hook. A consumer wires this to its own collision
+#: query (e.g. curobo's ``check_trajectory_collision``); it receives the
+#: *synthesized capture path* (the exact knots the C++ core will execute — see
 #: :func:`airo_fanuc._core.generate_capture_path`) and returns ``True`` iff the
-#: splice is collision-free / safe to execute. The wheel never imports curobo:
-#: collision-checking is the caller's responsibility. ``None`` = no check.
+#: splice is collision-free / safe to execute. This package deliberately depends on
+#: no collision checker: world modelling is the caller's responsibility, and the
+#: driver cannot know the scene. ``None`` = no check.
 CaptureCheck = Callable[[np.ndarray, np.ndarray], bool]
 
 
 class MotionResult(Enum):
     """Terminal outcome of a :class:`~airo_fanuc.driver.MotionHandle` (non-raising,
     airo-convention; maps 1:1 from the terminal :class:`airo_fanuc._core.MotionStatus`
-    ordinals plus the ``stop_j``/preempt paths, PLAN.md §5.1)."""
+    ordinals plus the ``stop_j``/preempt paths)."""
 
     DONE = "done"
     SETTLE_TIMEOUT = "settle_timeout"
@@ -72,8 +73,8 @@ class DriverConfig:
     """Controller endpoints, kinematic limits and RT-hygiene knobs.
 
     Limit defaults are single-sourced from :mod:`airo_fanuc.controller_facts`
-    (``tests/test_lifecycle.py`` asserts equality — PLAN.md §5.1 "limits are
-    single-sourced"). The C++ tick engine carries a mirror copy of the same
+    (``tests/test_lifecycle.py`` asserts they stay equal, so a limit can only ever be
+    changed in one place). The C++ tick engine carries a mirror copy of the same
     numbers in ``TickEngineConfig``; :meth:`to_rt_core_config` only sets the
     :class:`airo_fanuc._core.RtCoreConfig` fields that are actually exposed to
     Python (the tick-engine limits/capture knobs stay at their C++ defaults,
@@ -91,13 +92,13 @@ class DriverConfig:
     acceleration_limits: np.ndarray = field(default_factory=lambda: cf.CRX10IAL_ACCELERATION_LIMITS.copy())
     jerk_limits: np.ndarray = field(default_factory=lambda: cf.CRX10IAL_JERK_LIMITS.copy())
 
-    # -- brake / slew envelope (provenance; mirror of controller_facts) --------
+    # -- brake / slew envelope (mirror of controller_facts) --------------------
     stop_scale_va: float = cf.STOP_LIMIT_SCALE_VA
     stop_scale_j: float = cf.STOP_LIMIT_SCALE_J
     slew_factor: float = cf.SLEW_FACTOR
     tracking_lag_s: float = cf.INTERIM_FACTS.tracking_lag_s
 
-    # -- in-process safety watchdogs (P-1 finalization; controller_facts) --------
+    # -- in-process safety watchdogs (mirror of controller_facts) --------------
     #: SUPERVISOR_LOST hold if the supervisor heartbeat lapses this long (s).
     supervisor_lost_s: float = cf.SUPERVISOR_LOST_S
     #: DRIFT fault: sustained commanded↔measured divergence > this many degrees...
@@ -149,8 +150,8 @@ class DriverConfig:
         """
         rc = RtCoreConfig()
         rc.sm_version = int(self.sm_version)
-        # In-process safety watchdogs (P-1 finalization). drift_lag_ticks is derived
-        # from the measured servo lag (E9: 25 ms) so the drift guard is lag-aligned.
+        # In-process safety watchdogs. drift_lag_ticks is derived from the measured
+        # servo lag (25 ms ≈ 3 ticks) so the drift guard compares like with like.
         rc.supervisor_lost_s = float(self.supervisor_lost_s)
         rc.drift_lag_ticks = int(round(self.tracking_lag_s / cf.ITP_S))
         rc.drift_fault_rad = float(np.deg2rad(self.drift_fault_deg))
@@ -164,27 +165,31 @@ class DriverConfig:
 
 @dataclass
 class DriverPolicy:
-    """Behavioural policy for the driver + lifecycle supervisor (PLAN.md §5.3).
+    """Behavioural policy for the driver + lifecycle supervisor.
 
-    Defaults reproduce the ``dries`` demo doctrine: auto-recovery ON, the ARM
-    gate armed on operator/e-stop faults, single-owner flock acquired.
+    The defaults are tuned for an unattended cell: auto-recovery ON, the ARM gate
+    armed on operator/e-stop faults, single-owner flock acquired.
     """
 
     config: DriverConfig = field(default_factory=DriverConfig)
 
     # -- bring-up --------------------------------------------------------
     connect_retries: int = 3
-    #: Grace, post-bring-up, to observe the seqlock publish HOLD after wait_ready
-    #: (P3b note: wait_ready flips STREAMING a beat before HOLD is published).
+    #: Grace, post-bring-up, to observe the seqlock publish HOLD after wait_ready.
+    #: ``wait_ready`` flips STREAMING a beat before HOLD is published, so without a
+    #: little slack bring-up would read a not-yet-published mode as a failure.
     hold_wait_s: float = 3.0
     preflight_full: bool = False
 
     # -- recovery / faults ----------------------------------------------
     auto_recover: bool = True
-    #: Cooldown between auto-recovery ladder attempts (dries 15 s anti-churn).
+    #: Cooldown between auto-recovery ladder attempts — anti-churn, so a fault the
+    #: ladder cannot clear becomes one attempt every 15 s instead of a retry storm
+    #: hammering the RMI session (RMI churn is itself an SM-daemon wedge vector).
     recovery_cooldown_s: float = 15.0
-    #: Settle delay before an *auto* recovery attempt (dries MOTION_RECOVERY_DELAY_S
-    #: = 3 s; explicit ``recover()`` bypasses it). Tests set this small.
+    #: Settle delay before an *auto* recovery attempt: the controller's own latches
+    #: need a moment after a fault before a reset will take. Explicit ``recover()``
+    #: bypasses it (a human is asking now). Tests set this small.
     recovery_delay_s: float = 3.0
     #: Grace for motion_possible / HOLD to reassert after a ladder relaunch.
     ready_wait_s: float = 60.0
@@ -204,22 +209,23 @@ class DriverPolicy:
     #: to the bring-up "flush stale SystemFault" reconnect (rmi.stop → reconnect
     #: → reset → reseed → FRC_Call). Kept small (1): RMI churn is itself a
     #: documented SM-daemon wedge vector, so this trades one clean reconnect for
-    #: the wedge rather than hammering the session. 0 restores the old bail.
+    #: the wedge rather than hammering the session. 0 disables the fallback (the
+    #: ladder then simply dead-ends on RmiSessionDown).
     recovery_reconnect_attempts: int = 1
     estop_continuation_path: str = cf.INTERIM_FACTS.estop_continuation_path
 
-    # -- ARM gate (R2 F1) ------------------------------------------------
+    # -- ARM gate --------------------------------------------------------
     #: When True, recovery from an e-stop / operator-required fault ends in
     #: MOTION_INHIBITED — the next motion needs an explicit ``arm()``.
     arm_gate: bool = True
 
-    # -- CAPTURE collision-check hook (decision 6 / R3 A2) --------------
+    # -- CAPTURE collision-check hook ------------------------------------
     capture_check: CaptureCheck | None = None
 
     # -- peripherals -----------------------------------------------------
     enable_gripper: bool = True
-    #: Injected zenoh (or any) publisher for the republisher threads. ``None`` =
-    #: no republish (grocery provides one at P5).
+    #: Injected publisher (zenoh, ROS, anything matching the ``Publisher`` protocol)
+    #: for the republisher threads. ``None`` = no republish.
     publisher: Publisher | None = None
 
     # -- ownership -------------------------------------------------------

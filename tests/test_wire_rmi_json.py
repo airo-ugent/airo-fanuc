@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""L0 goldens for the RMI JSON request wire format (TCP 16001).
+"""Codec goldens for the RMI JSON request wire format (TCP 16001).
 
-We are NOT building the RMI client here (PLAN §P4a). We pin the exact on-wire
-JSON *serialization* of every request the ladders issue, so the future
-``RmiClient`` can be validated against these goldens.
+These tests pin the exact on-wire JSON *serialization* of every request the
+recovery/gripper ladders issue. They go through the builders in
+``airo_fanuc.testing.wire`` rather than through :class:`RmiClient`, so the wire
+format is nailed down independently of the client that sends it: a refactor
+inside the client cannot silently move a byte without a golden failing here.
 
 Each ``goldens/rmi/<name>.json`` fixture records:
   * ``builder`` + ``args`` — the ``airo_fanuc.testing.wire`` request builder and
-    its inputs (provenance / how to reconstruct).
-  * ``provenance`` — the dries ``rmi_client.py`` method it mirrors.
+    its inputs (everything needed to reconstruct the request).
+  * ``provenance`` — a one-line description of what the request is: which
+    ``FRC_`` command/instruction it carries and what it is used for.
   * ``request`` — the request dict (insertion order == wire key order).
   * ``wire`` — the exact on-wire string: ``json.dumps(request) + "\\r\\n"``.
 
@@ -17,8 +20,9 @@ stored dict), re-serializes, and asserts it equals the committed ``wire`` and
 ``request``. Regenerate with ``AIRO_FANUC_REGEN_GOLDENS=1 pytest ...``.
 
 **Pinned invariant**: ``FRC_WriteRegister`` ``DataType`` is LOWERCASE
-(``"integer"`` / ``"float"``). Capitalised values are silently coerced to
-Integer by the controller (dries ``write_register`` / FANUC ``rmi.cpp:462``).
+(``"integer"`` / ``"float"``). The controller silently coerces a capitalised
+value to Integer (FANUC ``rmi.cpp:462``), so ``"Float"`` would write a truncated
+integer into the register with no error reported — hence the exact-case pin.
 """
 
 from __future__ import annotations
@@ -60,72 +64,85 @@ _RMI_GOLDENS: dict[str, tuple[str, dict[str, Any], str]] = {
     "connect_stmo": (
         "rmi_connect_stmo_request",
         {},
-        "rmi_client._open_session_locked: send {'Communication': 'FRC_Connect_STMO'}",
+        "Session open — {'Communication': 'FRC_Connect_STMO'} on TCP 16001; the "
+        "reply carries the port the rest of the session runs on.",
     ),
     "disconnect": (
         "rmi_disconnect_request",
         {},
-        "rmi_client.stop: best-effort {'Communication': 'FRC_Disconnect'}",
+        "Session close — {'Communication': 'FRC_Disconnect'}, sent best-effort at "
+        "shutdown so the controller frees the RMI session slot.",
     ),
     "initialize": (
         "rmi_command_request",
         {"command": "FRC_Initialize"},
-        "rmi_client._initialize_with_recovery_locked: {'Command': 'FRC_Initialize'}",
+        "{'Command': 'FRC_Initialize'} — takes RMI control of the controller; "
+        "required before any motion instruction is accepted.",
     ),
     "reset": (
         "rmi_command_request",
         {"command": "FRC_Reset"},
-        "rmi_client.reset: {'Command': 'FRC_Reset'}",
+        "{'Command': 'FRC_Reset'} — clears the latched controller fault, the first "
+        "rung of the recovery ladder.",
     ),
     "get_status": (
         "rmi_command_request",
         {"command": "FRC_GetStatus"},
-        "rmi_client.get_status / reseed_sequence_id_from_controller",
+        "{'Command': 'FRC_GetStatus'} — scheduler-relevant state: authoritative "
+        "NextSequenceID, TP mode, program status, override percentage.",
     ),
     "get_ext_status": (
         "rmi_command_request",
         {"command": "FRC_GetExtStatus"},
-        "rmi_client.get_extended_status: {'Command': 'FRC_GetExtStatus'}",
+        "{'Command': 'FRC_GetExtStatus'} — extended status: in_motion, "
+        "drives_powered, overrides, and the FANUC alarm code.",
     ),
     "abort": (
         "rmi_command_request",
         {"command": "FRC_Abort"},
-        "rmi_client.abort / recovery pass-2: {'Command': 'FRC_Abort'}",
+        "{'Command': 'FRC_Abort'} — aborts all running TP programs and flushes the "
+        "controller-side instruction queue (the pendant's FCTN → ABORT ALL).",
     ),
     "read_register_r1": (
         "rmi_read_register_request",
         {"register_number": 1},
-        "rmi_client.read_register(1) — gripper R[1] poll",
+        "FRC_ReadRegister on R[1] — the gripper handshake poll.",
     ),
     "write_register_integer": (
         "rmi_write_register_request",
         {"register_number": 2, "value": 1},
-        "rmi_client.write_register(2, 1) — int -> DataType 'integer' (lowercase)",
+        "FRC_WriteRegister R[2] = 1 — an int value carries DataType 'integer' "
+        "(lowercase).",
     ),
     "write_register_float": (
         "rmi_write_register_request",
         {"register_number": 1, "value": 1.5},
-        "rmi_client.write_register(1, 1.5) — float -> DataType 'float' (lowercase)",
+        "FRC_WriteRegister R[1] = 1.5 — a float value carries DataType 'float' "
+        "(lowercase).",
     ),
     "read_error": (
         "rmi_read_error_request",
         {"count": 1},
-        "rmi_client.read_error(1): {'Command': 'FRC_ReadError', 'Count': 1}",
+        "{'Command': 'FRC_ReadError', 'Count': 1} — the most recent alarm text, "
+        "read on motion_possible→False to capture the real FANUC alarm.",
     ),
     "read_joint_angles": (
         "rmi_read_joint_angles_request",
         {},
-        "rmi_client.read_joint_angles — FRC_ReadJointAngles (RMI §2.3.15, ReadJointAnglesPacket)",
+        "FRC_ReadJointAngles (RMI §2.3.15, ReadJointAnglesPacket) — current joint "
+        "angles over the RMI plane.",
     ),
     "continue": (
         "rmi_continue_request",
         {},
-        "rmi_client.program_continue — FRC_Continue (RMI §2.3.4, ContinuePacket)",
+        "FRC_Continue (RMI §2.3.4, ContinuePacket) — resumes a paused "
+        "Remote-Motion TP program.",
     ),
     "call_stream_motn": (
         "rmi_call_request",
         {"sequence_id": 7, "program_name": "STREAM_MOTN"},
-        "rmi_client.program_call('STREAM_MOTN') — fire-and-forget FRC_Call",
+        "FRC_Call('STREAM_MOTN') at SequenceID 7 — an Instruction (not a Command), "
+        "fire-and-forget: no synchronous reply is read.",
     ),
 }
 
@@ -162,7 +179,7 @@ def test_rmi_golden_matches(name: str) -> None:
     rebuilt = _build(builder_name, kwargs)
     wire_str = wire.rmi_serialize(rebuilt)
 
-    # Wire string is the pinned oracle.
+    # The committed wire string is the pinned golden.
     assert wire_str == golden["wire"], (
         f"{name}: serialization diverged from committed golden.\n"
         f"  got:      {wire_str!r}\n  expected: {golden['wire']!r}"
@@ -197,7 +214,8 @@ def test_write_register_datatype_is_lowercase() -> None:
     assert float_req["DataType"] == "float"
     assert '"DataType": "float"' in wire.rmi_serialize(float_req)
 
-    # bool is an int subclass -> integer (matches dries write_register).
+    # bool is an int subclass, so True normalizes to DataType 'integer' with a
+    # plain int 1 as the value — never a JSON `true`, which the controller rejects.
     bool_req = wire.rmi_write_register_request(3, True)
     assert bool_req["DataType"] == "integer"
     assert bool_req["RegisterValue"] == 1

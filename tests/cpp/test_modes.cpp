@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 — TickCore mode machine (PLAN.md §5.2). HOLD→CAPTURE→TRAJECTORY→settle→
+// Unit test — TickCore mode machine. HOLD→CAPTURE→TRAJECTORY→settle→
 // DONE; stop_j→BRAKE→HOLD; kill-type DEGRADED→SAFE_FOLLOW; graduated RX-silence
 // (100 ms kill / 500 ms park); CAPTURE-or-REJECT; slew clip counted-not-faulted;
 // SAFE_FOLLOW bounded re-anchor.
@@ -271,7 +271,7 @@ TEST(Modes, SlewClipCountedNotFaulted) {
   }
   EXPECT_GT(clipped_ticks, 0);
   EXPECT_GT(tc.total_slew_clips(), 0u);
-  EXPECT_TRUE(ever_sustained) << "sustained-clip diagnostic bit set during clipping (F35)";
+  EXPECT_TRUE(ever_sustained) << "sustained-clip diagnostic bit set during clipping";
 }
 
 TEST(Modes, SafeFollowReanchorBounded) {

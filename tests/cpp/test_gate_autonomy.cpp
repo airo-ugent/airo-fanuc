@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// L1 — C++-gate-autonomy invariant (R2 F28/F29). Every autonomy gate carried in
+// Unit test — C++-gate-autonomy invariant. Every autonomy gate carried in
 // a type-204 status reacts inside ONE TickCore::tick() call, computed purely from
 // the RxSample, with NO Python and NO callback: TickCore has no callback surface
 // at all, and RealtimeCore (the only caller) never invokes Python from the RT
@@ -8,9 +8,8 @@
 // into a Python watchdog — the drift/e-stop/TEACH/contact/safety_scale/
 // motion_possible reactions must stay GIL-free in the C++ tick.
 //
-// It also fills the gate-coverage gaps left by test_epoch/test_modes: TEACH_MODE,
-// SAFETY_CLAMP and MOTION_NOT_POSSIBLE were previously untested at the TickCore
-// level. (DRIFT is a bound FaultReason enum value but is NOT wired as a C++ gate
+// It also covers the gates that test_epoch/test_modes do not reach at the
+// TickCore level: TEACH_MODE, SAFETY_CLAMP and MOTION_NOT_POSSIBLE. (DRIFT is a bound FaultReason enum value but is NOT wired as a C++ gate
 // in the frozen core — it is derived host-side, plan@now−lag — so it is not part
 // of the C++ autonomy table and is deliberately not asserted here.)
 

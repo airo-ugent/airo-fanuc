@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""L2 self-tests for the FakeCRXController RMI side.
+"""Integration self-tests for the FakeCRXController RMI side.
 
 Prove the RMI emulator is a faithful spec: bootstrap→redirect port-hop,
 Initialize/Reset ladders with NextSequenceID reseed, stale-SequenceID drop,
@@ -7,9 +7,12 @@ single-session 2556954, scriptable error injection (2556943 / 2556938 /
 SYST-348), the GRIPDISP register contract (R[1] auto-clear with correct R[3]
 reading; direct-GRIPDISP wedge), and async FRC_SystemFault push.
 
-The ``RmiProbe`` helper mirrors ``dries`` ``rmi_client``'s drain-by-identifier
-behavior (push/orphan packets stashed, matched reply returned) so these tests
-double as a check that the fake plays correctly against that client shape.
+The ``RmiProbe`` helper reads replies the way the RMI protocol requires — drain
+by identifier, stashing async pushes and orphaned acks and returning only the
+packet whose Command/Communication/Instruction echoes the request. The
+controller interleaves unsolicited packets on the same socket, so a probe that
+just read the next line would mis-pair replies; using the same discipline here
+means these tests also exercise the fake against a realistic client shape.
 """
 
 from __future__ import annotations
@@ -75,7 +78,7 @@ class RmiProbe:
             self.async_packets.append(pkt)
 
     def call(self, seq: int, program: str) -> None:
-        """Fire-and-forget FRC_Call (no synchronous read, per dries)."""
+        """Fire-and-forget FRC_Call: the ack is an orphan, never read synchronously."""
         _send_line(self.sock, {"Instruction": "FRC_Call", "SequenceID": seq, "ProgramName": program})
 
     def read_raw(self, timeout: float = 1.0) -> dict:

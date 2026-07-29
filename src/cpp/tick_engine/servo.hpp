@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// airo_fanuc — Ruckig-online servo (P3a). PLAN.md §5.1 + R1 C2/C3.
+// airo_fanuc — Ruckig-online servo.
 //
 // Replace-not-queue servoing: Ruckig<6> in POSITION control interface, ONE
 // update() per tick (alloc-free — members reused). Each new target REPLACES the
@@ -10,15 +10,18 @@
 //   limits          = (v_lim, a_lim, j_lim) × servo_limit_scale (default 1.0)
 //   target_position = latest servo q
 //   target_velocity = clamp((q_new − q_prev)/duration, ±v_lim·scale)  [feedforward]
-//   minimum_duration = duration                                        [see NOTE]
+//   minimum_duration = duration                              [see STUTTER FIX below]
 //
-// R1 C2 (stutter fix). Time-optimal profiles reach `duration`-spaced targets
-// EARLY → freeze-until-next-target sawtooth; the velocity feedforward + a
-// minimum profile duration (= duration) remove the dwell. "servo period" in the
-// R1 C2 wording == the servo UPDATE period == the call's `duration` == 1/f in
-// the airo `servo(q, 1/f)` idiom; this equals PLAN.md §5.1's "minimum_duration =
-// duration". (It is NOT the 8 ms RT tick — stretching a profile to the TARGET
-// SPACING is what kills the sawtooth; stretching to 8 ms would not.)
+// STUTTER FIX. A time-optimal profile reaches a `duration`-spaced target EARLY and
+// then sits at rest until the next target arrives — a freeze/move sawtooth the arm
+// renders as visible stutter. The velocity feedforward plus a minimum profile
+// duration equal to `duration` remove the dwell: the profile is stretched to
+// exactly fill the gap between targets and arrives moving.
+//
+// `duration` here is the servo UPDATE period — the spacing between successive
+// set_target calls, i.e. 1/f in the `servo_j(q, 1/f)` call pattern. It is NOT the
+// 8 ms RT tick: stretching a profile to the TARGET SPACING is what removes the
+// sawtooth, stretching it to 8 ms would not.
 //
 // ONLINE PATTERN (important, verified empirically): the Ruckig target/limits/
 // minimum_duration are set ONLY when a new target arrives (`set_target`); each
@@ -30,9 +33,12 @@
 // So `set_target` seeds current_* from the last commanded state; `step()` leaves
 // the input untouched.
 //
-// R1 C3 (distance guard). Typed reject if |q_target − q_cmd|∞ > servo_window
-// (5°) — API-consistent with the capture policy; does not import ur_rtde's
-// unbounded-servoJ foot-gun.
+// DISTANCE GUARD. Typed reject if |q_target − q_cmd|∞ > servo_window (5°), which
+// keeps the servo API consistent with the capture-or-reject policy. A servo call
+// that silently accepts an arbitrarily distant target is a foot-gun: one mistaken
+// or stale setpoint becomes a full-envelope lunge, planned at the servo limits,
+// with no collision check anywhere in the path. Rejecting is the safe default —
+// callers that genuinely want to travel that far submit a trajectory.
 
 #pragma once
 
@@ -59,7 +65,8 @@ class Servo {
  public:
   explicit Servo(const TickEngineConfig& cfg);
 
-  // Enter SERVO from the current commanded state (C1 continuity). Initial target
+  // Enter SERVO from the current commanded state, so position and velocity are
+  // continuous across the mode transition. Initial target
   // = q_cmd (hold) with zero feedforward until the first set_target.
   void start(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& qdd_cmd);
 

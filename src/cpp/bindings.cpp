@@ -45,9 +45,10 @@ py::bytes py_encode_command_packet(std::uint32_t sequence_no, bool is_last_comma
   return py::bytes(reinterpret_cast<const char*>(buf.data()), buf.size());
 }
 
-// P4b: expose the deterministic CAPTURE-splice generator so the Python driver can
+// Expose the deterministic CAPTURE-splice generator so the Python driver can
 // collision-check the EXACT knots the RT core will execute ("the checked path IS
-// the executed path", PLAN.md §5.1 / capture.hpp header note). Uses a default
+// the executed path" — see the capture.hpp header note and
+// docs/successor-invariants.md, "Collision-check hook"). Uses a default
 // TickEngineConfig, whose capture/limit fields mirror controller_facts and equal
 // the RT core's embedded cfg.tick (RtCoreConfig does not expose the tick config to
 // Python, so both sides use the same defaults → byte-identical output).
@@ -126,7 +127,7 @@ py::dict py_decode_status_v3(const std::string& data) {
 
 // ---------------------------------------------------------------------------
 // StreamCore — thin pybind wrapper over rt_core::RealtimeCore. This is the
-// production RT-core surface the shipped FanucDriver drives (and the FakeCRX L2
+// production RT-core surface the shipped FanucDriver drives (and the FakeCRX
 // integration tests exercise). GIL discipline: released on start/stop/blocking
 // calls; the RT thread NEVER calls back into Python.
 // ---------------------------------------------------------------------------
@@ -333,17 +334,17 @@ PYBIND11_MODULE(_core, m) {
         "Decode a Stream Motion type-204 RobotStatusPacket (416 B, big-endian) into a dict.");
 
   m.def("decode_status_v3", &py_decode_status_v3, py::arg("data"),
-        "Decode a legacy V3 type-202 RobotStatusPacket (388 B, big-endian; no force block) into a "
+        "Decode a Stream Motion v3 type-202 RobotStatusPacket (388 B, big-endian; no force block) into a "
         "dict. force_x..moment_z are 0 and fs_type is 0xFFFFFFFF (Unavailable).");
 
   m.def("generate_capture_path", &py_generate_capture_path, py::arg("q_cmd"), py::arg("qd_cmd"),
         py::arg("q0"), py::arg("qd0"),
         "Synthesize the deterministic CAPTURE splice (q_cmd,qd_cmd)->(q0,qd0) the RT core will "
         "execute. Returns {would_reject, count, finished, overflow, q, qd} — the same code path "
-        "as the RT execution so the Python collision check IS the executed path (PLAN.md §5.1).");
+        "as the RT execution so the Python collision check IS the executed path.");
 
   // -------------------------------------------------------------------------
-  // RT core (P3b): StreamCore + RtCoreConfig + mode/fault/status enums.
+  // RT core: StreamCore + RtCoreConfig + mode/fault/status enums.
   // -------------------------------------------------------------------------
   py::enum_<rt::Mode>(m, "Mode")
       .value("STREAM_DOWN", rt::Mode::STREAM_DOWN)

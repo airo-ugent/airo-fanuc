@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""RMI JSON-over-TCP server for the FakeCRXController (PLAN.md §5.3, design 08).
+"""RMI JSON-over-TCP server for the FakeCRXController.
 
-Emulates the controller's Remote Motion Interface exactly as ``dries``
-``rmi_client.py`` drives it:
+Emulates the controller's Remote Motion Interface as
+:mod:`airo_fanuc.rmi_client` drives it:
 
 * **Bootstrap → redirect port-hop**: ``FRC_Connect_STMO`` on port 16001 replies
   with a ``PortNumber`` redirect; the client reconnects there for everything
@@ -12,24 +12,26 @@ Emulates the controller's Remote Motion Interface exactly as ``dries``
   Disconnect. Replies echo the request's identifier key and carry ``ErrorID``.
 * **NextSequenceID bookkeeping**: ``FRC_GetStatus`` reports the authoritative
   ``NextSequenceID``; an ``FRC_Call`` with a stale/duplicate SequenceID is
-  silently dropped (no ack, no launch) — modeling why the bridge must reseed
+  silently dropped (no ack, no launch) — modeling why the driver must reseed
   from ``FRC_GetStatus.NextSequenceID`` after every Initialize/Reset.
-* **Single-session** (INTERIM_FACTS.rmi_single_session): a second concurrent
+* **Single-session** (``INTERIM_FACTS.rmi_single_session``): a second concurrent
   ``FRC_Connect_STMO`` while a session is live returns error ``2556954``.
 * **Error injection**: arm any command to return a specific ErrorID (2556938 TP
   not paused, 2556943 stale session, 2556954 multi-session, 2556934/2556936 →
-  SYST-348) — deterministic and scriptable for the L2 matrix.
+  SYST-348) — deterministic and scriptable, so the recovery ladders can be
+  exercised without provoking a real controller fault.
 * **Async push** (``FRC_SystemFault`` / ``FRC_Terminate`` / ``FRC_AsbnReady``):
   out-of-band packets the client's async ring drains.
 * **GRIPDISP register contract**: ``FRC_Call("GRPRUN")`` starts the dispatcher;
   with the dispatcher running, writing ``R[1]=1`` executes the ``R[2]``/``R[3]``
-  action and clears ``R[1]`` back to 0. A direct ``FRC_Call("GRIPDISP")`` does
-  NOT start the dispatcher (models the B10 RMI-queue wedge) so ``R[1]`` never
-  clears — proving the driver must never call it directly.
+  action and clears ``R[1]`` back to 0. A direct ``FRC_Call("GRIPDISP")`` wedges
+  the RMI instruction queue instead of forking the dispatcher, so ``R[1]`` never
+  clears — the fake reproduces that dead end to prove the driver never calls it
+  directly.
 
-Reply shapes mirror the field names ``rmi_client.py`` parses (ServoReady /
+Reply shapes carry the field names the client parses (ServoReady /
 NextSequenceID / DrivesPowered / GenOverride / ErrorData…); the exact *request*
-JSON is pinned by the P1a goldens in ``tests/goldens/rmi/``.
+JSON is pinned by the goldens in ``tests/goldens/rmi/``.
 """
 
 from __future__ import annotations
@@ -43,14 +45,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from airo_fanuc.testing.fake_crx import ControllerState, FakeCRXConfig
 
-# RMI error IDs used by the injection hooks (subset of rmi_client._ERROR_CODES).
+# RMI error IDs used by the injection hooks (subset of the client's error table).
 ERR_CANNOT_EXECUTE_TP_A = 2556934  # "Cannot Execute TP program." (SYST-348 family)
 ERR_CANNOT_EXECUTE_TP_B = 2556936  # "Cannot Execute TP program." (SYST-348 family)
 ERR_TP_NOT_PAUSED = 2556938  # "TP Program is Not Paused." (FRC_Continue of unpaused)
 ERR_INVALID_CONTROLLER_STATE = 2556943  # "Invalid Controller State." (stale session)
 ERR_ALREADY_CONNECTED = 2556954  # "Robot is Already Connected." (multi-session)
 
-# Async push packet identifiers the client's async ring drains (design 08 §2).
+# Async push packet identifiers the client's async ring drains.
 PUSH_COMMS = ("FRC_SystemFault", "FRC_Terminate", "FRC_AsbnReady")
 _ECHO_KEYS = ("Command", "Communication", "Instruction")
 
@@ -85,9 +87,9 @@ class FakeRmiServer:
         self._session_active = False
         self._redir_conn: socket.socket | None = None
 
-        # NextSequenceID persists across sessions (dries: only power-cycle /
-        # Disconnect resets it). Seeded non-1 by default so a client that fails
-        # to reseed from GetStatus would send a stale FRC_Call and be dropped.
+        # NextSequenceID persists across sessions — only a power-cycle or a
+        # successful FRC_Disconnect resets it. Seeded non-1 by default so a client
+        # that fails to reseed from GetStatus sends a stale FRC_Call and is dropped.
         self._next_sequence_id = int(cfg.seq_seed)
 
         # Registers R[1..]; the gripper uses 1/2/3.
@@ -99,7 +101,7 @@ class FakeRmiServer:
         #: ``_gripdisp_running`` (a bool the fake treats as idempotent): this counts
         #: every fork so a test can assert the supervisor's at-most-once anti-stacking
         #: guard holds across a multi-attempt bring-up (a RUN-fork can't be un-launched
-        #: on real hardware, so each extra call stacks an un-killable task — P-1 HIL).
+        #: on real hardware, so each extra call stacks an un-killable task).
         self._grprun_call_count = 0
         self.gripdisp_direct_called = False
         self._gripper_pending: dict[str, int] | None = None
@@ -109,11 +111,11 @@ class FakeRmiServer:
         # Error injection: command name -> queue of ErrorIDs to return.
         self._error_queue: dict[str, deque[int]] = defaultdict(deque)
 
-        # FRC_Continue paused-state model (§2.3.4). Default paused=True so a bare
-        # FRC_Continue is a clean no-op (ErrorID 0). set_program_paused(False)
-        # makes it return 2556938 "TP Program is Not Paused." — the F17/F21
-        # unpaused case the client tolerates. Scriptable, and also reachable via
-        # arm_error("FRC_Continue", ERR_TP_NOT_PAUSED).
+        # FRC_Continue paused-state model (RMI §2.3.4). Default paused=True so a
+        # bare FRC_Continue is a clean no-op (ErrorID 0). set_program_paused(False)
+        # makes it return 2556938 "TP Program is Not Paused." — the unpaused case
+        # the client tolerates as a no-op success. Scriptable, and also reachable
+        # via arm_error("FRC_Continue", ERR_TP_NOT_PAUSED).
         self._program_paused = True
         # Monotonic controller time tag echoed in FRC_ReadJointAngles replies.
         self._joint_time_tag = 0
@@ -181,8 +183,8 @@ class FakeRmiServer:
             return
         with self._lock:
             if self._cfg.single_session and self._session_active:
-                # A second concurrent connect is refused (INTERIM_FACTS
-                # .rmi_single_session; design 08 §6, HIL-L3 2556954).
+                # A second concurrent connect is refused: the controller serves
+                # one RMI session at a time (INTERIM_FACTS.rmi_single_session).
                 self._send(
                     conn,
                     {"Communication": "FRC_Connect_STMO", "ErrorID": ERR_ALREADY_CONNECTED},
@@ -278,8 +280,8 @@ class FakeRmiServer:
         return handler(req)
 
     def _handle_initialize(self, req: dict[str, Any]) -> dict[str, Any]:
-        # A successful Initialize does NOT reset NextSequenceID (dries: persists
-        # till power-cycle). It does clear the deviation-fault latch / in_error.
+        # A successful Initialize does NOT reset NextSequenceID (it persists till
+        # power-cycle). It does clear the deviation-fault latch / in_error.
         with self._lock:
             self._state.clear_recoverable_faults()
         return self._echo(req, error_id=0)
@@ -299,9 +301,9 @@ class FakeRmiServer:
     def _handle_continue(self, req: dict[str, Any]) -> dict[str, Any]:
         # FRC_Continue resumes a paused TP program: ErrorID 0 when paused,
         # 2556938 "TP Program is Not Paused." otherwise. Default paused=True
-        # keeps the historical clean-no-op behavior; set_program_paused(False)
-        # models the unpaused case the client tolerates (F17/F21). An injected
-        # error (arm_error) still takes precedence in _dispatch.
+        # makes a bare FRC_Continue a clean no-op; set_program_paused(False)
+        # models the unpaused case the client tolerates. An injected error
+        # (arm_error) still takes precedence in _dispatch.
         with self._lock:
             paused = self._program_paused
         if paused:
@@ -336,7 +338,8 @@ class FakeRmiServer:
                 "Command": "FRC_GetStatus",
                 "ErrorID": 0,
                 "ServoReady": 1 if st.servo_ready() else 0,
-                "TPMode": 1 if st.tp_enabled else 0,  # 1=T1, 0=AUTO on this SOP-less CRX (P-1 measured §1.6)
+                # 1=T1, 0=AUTO on this SOP-less CRX (measured on the controller).
+                "TPMode": 1 if st.tp_enabled else 0,
                 "RMIMotionStatus": 0,
                 "ProgramStatus": 1 if st.stream_motn_launched else 0,
                 "SingleStepMode": 0,
@@ -407,7 +410,7 @@ class FakeRmiServer:
         with self._lock:
             if seq < self._next_sequence_id:
                 # Stale / duplicate SequenceID — silently dropped (no ack, no
-                # launch). This is why the bridge reseeds from NextSequenceID.
+                # launch). This is why the client reseeds from NextSequenceID.
                 return None
             self._next_sequence_id = seq + 1
             if program == "STREAM_MOTN":
@@ -417,18 +420,18 @@ class FakeRmiServer:
                 self._grprun_call_count += 1
             elif program == "GRIPDISP":
                 # Direct call wedges the RMI instruction queue: the dispatcher is
-                # NOT forked, so R[1] never clears (B10). Never do this.
+                # NOT forked, so R[1] never clears. Never do this.
                 self.gripdisp_direct_called = True
         # FRC_Call is fire-and-forget on the client; the controller still sends
-        # an ack that lands in the client's async/orphan ring (dries documents
-        # this). Configurable so simpler test clients can disable it.
+        # an ack, which lands in the client's async/orphan ring. Configurable so
+        # simpler test clients can disable it.
         if self._cfg.send_call_ack:
             return {"Instruction": "FRC_Call", "SequenceID": seq, "ErrorID": 0}
         return None
 
     def _handle_disconnect(self) -> dict[str, Any]:
         with self._lock:
-            # A successful Disconnect resets NextSequenceID to 1 (dries).
+            # A successful Disconnect resets NextSequenceID to 1.
             self._next_sequence_id = 1
             self._state.stream_motn_launched = False
         return {"Communication": "FRC_Disconnect", "ErrorID": 0}
@@ -468,7 +471,7 @@ class FakeRmiServer:
 
     def arm_syst_348(self, *, on: str = "FRC_Initialize") -> None:
         """Arm a SYST-348 payload-monitor block: ``on`` returns 2556936 and
-        ReadError surfaces the SYST-348 alarm text (design 08 fault row 6)."""
+        ReadError surfaces the SYST-348 alarm text."""
         with self._lock:
             self._error_queue[on].append(ERR_CANNOT_EXECUTE_TP_B)
             self._state.raise_alarm("SYST-348", "SYST-348 Payload monitor detected")

@@ -1,5 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for :class:`airo_fanuc.ownership.OwnershipLock` (PLAN decision 13, F24/F25)."""
+"""Tests for :class:`airo_fanuc.ownership.OwnershipLock`.
+
+The controller accepts one Stream Motion peer and one RMI session, so at most one
+process may hold it — in any mode. The lock is a ``flock`` whose file payload names
+the holder, so a second acquirer fails loudly with a "kill <PID>" hint instead of
+quietly contending for the arm. Covered here: the roundtrip, the named refusal, the
+``O_CLOEXEC`` fd (a fork must not inherit ownership) and the lock-directory owner
+check (a foreign-owned directory could be pre-seeded to hijack the lock).
+"""
 
 from __future__ import annotations
 
@@ -104,7 +112,8 @@ def test_holder_record_written(tmp_path: Path) -> None:
 
 
 def test_foreign_lock_dir_owner_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # F25: a lock dir owned by a different non-root user is refused.
+    # A lock dir owned by a different non-root user is refused: that user could
+    # pre-seed or replace the lock file and hijack ownership of the controller.
     foreign_uid = os.getuid() + 12345
     monkeypatch.setattr(OwnershipLock, "_dir_owner_uid", staticmethod(lambda _p: foreign_uid))
     lock = OwnershipLock("receive", path=_lock_path(tmp_path))

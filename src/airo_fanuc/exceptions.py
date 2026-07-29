@@ -1,24 +1,27 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Typed exception hierarchy for the ``airo_fanuc`` driver (PLAN §5.1).
+"""Typed exception hierarchy for the ``airo_fanuc`` driver.
 
-Single-sourced here so every later phase (RmiClient, StreamCore Python layer,
-FanucDriver, GripperWorker, ownership lock, FanucReceiveInterface) *imports*
+Single-sourced here so every module (RmiClient, the StreamCore Python layer,
+FanucDriver, GripperWorker, the ownership lock, FanucReceiveInterface) *imports*
 these rather than redefining them — one ``isinstance`` tree across the package.
 
 Two roots on purpose:
 
 * :class:`FanucError` — the driver-owned base. Everything a caller of the
   public :class:`~airo_fanuc.FanucDriver` API might catch derives from it.
-* :class:`RmiError` — kept a ``RuntimeError`` **exactly as the ``dries``
-  ``rmi_client`` shipped it** (a controller-reported non-zero ErrorID). It is
-  deliberately *not* a :class:`FanucError`: it is a low-level RMI-protocol
-  signal, and callers that want to treat controller errors uniformly with
-  transport/lifecycle errors already special-case it. Retaining the
-  ``RuntimeError`` base preserves the ``dries`` catch semantics verbatim
-  (``except (RmiError, OSError)`` in the Initialize recovery ladder).
+* :class:`RmiError` — a controller-reported non-zero ErrorID, and a
+  ``RuntimeError`` rather than a :class:`FanucError`. It sits deliberately
+  *outside* the driver-owned tree: it is a low-level RMI-protocol signal rather
+  than a driver verdict, and the RMI-level ladders need to catch it together
+  with raw transport failures as ``except (RmiError, OSError)`` (the Initialize
+  recovery ladder does exactly that). Callers that instead want to treat
+  controller errors uniformly with transport/lifecycle errors special-case it.
 
-``CommandEpochError`` is intentionally absent — it is DEAD per PLAN decision 9
-(replaced by latched-FAULTED typed rejects). Do not add it.
+``CommandEpochError`` is intentionally absent: a command issued against a stale
+epoch is refused as a latched-FAULTED typed reject
+(:class:`RobotFaultedError`, carrying the fault reason and operator hint), so a
+dedicated epoch exception would only be a second, redundant path for a condition
+the lifecycle state machine already reports. Do not add it.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from typing import Any
 
 
 class FanucError(Exception):
-    """Base class for every driver-owned error (PLAN §5.1).
+    """Base class for every driver-owned error.
 
     Catch this to handle any error the ``airo_fanuc`` driver raises as a
     single family; catch a subclass for a specific failure mode.
@@ -45,7 +48,7 @@ class FanucConnectionError(FanucError):
 
 
 class FanucPreflightError(FanucError):
-    """A preflight gate failed (PLAN §5.3 / design doc 08 §9).
+    """A preflight gate failed.
 
     Wraps the structured preflight report (P-level/S636/AUTO-mode/drives/
     active-alarm classification) so the constructor can surface *why* bring-up
@@ -71,10 +74,10 @@ class RobotFaultedError(FanucError):
 class RejectedStartMismatch(FanucError):
     """A trajectory was rejected because its first knot ≠ the commanded pose.
 
-    The CAPTURE-or-REJECT contract (PLAN §5.1): a submitted trajectory whose
-    ``q[0]`` is farther than the 5° capture window
-    (``controller_facts.CAPTURE_TOL_DEG`` = 5.0°) from the robot's current
-    commanded joints is refused rather than snapped to.
+    The CAPTURE-or-REJECT contract: a submitted trajectory whose ``q[0]`` is
+    farther than the 5° capture window (``controller_facts.CAPTURE_TOL_DEG`` =
+    5.0°) from the robot's current commanded joints is refused rather than
+    snapped to — snapping would start the motion with an unplanned jump.
     """
 
 
@@ -84,7 +87,8 @@ class OwnershipError(FanucError):
     Carries the holder's ``pid`` / ``mode`` (control|receive|tool) / ``since``
     (acquisition timestamp) parsed from the flock owner file so the message can
     name the blocker ("kill <PID>"). Also the mapped surfacing of a controller
-    2556954 ("Robot is Already Connected.") at preflight (F24).
+    2556954 ("Robot is Already Connected.") at preflight — the controller's own
+    report of the same single-owner conflict.
     """
 
     def __init__(
@@ -106,17 +110,18 @@ class RmiSessionDown(FanucError):
     """The RMI command session is down and bounded auto-reopen failed.
 
     Raised to *workers* (gripper pokes, ext-status polls, register I/O) that hit
-    a dead RMI session, in place of an implicit reopen. This is the F3+F5
-    contract: transport auto-reopen is a bounded, single-flight concern of the
-    :class:`~airo_fanuc.rmi_client.RmiClient`; a persistent failure surfaces
-    here so the lifecycle supervisor can set the RMI_DOWN condition bit (F20)
-    and drive recovery, rather than each worker racing to reconnect (which
-    self-inflicts controller 2556954 and the gripper TOCTOU F32).
+    a dead RMI session, in place of an implicit reopen. Transport auto-reopen is
+    a bounded, single-flight concern of :class:`~airo_fanuc.rmi_client.RmiClient`;
+    a persistent failure surfaces here so the supervisor can set the RMI_DOWN
+    condition bit and drive recovery, rather than each worker racing to
+    reconnect — concurrent reopens self-inflict controller 2556954 ("Robot is
+    Already Connected.") and race a multi-register gripper command against a
+    session rebuild.
     """
 
 
 class TrajectoryValidationError(FanucError):
-    """A ``move_trajectory`` argument failed validation (PLAN §5.1).
+    """A ``move_trajectory`` argument failed validation.
 
     Per-violation typed error for the Python-side validation that mirrors the
     C++ defense: times not strictly increasing, <2 knots, non-finite q/qd,
@@ -127,10 +132,12 @@ class TrajectoryValidationError(FanucError):
 
 class CalibrationError(FanucError):
     """A :class:`~airo_fanuc.receive_interface.FanucReceiveInterface` calibration
-    capture was rejected (PLAN R2 F30/F31, decision 14).
+    capture was rejected.
 
     Base for the hand-eye capture guards that structurally prevent the
-    2026-05-17 T1-freeze corruption class. Catch this to handle any capture
+    frozen-feed corruption class: a stale or frozen joint feed reads exactly like
+    a perfectly settled robot, so an unguarded capture silently folds a
+    wrong-pose sample into the dataset. Catch this to handle any capture
     rejection; catch a subclass for the specific guard that fired. Raised (not
     returned as ``None``) so a bad sample is *loud*, never silently folded into
     a calibration dataset.
@@ -138,8 +145,8 @@ class CalibrationError(FanucError):
 
 
 class CalibrationSourceError(CalibrationError):
-    """RMI-sourced joints were used for a calibration capture before the J2/J3
-    representation was proven identical to Stream Motion (PLAN R2 F31).
+    """RMI-sourced joints were used for a calibration capture while the J2/J3
+    representation is not proven identical to Stream Motion.
 
     Carries the offending ``source`` tag and the name of the ``controller_facts``
     field that gates the reject (``rmi_joints_identical_to_stream``). While that
@@ -161,24 +168,25 @@ class CalibrationSourceError(CalibrationError):
 
 
 class CalibrationVelocityUnavailable(CalibrationError):
-    """A calibration capture was attempted while joint velocity was unavailable
-    (PLAN R2 F30).
+    """A calibration capture was attempted while joint velocity was unavailable.
 
     The least-squares velocity estimate returned ``None`` (too few samples, an
     insufficient time base, or a stale feed). The capture is rejected rather than
     fabricating a zero velocity — publishing zeros for an unknown velocity is
-    exactly the 2026-05-17 corruption (a frozen feed reads as "settled at 0°/s").
+    precisely the frozen-feed corruption, because a frozen feed then reads as
+    "settled at 0°/s" and passes every settle check.
     """
 
 
 class RmiError(RuntimeError):
-    """A non-zero ErrorID returned by an RMI command (``dries`` verbatim).
+    """A non-zero ErrorID returned by an RMI command.
 
-    Kept a ``RuntimeError`` (not a :class:`FanucError`) to preserve the
-    ``dries`` ``rmi_client`` catch contract. Beyond the formatted message it
-    carries the raw ``error_id`` and its decoded ``text`` so callers can branch
-    on the code (e.g. 2556954 → ownership hint, 2556943 → Init recovery ladder)
-    without re-parsing the string.
+    A ``RuntimeError`` and not a :class:`FanucError` — the RMI-protocol layer is
+    below the driver-owned error tree, so its ladders can catch a controller
+    ErrorID and a raw socket failure in one ``except (RmiError, OSError)``.
+    Beyond the formatted message it carries the raw ``error_id`` and its decoded
+    ``text`` so callers can branch on the code (e.g. 2556954 → ownership hint,
+    2556943 → Init recovery ladder) without re-parsing the string.
     """
 
     def __init__(

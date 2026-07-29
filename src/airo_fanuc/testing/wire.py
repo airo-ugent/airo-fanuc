@@ -6,18 +6,24 @@ truth for every byte the driver puts on (or reads off) the wire:
 
 * **Stream Motion (UDP 60015)** — Start / Stop / GetCapability / Command /
   RobotStatus (204 + legacy V3 202) / ForceSensorConfig packet codecs.
-* **RMI JSON (TCP 16001)** — canonical JSON request serializers whose exact
-  string form the later ``RmiClient`` (PLAN §P4a) must reproduce.
+* **RMI JSON (TCP 16001)** — canonical JSON request serializers;
+  :class:`~airo_fanuc.rmi_client.RmiClient` builds every request through them,
+  so the client inherits their exact string form.
 
-Provenance
-----------
-The Stream Motion codec is a byte-exact port of the live ``dries``-branch
-``src/grocery_bot/robot/fanuc/packets.py`` (itself byte-exact with FANUC's
-Apache-2.0 ``stream_motion::packets.hpp`` ``#pragma pack(push, 1)`` structs,
-re-verified against the vendored copy at
-``packages/airo_fanuc/vendor/fanuc_driver/fanuc_libs/stream_motion/include/stream_motion/packets.hpp``).
-The RMI serializers mirror ``dries`` ``rmi_client.py`` request construction
-(``json.dumps(req) + "\\r\\n"`` encoded ASCII).
+Byte layout
+-----------
+The encoders and decoders below reproduce the byte layout the controller
+requires: FANUC's Apache-2.0 ``#pragma pack(push, 1)`` structs as declared in
+the vendored header
+``vendor/fanuc_driver/fanuc_libs/stream_motion/include/stream_motion/packets.hpp``.
+RMI requests are one JSON object per line, ``json.dumps(req) + "\\r\\n"``
+ASCII-encoded.
+
+That layout is **locked by byte-exact goldens**: ``tests/goldens/sm/`` holds the
+expected Stream Motion buffers and ``tests/goldens/rmi/`` the expected RMI wire
+strings. A changed struct format string, a reordered field, or a flipped
+endianness therefore fails a golden comparison in the test suite instead of
+surfacing as a controller alarm.
 
 Dependency-light: **stdlib ``struct`` / ``json`` only** for the codec itself;
 the single external import is ``COMMAND_DATA_STYLE`` from
@@ -606,15 +612,15 @@ def encode_capability_result_packet(
 # ---------------------------------------------------------------------------
 # RMI JSON request serializers.
 #
-# The later ``RmiClient`` (PLAN §P4a) builds a Python dict and serialises with
-# ``json.dumps(req) + "\r\n"`` encoded ASCII (dries ``rmi_client.py``:
-# ``_send_recv_locked`` / ``program_call``). These builders reproduce the exact
-# dict field order dries uses; ``rmi_serialize`` / ``rmi_wire_bytes`` reproduce
-# the exact on-wire byte string. The ``tests/goldens/rmi/*.json`` fixtures pin
-# the expected wire strings so the future client is validated against them.
+# Each builder returns the request dict for one RMI command; ``rmi_serialize`` /
+# ``rmi_wire_bytes`` turn it into the exact on-wire byte string
+# (``json.dumps(req) + "\r\n"``, ASCII).
 #
-# Field-order matters: ``json.dumps`` preserves insertion order and the golden
-# strings encode it, so a client that reorders keys will mismatch the golden.
+# **Field order is the contract.** ``json.dumps`` emits keys in dict insertion
+# order, and the ``tests/goldens/rmi/*.json`` fixtures pin the resulting wire
+# strings byte for byte — so reordering the keys in any builder below, or adding
+# one, fails a golden. Build every request through these functions rather than
+# hand-assembling a dict, and the wire form stays pinned.
 # ---------------------------------------------------------------------------
 
 RMI_LINE_TERMINATOR: str = "\r\n"
@@ -623,51 +629,55 @@ RMI_LINE_TERMINATOR: str = "\r\n"
 def rmi_serialize(request: dict[str, Any]) -> str:
     """Serialise an RMI request dict to its exact on-wire string form.
 
-    Byte-exact mirror of dries ``rmi_client._send_recv_locked``:
-    ``json.dumps(req) + "\\r\\n"`` (stdlib default separators ``", "`` /
-    ``": "``, insertion-order preserved).
+    ``json.dumps(request)`` with the stdlib default separators (``", "`` /
+    ``": "``, insertion order preserved) plus the ``\\r\\n`` terminator the
+    controller's line-oriented parser expects.
     """
     return json.dumps(request) + RMI_LINE_TERMINATOR
 
 
 def rmi_wire_bytes(request: dict[str, Any]) -> bytes:
-    """Exact wire bytes: ``rmi_serialize`` ASCII-encoded (dries encodes ASCII)."""
+    """Exact wire bytes: :func:`rmi_serialize` ASCII-encoded (RMI JSON is ASCII)."""
     return rmi_serialize(request).encode("ascii")
 
 
 def rmi_connect_stmo_request() -> dict[str, Any]:
-    """``FRC_Connect_STMO`` bootstrap-connect (dries ``_open_session_locked``)."""
+    """``FRC_Connect_STMO``: a lone ``Communication`` key, no payload fields.
+
+    The bootstrap connect. Its reply carries the ``PortNumber`` the client must
+    reconnect to for every subsequent request.
+    """
     return {"Communication": "FRC_Connect_STMO"}
 
 
 def rmi_disconnect_request() -> dict[str, Any]:
-    """``FRC_Disconnect`` (dries ``stop`` — best-effort shutdown)."""
+    """``FRC_Disconnect``: a lone ``Communication`` key, no payload fields."""
     return {"Communication": "FRC_Disconnect"}
 
 
 def rmi_command_request(command: str) -> dict[str, Any]:
-    """A bare ``{"Command": <command>}`` request.
+    """A bare ``{"Command": <command>}`` request — one key, no payload fields.
 
     Covers ``FRC_Initialize``, ``FRC_Reset``, ``FRC_GetStatus``,
     ``FRC_GetExtStatus``, ``FRC_Abort`` — every RMI command whose request
-    carries no extra fields (dries ``reset`` / ``get_status`` /
-    ``_send_prep_command_locked`` / ``_initialize_with_recovery_locked``).
+    carries no extra fields.
     """
     return {"Command": command}
 
 
 def rmi_read_register_request(register_number: int) -> dict[str, Any]:
-    """``FRC_ReadRegister`` (dries ``read_register``)."""
+    """``FRC_ReadRegister``: ``Command``, then ``RegisterNumber``."""
     return {"Command": "FRC_ReadRegister", "RegisterNumber": int(register_number)}
 
 
 def rmi_write_register_request(register_number: int, value: float | int | bool) -> dict[str, Any]:
-    """``FRC_WriteRegister`` (dries ``write_register``).
+    """``FRC_WriteRegister``: ``Command``, ``RegisterNumber``, ``RegisterValue``, ``DataType``.
 
-    DataType is derived exactly as dries does: ``bool`` / ``int`` → lowercase
+    ``DataType`` is derived from the Python type: ``bool`` / ``int`` → lowercase
     ``"integer"``, ``float`` → lowercase ``"float"``. **Lowercase DataType is
     a pinned invariant** — capitalised "Integer"/"Float" is silently coerced
-    to Integer by the controller (dries docstring / FANUC ``rmi.cpp:462``).
+    to Integer by the controller (FANUC reference ``rmi.cpp:462``), so a float
+    written with "Float" would land truncated.
     ``bool`` is handled before ``int`` because ``bool`` subclasses ``int``.
     """
     if isinstance(value, bool) or isinstance(value, int):
@@ -687,47 +697,48 @@ def rmi_write_register_request(register_number: int, value: float | int | bool) 
 
 
 def rmi_read_error_request(count: int = 1) -> dict[str, Any]:
-    """``FRC_ReadError`` (dries ``read_error``); ``count`` in 1..5."""
+    """``FRC_ReadError``: ``Command``, then ``Count`` (1..5)."""
     if not 1 <= int(count) <= 5:
         raise ValueError(f"read_error: count must be 1..5 (got {count})")
     return {"Command": "FRC_ReadError", "Count": int(count)}
 
 
 def rmi_read_joint_angles_request() -> dict[str, Any]:
-    """``FRC_ReadJointAngles`` (RMI §2.3.15; ``rmi_client.read_joint_angles``).
+    """``FRC_ReadJointAngles`` (RMI §2.3.15): ``Command`` only, no payload fields.
 
     Reads the controller's current joint angles. The vendored rmi lib
     (``rmi/packets.hpp`` ``ReadJointAnglesPacket::Request``) carries only the
-    ``Command`` plus an *optional* ``Group`` (single-group demo → omitted, the
+    ``Command`` plus an *optional* ``Group``; a single-group arm omits it (the
     C++ default), so the request is the bare ``{"Command": "FRC_ReadJointAngles"}``.
 
     The reply's ``JointAngle`` block is UNCONVERTED — the vendor applies
     ``J3 += J2`` on RMI reads (``controller_facts.INTERIM_FACTS
     .rmi_j3_plus_j2_conversion``), so joints read this way are tagged
     :data:`~airo_fanuc.receive_interface.SOURCE_RMI_UNCONVERTED` and hard-rejected
-    for calibration until E3/HIL-L7 proves identity.
+    for calibration until the two representations are proven identical on hardware.
     """
     return {"Command": "FRC_ReadJointAngles"}
 
 
 def rmi_continue_request() -> dict[str, Any]:
-    """``FRC_Continue`` (RMI §2.3.4; ``rmi_client.program_continue``).
+    """``FRC_Continue`` (RMI §2.3.4): ``Command`` only, no payload fields.
 
-    Resumes a paused Remote-Motion TP program. Mirrors the vendored rmi lib
+    Resumes a paused Remote-Motion TP program. Matches the vendored rmi lib
     (``rmi/packets.hpp`` ``ContinuePacket::Request``): a bare
-    ``{"Command": "FRC_Continue"}`` with no extra fields. ErrorID ``2556938``
-    ("TP Program is Not Paused.") is tolerated as a no-op by the client
-    (PLAN F17/F21).
+    ``{"Command": "FRC_Continue"}``. ErrorID ``2556938`` ("TP Program is Not
+    Paused.") is tolerated as a no-op by the client — the program already
+    running is the desired end state.
     """
     return {"Command": "FRC_Continue"}
 
 
 def rmi_call_request(sequence_id: int, program_name: str) -> dict[str, Any]:
-    """``FRC_Call`` instruction (dries ``program_call`` — fire-and-forget).
+    """``FRC_Call`` instruction: ``Instruction``, ``SequenceID``, ``ProgramName``.
 
-    Note the top-level key is ``Instruction`` (not ``Command``) and it carries
-    a ``SequenceID`` that must be re-anchored to the controller's
-    ``NextSequenceID`` after every Initialize/Reset.
+    Note the top-level key is ``Instruction`` (not ``Command``) — that is also
+    the field the controller echoes on the ack. The ``SequenceID`` must be
+    re-anchored to the controller's ``NextSequenceID`` after every
+    Initialize/Reset, or the controller silently drops the call as a duplicate.
     """
     return {
         "Instruction": "FRC_Call",
@@ -737,7 +748,7 @@ def rmi_call_request(sequence_id: int, program_name: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Round-trip smoke test (byte-exact self-check; mirrors packets.py).
+# Round-trip smoke test (byte-exact self-check).
 #
 # Run via ``python -m airo_fanuc.testing.wire``. A typo in a struct format
 # string trips here, not on the wire against the controller.

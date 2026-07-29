@@ -33,8 +33,8 @@ void generate_capture_path(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& q0
   inp.target_acceleration = Vec6{};
 
   // knot[0] = the commanded anchor exactly; knot[0] accel = the seeded
-  // current_acceleration (0) so the CAPTURE brake-seed (R1 C1) is well-defined
-  // from the first knot.
+  // current_acceleration (0) so the CAPTURE brake-seed is well-defined from the
+  // very first knot.
   out.q[0] = q_cmd;
   out.qd[0] = qd_cmd;
   out.qdd[0] = inp.current_acceleration;
