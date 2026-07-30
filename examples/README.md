@@ -7,18 +7,21 @@
 > FANUC every assumption below is yours to check first — see
 > [What is specific to this arm](#what-is-specific-to-this-arm).
 
-Two runnable scripts, meant to be run in order. Each one connects, prints what the
-controller told it, moves a little, and ends in an explicit `PASS`/`FAIL` verdict —
-so a run is something you can read rather than something you have to interpret.
-Exit code `0` means every check passed.
+Three runnable scripts. The first two are the ordered validation run: each connects,
+prints what the controller told it, moves a little, and ends in an explicit
+`PASS`/`FAIL` verdict — so a run is something you can read rather than something you
+have to interpret. Exit code `0` means every check passed. The third commands nothing
+and checks the guard table against the arm.
 
 | Script | What it proves |
 |---|---|
 | `move_joints.py` | The stack connects and executes one commanded move |
 | `sine_wave.py` | It *tracks* a continuous multi-joint path, and `stop_j()` stops it |
+| `check_joint_limits.py` | The recorded soft limits match the arm. Read-only, you move it |
 
-Both take `--fake`, which stands up an in-process fake controller and needs no
-hardware. `--help` lists every knob. Shared connection/reporting plumbing lives in
+The two motion scripts take `--fake`, which stands up an in-process fake controller and
+needs no hardware (`check_joint_limits.py` has nothing to fake — it needs a real arm to
+move). `--help` lists every knob. Shared connection/reporting plumbing lives in
 `_common.py`; each script keeps its own trajectory construction inline, which is the
 part worth copying into your own code.
 
@@ -88,20 +91,29 @@ settle tolerance — measured from outside the driver, in the degrees you asked 
 uv run python examples/sine_wave.py --ip <CONTROLLER_IP> --amplitude-deg 5 --period 10 --cycles 2
 ```
 
-±5° on all six joints at ~3°/s peak. Whole cycles, so it ends where it started —
-which is itself a check (`returned to the start pose`). The one to watch is
-`peak lag`: `q_cmd` is what went on the wire, `q_meas` is what the controller
-reported, and their difference is the controller's ~25 ms servo lag, not an error.
-At 3°/s that is under a tenth of a degree. A lag far above `speed × 0.025` means the
-arm is not following the path it was given.
+All six joints swing from the current pose to +10° and back as a raised cosine, ~3°/s
+peak. Whole cycles, so it ends where it started — itself a check (`returned to the
+start pose`). A raised cosine rather than a plain sine because a sine demands its peak
+velocity at t=0, and the capture splice that bridges the commanded pose to knot 0 tops
+out at 15°/s: a plain sine is refused outright above that (measured — accepted at
+15.0°/s, refused at 15.1). Starting at rest sidesteps it, so speed is limited only by
+the joint velocity limits.
+
+The number to watch is `peak lag`: `q_cmd` is what went on the wire, `q_meas` is what
+the controller reported. Their difference is dominated by the controller's servo lag,
+not by error, and the run prints it as an implied offset in ms so it is comparable
+across speeds. Expect ~85–100 ms on this arm — which is 3–4× the recorded
+`tracking_lag_s`, an open question (§1.9a), not a fault.
 
 `the arm moved` looks trivial and is not. An interpolator that silently re-anchors to
 a frozen pose is indistinguishable from a healthy hold from the outside — status
 keeps flowing, no fault is raised — so the run asserts a non-zero measured speed.
 
-Then work up: `--amplitude-deg 15 --period 6` is ~15°/s, still gentle. Increase
-speed before amplitude; the lag budget scales with speed, and the joint-limit guard
-aborts (before any motion) if an amplitude would leave the soft limits.
+Then work the speed up. Peak speed is `amplitude × 2π / period`, and peak accel and
+jerk go as `ω²` and `ω³` — so raise speed by *amplitude* at a long period rather than
+by shortening the period, which escalates both far faster. Validated to 63°/s on
+2026-07-30 (`--joints 6 --amplitude-deg 30 --period 3 --cycles 3 --knot-dt 0.02`). The
+joint-limit guard aborts before any motion if a swing would leave the soft limits.
 
 ### Step 4 — the protective stop
 
@@ -114,7 +126,23 @@ Calls `stop_j()` mid-motion — the universal preempt — and expects `STOPPED`,
 travelled getting there. Note this is the *driver's* brake, a limit-respecting decel
 on the 8 ms path; it is not the controller's own backstop and not an E-stop.
 
-### Step 5 — a fault, on purpose
+### Step 5 — the joint-limit guard, against the arm
+
+```bash
+uv run python examples/check_joint_limits.py --ip <CONTROLLER_IP>
+```
+
+Commands nothing: it opens a **connect-only** RMI session and polls joint angles at
+15 Hz while *you* hand-guide each joint to its stop, then reports the extremes it saw
+against the recorded table. Never `FRC_Initialize` — that locks the motion group and
+disables the hand-guidance you need (§1.6).
+
+Worth doing because that table is copied from `docs/controller-notes.md` §1.1, not read
+from the robot, and a limit recorded too WIDE means the guard passes a command the
+controller refuses. A `short` verdict is ambiguous — either you did not reach the stop,
+or the table is too wide — and only the operator can tell which.
+
+### Step 6 — a fault, on purpose
 
 No script for this one: press the E-stop during step 3 or 4, while it is moving.
 
@@ -189,7 +217,7 @@ these are what to change:
 
 ## What these scripts deliberately do not cover
 
-Passing all five steps validates the motion path end to end. It does not validate:
+Passing all six steps validates the motion path end to end. It does not validate:
 
 - **The gripper.** Both scripts run `enable_gripper=False`. The `GRPRUN`/`GRIPDISP`
   path is the one part of this package specific to a particular end effector, and it
@@ -197,8 +225,8 @@ Passing all five steps validates the motion path end to end. It does not validat
 - **The acceleration and jerk clamps.** The values in `controller_facts.py` are
   derived from the velocity limits; FANUC's own `joint_limits.yaml` in the vendored
   driver publishes accelerations 6–16× lower. Nothing in these runs distinguishes
-  the two, because both are permissive enough for the gentle speeds above. Decide it
-  by working the speed up in step 3 and watching for vibration or a servo alarm.
+  the two: both are permissive enough that 63°/s ran clean on 2026-07-30. Decide it by
+  working the speed up further in step 3 and watching for vibration or a servo alarm.
 - **Recovery from a collision-induced `SystemFault`**, which is a different path from
   the E-stop drill (it can leave RMI unresponsive and forces the cold-reconnect
   escalation). Provoking it deliberately is not something to do casually.
