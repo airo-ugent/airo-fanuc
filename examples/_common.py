@@ -415,6 +415,11 @@ def report_motion(w: Watch, *, expect_result: MotionResult) -> bool:
         # pipeline as well as the servo — it is not the cross-correlation lag of §1.9.
         implied_ms = 1000.0 * w.max_lag_deg / w.max_speed_deg_s
         print(f"                  ⇒ implied offset {implied_ms:.0f} ms at {w.max_speed_deg_s:.1f} deg/s")
+        if implied_ms > 2000.0 * lag_s:
+            print(
+                f"                  NOTE: {implied_ms / (1000.0 * lag_s):.1f}x the recorded lag. "
+                f"Open question — docs/controller-notes.md §1.9a"
+            )
     print(
         f"  slew clips   : {w.slew_clips}"
         + ("" if w.slew_clips == 0 else "  <-- a commanded step was clipped")

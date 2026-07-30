@@ -173,12 +173,16 @@ Dividing by the concurrent measured speed expresses it as a time, which is compa
 **~85 ms, stable across a 3.3× speed range** — proportional to speed, which is what a fixed delay
 looks like and not what noise looks like.
 
-This does **not** by itself contradict the 25 ms above: that figure is a *cross-correlation* of the
-commanded and measured series, whereas this is the instantaneous offset between the setpoint for the
-current tick and the most recent status packet, so it also contains the command→report pipeline
-(command buffering, the controller's own status generation, and up to one ITP of packet age). The two
-measure different things and ~60 ms of pipeline would reconcile them. Separating the two needs the
-xcorr method on logged series, not this ratio.
+The metric is an *instantaneous* offset between the setpoint for the current tick and the most recent
+status packet, so unlike the cross-correlation figure above it also contains the command→report
+pipeline (command buffering, the controller's own status generation, up to one ITP of packet age).
+
+**But the pipeline does not account for it.** The same metric against the FakeCRX, whose plant is a
+first-order lag with τ set to exactly `INTERIM_FACTS.tracking_lag_s` = 25 ms, reads **29 ms** — so
+this measurement over-reads a known 25 ms by only ~4 ms. Add the wire (ping RTT to this controller is
+1–6 ms) and the pipeline plausibly explains ~30 ms of the ~85 ms, leaving **~50 ms unaccounted for**.
+That is the part worth resolving, and it wants the xcorr method on logged series rather than this
+ratio.
 
 **Why it matters anyway.** The drift guard compares `q_cmd @ (now − drift_lag_ticks)` against
 `q_meas @ now`, with `drift_lag_ticks = round(0.025 / 0.008) = 3`. If the *empirical* offset is ~11
@@ -288,14 +292,26 @@ Streaming was then stable for the rest of the run (12 s observed, `fault=none`, 
 - **No alarm accompanies it**: `FRC_ReadError` says `No Error`, and an RMI probe taken between runs
   reports the controller entirely healthy (`servo_ready=True`, `drives_powered=True`, AUTO,
   `override=100%`, `control_mode=LOCAL`).
-- **Reproducible on re-bring-up, absent on the first**: 3 consecutive re-connects showed it; the
-  first bring-up after the robot had been powered on and left idle did not. The mechanism is not
-  measured — that `STREAM_MOTN` state carries across sessions is the hypothesis the pattern fits,
-  not something confirmed.
+- **Reproducible on re-bring-up, absent on the first**: 5 consecutive re-connects showed it; the
+  first bring-up after the robot had been powered on and left idle did not.
+- **Cause — this is the re-`FRC_Call` transient already documented in `_bringup_once`**, not a new
+  phenomenon. `STREAM_MOTN` cannot be un-launched over RMI (§ the 2026-07-07 observation:
+  `FRC_Abort` and `FRC_Reset` both leave `program_status=2`), and a pure SM handshake to an
+  already-running instance does not re-arm `motion_possible` — so every bring-up re-Calls it, and
+  the re-Call is what drops `motion_possible` briefly. Corroborated here: a read-only RMI probe
+  taken between runs reported `program_status=2`, i.e. `STREAM_MOTN` still running from the
+  previous session. This is why the first post-power-on bring-up is clean and every later one is not.
 - **Consequence for callers:** wait for streaming to *hold* before commanding rather than trusting
   the first post-bring-up sample. Both example scripts do this (`_wait_streaming`, 2 s of stable
   streaming), and any consumer should. A validation check that reads the first sample will report
   this as a fault.
+- **OPEN — bring-up currently delegates this to the fault path.** The recovery ladder clears it, so
+  `recovery_count` is 1 before the caller has done anything, and a policy with `auto_recover=False`
+  would be left FAULTED by a normal startup. `FanucDriver`'s contract is that construction blocks
+  until the robot is commandable; it presently returns one that faults a second later. Absorbing the
+  transient inside `_bringup_once` — require `motion_possible` to hold for ~2 s after the preroll,
+  and do the reset/relaunch there if it drops — would make startup self-contained and independent
+  of the recovery policy.
 
 ---
 
