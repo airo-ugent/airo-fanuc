@@ -169,9 +169,12 @@ Dividing by the concurrent measured speed expresses it as a time, which is compa
 | J6 +10° rest-to-rest | 3.74 °/s | 0.306° | 82 ms |
 | ±5° sine, all joints | 3.45 °/s | 0.291° | 84 ms |
 | ±10° sine, 6 s period | 11.38 °/s | 1.031° | 91 ms |
+| J6 +10°, then −10° (repeat) | 3.68 / 3.81 °/s | 0.376° / 0.396° | 102 / 104 ms |
+| ±5° sine, all joints (repeat) | 3.68 °/s | 0.337° | 92 ms |
+| ±10° sine, 6 s period (repeat) | 11.42 °/s | 1.120° | 98 ms |
 
-**~85 ms, stable across a 3.3× speed range** — proportional to speed, which is what a fixed delay
-looks like and not what noise looks like.
+**82–104 ms across seven runs spanning a 3.3× speed range** — proportional to speed, which is what a
+fixed delay looks like and not what noise looks like.
 
 The metric is an *instantaneous* offset between the setpoint for the current tick and the most recent
 status packet, so unlike the cross-correlation figure above it also contains the command→report
@@ -324,6 +327,27 @@ Streaming was then stable for the rest of the run (12 s observed, `fault=none`, 
 
   No `faulted` transition, `recovery_count` 0. Also verified with `auto_recover=False`: 6 s of stable
   streaming, `recovery_count` 0, where before the fix that configuration could not start at all.
+
+- **Why the settle cannot be replaced by doing something up front.** The natural question is which
+  step of the second application ends the previous instance, so it can be done first instead. There
+  is no such step: both applications are the same four calls (`reset` → `Continue` → reseed →
+  `FRC_Call`), the `FRC_Call` is already first, and per the 2026-07-07 measurement neither
+  `FRC_Abort` nor `FRC_Reset` terminates STREAM_MOTN at all — only an operator at the pendant
+  (FCTN → ABORT ALL) does.
+
+  What the 2026-07-30 runs add: the **second Call never drops `motion_possible`** (every run needed
+  exactly one settle attempt) even though it too is issued while an instance is running — ours. So
+  re-Calling per se is not what drops it; the drop is the *previous session's* instance being torn
+  down, asynchronously, about a second after our first Call triggers it. That is a delay to outlast,
+  not a step to reorder.
+
+  Two options remain open, neither taken: (a) gate the settle on `FRC_GetStatus.ProgramStatus` — it
+  read 2 with a prior instance live, and preflight already calls `get_status()`, so it would cost
+  nothing — but the enum's clean-state value is unconfirmed (needs the first bring-up after a
+  power-cycle) and it would only save the settle on that one bring-up per power cycle; (b) issue a
+  deliberate sacrificial `FRC_Call` at the start of the ladder to move the disturbance ahead of the
+  SM handshake — rejected, because it adds an `FRC_Call` to every bring-up and RMI churn is itself a
+  documented SM-daemon wedge vector (§2.5).
 
 ---
 
