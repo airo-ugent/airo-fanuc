@@ -16,6 +16,7 @@ the CAPTURE hook, honest getters and poison-not-exit ``close()``.
 from __future__ import annotations
 
 import socket
+import threading
 import time
 from collections.abc import Iterator
 from types import SimpleNamespace
@@ -83,6 +84,10 @@ class DriverRig:
             config=cfg,
             connect_retries=overrides.pop("connect_retries", 1),
             recovery_delay_s=overrides.pop("recovery_delay_s", 0.05),
+            # The fake has no STREAM_MOTN handover, so it never shows the re-FRC_Call
+            # transient the production 2 s settle exists for — paying it in every test
+            # would only slow the suite. Tests that care set it explicitly.
+            bringup_settle_s=overrides.pop("bringup_settle_s", 0.05),
             recovery_cooldown_s=overrides.pop("recovery_cooldown_s", 0.2),
             watch_interval_s=overrides.pop("watch_interval_s", 0.01),
             lock_path=overrides.pop("lock_path", str(tmp_path / "owner.lock")),
@@ -378,8 +383,10 @@ def test_servo_j_feedforward_executes(rig: DriverRig) -> None:
     # smooth externally-planned trajectory tracking, e.g. MPC action-sequence knots).
     start = _cur_q0(rig.driver)
     handle = rig.driver.servo_j(
-        [start + 0.04, 0, 0, 0, 0, 0], 0.1,
-        qd=[0.2, 0, 0, 0, 0, 0], qdd=[0.0] * 6,
+        [start + 0.04, 0, 0, 0, 0, 0],
+        0.1,
+        qd=[0.2, 0, 0, 0, 0, 0],
+        qdd=[0.0] * 6,
     )
     time.sleep(0.1)
     assert handle.result() != MotionResult.REJECTED
@@ -388,7 +395,9 @@ def test_servo_j_feedforward_executes(rig: DriverRig) -> None:
 def test_servo_j_feedforward_far_target_rejected(rig: DriverRig) -> None:
     # The distance guard applies to the FF path exactly as to the position-only path.
     handle = rig.driver.servo_j(
-        [0.9, 0, 0, 0, 0, 0], 0.5, qd=[0.2, 0, 0, 0, 0, 0]  # ~51° from ~0
+        [0.9, 0, 0, 0, 0, 0],
+        0.5,
+        qd=[0.2, 0, 0, 0, 0, 0],  # ~51° from ~0
     )
     deadline = time.monotonic() + 1.5
     while time.monotonic() < deadline and handle.result() is None:
@@ -475,6 +484,66 @@ def test_close_is_clean_and_idempotent(tmp_path: Any) -> None:
         rig.driver.move_trajectory([0, 1_000_000_000], [[0] * 6, [0.1] + [0] * 5], [[0.0] * 6, [0.0] * 6])
 
 
+def test_bringup_settles_a_motion_possible_drop_without_the_recovery_ladder(tmp_path: Any) -> None:
+    """A ``motion_possible`` drop just after the preroll must be absorbed BY bring-up.
+
+    On the real controller the required re-``FRC_Call(STREAM_MOTN)`` drops
+    ``motion_possible`` about a second after the preroll reports ready, so an
+    assert-once bring-up hands back a robot that faults immediately afterwards
+    (docs/controller-notes.md §4.2, where the hardware evidence for the fix lives — the
+    fake has no STREAM_MOTN handover and cannot reproduce the transient on its own).
+
+    What this pins is our *logic*, against an input we control rather than a modelled
+    behaviour: the status bit is forced off during the settle window, so bring-up must
+    re-apply the relaunch and still arrive at STREAMING with ``recovery_count == 0`` —
+    the ladder having run instead would mean startup depends on ``auto_recover``.
+    """
+    controller = FakeCRXController(FakeCRXConfig(strict=True))
+    controller.start()
+    controller.start_realtime(speed=1.0)
+    # Force the bit off the moment the core is streaming, and restore it shortly after —
+    # the shape of the real transient. A thread, because bring-up is synchronous.
+    dropped = threading.Event()
+
+    def _blip() -> None:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not controller.motion_possible:
+            time.sleep(0.005)
+        controller.drop_motion_possible()
+        dropped.set()
+        time.sleep(0.3)
+        controller.restore_motion_possible()
+
+    threading.Thread(target=_blip, daemon=True).start()
+    cfg = DriverConfig(
+        sm_port=controller.sm_port,
+        rmi_port=controller.rmi_port,
+        preroll_timeout_s=_READY_TIMEOUT_S,
+        gripdisp_probe_timeout_s=_GRIPDISP_PROBE_TIMEOUT_S,
+    )
+    policy = DriverPolicy(
+        config=cfg,
+        connect_retries=1,
+        enable_gripper=False,
+        auto_recover=False,  # nothing may paper over the drop but the settle itself
+        bringup_settle_s=0.5,
+        lock_path=str(tmp_path / "owner.lock"),
+    )
+    driver = FanucDriver("127.0.0.1", policy)
+    try:
+        # Guard against the test passing vacuously: if the blip never fired (a typo in the
+        # fake's surface is enough), bring-up had nothing to settle and proves nothing.
+        assert dropped.is_set(), "motion_possible was never dropped — the test exercised nothing"
+        st = driver.get_state()
+        assert st["lifecycle_state"] == "streaming", st
+        assert st["fault_reason"] == "none", st
+        assert int(st["recovery_count"]) == 0, "the recovery ladder ran; bring-up should have settled"
+    finally:
+        driver.close()
+        controller.stop_realtime()
+        controller.close()
+
+
 def test_close_is_clean_while_an_estop_is_latched(tmp_path: Any) -> None:
     """An E-stop mid-trajectory must not turn shutdown into a wedge.
 
@@ -538,7 +607,9 @@ def test_context_manager(tmp_path: Any) -> None:
     controller.start()
     controller.start_realtime(speed=1.0)
     cfg = DriverConfig(
-        sm_port=controller.sm_port, rmi_port=controller.rmi_port, preroll_timeout_s=_READY_TIMEOUT_S,
+        sm_port=controller.sm_port,
+        rmi_port=controller.rmi_port,
+        preroll_timeout_s=_READY_TIMEOUT_S,
         gripdisp_probe_timeout_s=_GRIPDISP_PROBE_TIMEOUT_S,
     )
     policy = DriverPolicy(config=cfg, connect_retries=1, lock_path=str(tmp_path / "owner.lock"))

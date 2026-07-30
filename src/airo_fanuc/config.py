@@ -190,6 +190,15 @@ class DriverPolicy:
     #: ``wait_ready`` flips STREAMING a beat before HOLD is published, so without a
     #: little slack bring-up would read a not-yet-published mode as a failure.
     hold_wait_s: float = 3.0
+    #: How long ``motion_possible`` must stay asserted before bring-up reports success.
+    #: STREAM_MOTN cannot be un-launched over RMI, so a bring-up over a controller that
+    #: already has an instance running must re-``FRC_Call`` it, and that re-Call drops
+    #: ``motion_possible`` roughly 1 s later — after a single assert-once check has already
+    #: passed (measured; docs/controller-notes.md §4.2). Without this window the
+    #: constructor returns a robot that faults immediately afterwards, and clearing it is
+    #: left to the recovery ladder, which makes a normal startup depend on
+    #: ``auto_recover``. Costs this much on every bring-up; 0 disables the settle.
+    bringup_settle_s: float = 2.0
     preflight_full: bool = False
 
     # -- recovery / faults ----------------------------------------------

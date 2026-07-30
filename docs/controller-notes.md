@@ -305,13 +305,25 @@ Streaming was then stable for the rest of the run (12 s observed, `fault=none`, 
   the first post-bring-up sample. Both example scripts do this (`_wait_streaming`, 2 s of stable
   streaming), and any consumer should. A validation check that reads the first sample will report
   this as a fault.
-- **OPEN — bring-up currently delegates this to the fault path.** The recovery ladder clears it, so
-  `recovery_count` is 1 before the caller has done anything, and a policy with `auto_recover=False`
-  would be left FAULTED by a normal startup. `FanucDriver`'s contract is that construction blocks
-  until the robot is commandable; it presently returns one that faults a second later. Absorbing the
-  transient inside `_bringup_once` — require `motion_possible` to hold for ~2 s after the preroll,
-  and do the reset/relaunch there if it drops — would make startup self-contained and independent
-  of the recovery policy.
+- **RESOLVED — bring-up now absorbs it** (`Supervisor._settle_stream_motn`, `bringup_settle_s`,
+  default 2 s). It had been left to the fault path, which meant `recovery_count` was already 1 before
+  the caller did anything and a policy with `auto_recover=False` was left FAULTED by an ordinary
+  startup. Bring-up now requires `motion_possible` to *hold* for `bringup_settle_s` and re-applies
+  the same relaunch step if it drops, so the constructor keeps its contract: it returns a robot that
+  is commandable, not one about to fault.
+
+  Verified on hardware 2026-07-30. One re-apply was enough, which is what the handover explanation
+  predicts — the first `FRC_Call` lands while the previous instance is still live, the second sticks:
+
+  ```
+  lifecycle → sm_handshake
+  motion_possible dropped within 2.0s of preroll (settle attempt 1/2) — re-applying the relaunch
+  lifecycle → streaming
+  bring-up complete (attempt 1)
+  ```
+
+  No `faulted` transition, `recovery_count` 0. Also verified with `auto_recover=False`: 6 s of stable
+  streaming, `recovery_count` 0, where before the fix that configuration could not start at all.
 
 ---
 

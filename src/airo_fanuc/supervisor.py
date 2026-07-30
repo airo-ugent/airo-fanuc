@@ -40,6 +40,7 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from ._core import FaultReason, Mode, StreamCore
@@ -69,6 +70,12 @@ _ERR_ALREADY_CONNECTED = 2556954  # "Robot is Already Connected." — prior sess
 
 _GRPRUN = "GRPRUN"
 _STREAM_MOTN = "STREAM_MOTN"
+
+# Times bring-up re-applies the STREAM_MOTN relaunch when motion_possible will not stay
+# asserted (see _settle_stream_motn). Two: one drop is the expected re-FRC_Call transient,
+# a second means something other than the handover is dropping it, and re-Calling harder
+# is not the answer — RMI churn is itself an SM-daemon wedge vector (controller-notes §2.5).
+_SETTLE_ATTEMPTS = 2
 
 # TPMode values that mean AUTO. The standard FANUC AUTO code is 2, but this
 # SOP-less CRX reports 0 in its (permanent) AUTO — measured on the controller
@@ -272,6 +279,14 @@ class Supervisor:
             )
         if not self._wait_mode(Mode.HOLD, self._policy.hold_wait_s):
             raise FanucConnectionError("airo_fanuc: core did not publish HOLD after preroll")
+        # motion_possible asserting once is not the same as the robot being commandable:
+        # the required re-FRC_Call above drops it ~1 s later. Settle before reporting
+        # success, so the constructor cannot hand back a robot that is about to fault.
+        if not self._settle_stream_motn():
+            raise FanucConnectionError(
+                "airo_fanuc: motion_possible would not stay asserted after the STREAM_MOTN "
+                f"relaunch ({_SETTLE_ATTEMPTS} settle attempts) — see controller-notes.md §4.2"
+            )
 
         self._set_state(LifecycleState.STREAMING, FaultReason.NONE)
         return report
@@ -534,16 +549,9 @@ class Supervisor:
         # full RMI reconnect (the bring-up "flush stale SystemFault" sequence),
         # bounded by policy.recovery_reconnect_attempts.
         try:
-            self._rmi.reset()
-            self._maybe_continue()
-            if self._abort_recovery():
+            if not self._rmi_relaunch_stream_motn(abort=self._abort_recovery):
                 logger.warning("airo_fanuc: recovery aborted — a new fault arrived mid-ladder")
                 return False
-            try:
-                self._rmi.reseed_sequence_id_from_controller()
-            except (RmiError, RmiSessionDown) as exc:
-                logger.warning("airo_fanuc: recovery reseed failed (proceeding): %s", exc)
-            self._rmi.program_call(_STREAM_MOTN)
         except RmiError as exc:
             # Controller-reported ErrorID — not a dead session; do NOT churn RMI.
             if self._is_syst348(exc):
@@ -593,6 +601,87 @@ class Supervisor:
             self._set_state_locked(LifecycleState.STREAMING, FaultReason.NONE)
         logger.info("airo_fanuc: recovery complete → STREAMING (from %s)", latched.name)
         return True
+
+    def _rmi_relaunch_stream_motn(self, *, abort: Callable[[], bool] | None = None) -> bool:
+        """Re-launch STREAM_MOTN over the live RMI session, the step that re-arms motion.
+
+        ``reset`` → best-effort ``FRC_Continue`` → seq reseed → ``FRC_Call(STREAM_MOTN)``.
+        The reseed must be the LAST thing before the Call (the controller's
+        ``NextSequenceID`` moves under us) and its own failure is non-fatal.
+
+        Shared by the recovery ladder and by :meth:`_settle_stream_motn` so the two cannot
+        drift apart — they are the same operation, applied for different reasons. Error
+        handling stays with the callers because their policies differ: recovery escalates a
+        dead session to a full reconnect, bring-up retries the whole ladder with triage.
+        ``abort`` is polled once after the reset, before anything is launched, so a fault
+        arriving mid-step stops the Call; ``False`` means it fired.
+
+        NB this is deliberately NOT used for the FIRST launch in :meth:`_bringup_once`. That
+        ordering (reset → [GRPRUN fork → settle → reset → full reconnect] → reseed → Call)
+        is confirmed on hardware step by step (docs/controller-notes.md §4) and the
+        ``FRC_Continue`` sits elsewhere in it; re-shaping it to share code here would change
+        a sequence whose every step is load-bearing.
+        """
+        self._rmi.reset()
+        self._maybe_continue()
+        if abort is not None and abort():
+            return False
+        try:
+            self._rmi.reseed_sequence_id_from_controller()
+        except (RmiError, RmiSessionDown) as exc:
+            logger.warning("airo_fanuc: relaunch reseed failed (proceeding): %s", exc)
+        self._rmi.program_call(_STREAM_MOTN)
+        return True
+
+    def _motion_possible_holds(self, hold_s: float) -> bool:
+        """True iff ``motion_possible`` stays asserted for ``hold_s`` continuously."""
+        deadline = time.monotonic() + hold_s
+        while time.monotonic() < deadline:
+            if not bool(self._snap()["motion_possible"]):
+                return False
+            time.sleep(0.01)
+        return True
+
+    def _settle_stream_motn(self) -> bool:
+        """Require ``motion_possible`` to HOLD before bring-up reports success.
+
+        STREAM_MOTN cannot be un-launched over RMI (``FRC_Abort`` and ``FRC_Reset`` both
+        leave ``program_status=2``), and a bare SM handshake to an already-running instance
+        does not re-arm motion — so every bring-up must re-``FRC_Call`` it, and that re-Call
+        drops ``motion_possible`` for about a second. Measured: the drop lands roughly 1 s
+        after the preroll reports ready, so a single assert-once check passes and the robot
+        faults immediately afterwards (docs/controller-notes.md §4.2).
+
+        The first Call therefore lands while the previous session's instance is still live.
+        The same step applied once more, after it has gone, sticks — which is exactly what
+        the recovery ladder was doing, one fault later. Doing it here instead keeps the
+        constructor's contract (it returns a commandable robot, not one about to fault),
+        leaves ``recovery_count`` at 0 so a genuine early fault is distinguishable, and
+        makes bring-up work under ``auto_recover=False``.
+        """
+        settle_s = self._policy.bringup_settle_s
+        if settle_s <= 0.0:
+            return True
+        for attempt in range(1, _SETTLE_ATTEMPTS + 1):
+            if self._motion_possible_holds(settle_s):
+                return True
+            logger.info(
+                "airo_fanuc: motion_possible dropped within %.1fs of preroll (settle attempt "
+                "%d/%d) — re-applying the STREAM_MOTN relaunch",
+                settle_s,
+                attempt,
+                _SETTLE_ATTEMPTS,
+            )
+            self._rmi_relaunch_stream_motn()
+            if not self._wait(
+                lambda: bool(self._snap()["motion_possible"]), self._policy.recovery_motion_probe_s
+            ):
+                continue
+            # The core entered SAFE_FOLLOW on the drop and holds there until told the
+            # anti-flap dwell may end — the same call the recovery ladder makes.
+            self._core.recover()
+            self._wait_mode(Mode.HOLD, self._policy.hold_wait_s)
+        return self._motion_possible_holds(settle_s)
 
     def _relaunch_stream_motn_via_reconnect(self) -> bool:
         """Clear an RMI-wedging SystemFault via the bring-up flush reconnect.
