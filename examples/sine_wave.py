@@ -9,11 +9,12 @@ between an ``--amplitude-deg`` argument and a soft-limit hit — so on a differe
 FANUC it must be replaced, not merely reviewed. See ``examples/README.md``.
 
 Where ``move_joints.py`` proves the stack connects and executes a move, this proves
-it *tracks*: every selected joint oscillates ``±amplitude`` degrees about its
-CURRENT pose as a slow sine, for a whole number of cycles, so the trajectory both
-starts and ends at the start pose. One ``move_trajectory`` of dense cubic-Hermite
-knots with analytic velocities — the C++ RT core interpolates and executes it while
-this script watches how far measured lags commanded.
+it *tracks*: every selected joint swings from its CURRENT pose out to
+``+2 × amplitude`` degrees and back as a raised cosine, for a whole number of cycles,
+so the trajectory starts and ends at the start pose AT REST (see ``_build_sine`` for
+why at rest matters — a plain sine is refused above 15 °/s). One ``move_trajectory``
+of dense cubic-Hermite knots with analytic velocities — the C++ RT core interpolates
+and executes it while this script watches how far measured lags commanded.
 
   # Offline (no hardware):
   python examples/sine_wave.py --fake
@@ -24,9 +25,9 @@ this script watches how far measured lags commanded.
   # Protective stop mid-motion: expect STOPPED, plus the measured brake distance:
   python examples/sine_wave.py --ip 192.168.1.100 --stop-after 4
 
-Defaults are deliberately gentle: ±5° at a 10 s period ⇒ peak joint speed ≈ 3.1°/s.
-A joint-limit guard aborts (no motion) if any joint's start±amplitude would leave
-the CRX-10iA/L soft limits.
+Defaults are deliberately gentle: a 10° swing at a 10 s period ⇒ peak joint speed
+≈ 3.1°/s. A joint-limit guard aborts (no motion) if the swing would leave the
+CRX-10iA/L soft limits.
 """
 
 from __future__ import annotations
@@ -77,10 +78,23 @@ def _wait_streaming(driver, hold_s: float = 2.0, timeout_s: float = 10.0) -> boo
 
 
 def _build_sine(q_start_rad, joint_idx, amp_rad: float, period_s: float, cycles: float, knot_dt: float):
-    """Dense sine trajectory (times_ns, q, qd). Each selected joint j:
-        q_j(t)  = q_start_j + A·sin(ω t),  qd_j(t) = A·ω·cos(ω t),   ω = 2π / period.
-    Starts at the current pose (sin 0 = 0) and, over whole cycles, ends there too.
-    All joints in phase (a gentle coordinated 'breathe'). Other joints hold."""
+    """Dense raised-cosine trajectory (times_ns, q, qd). Each selected joint j:
+        q_j(t)  = q_start_j + A·(1 − cos(ω t)),   qd_j(t) = A·ω·sin(ω t),   ω = 2π / period.
+    All joints in phase (a coordinated 'breathe'). Other joints hold.
+
+    A raised cosine rather than a plain sine, because ``q_start + A·sin(ω t)`` has
+    ``qd(0) = A·ω`` — it demands its PEAK velocity instantaneously at t=0. The core
+    bridges the commanded pose to a trajectory's first knot with a bounded capture
+    splice whose velocity envelope is ``controller_facts.CAPTURE_RATE_DEG_S`` (15 °/s),
+    so a plain sine is rejected outright the moment its peak exceeds 15 °/s — which is
+    12% of this arm's velocity limit and would make this script useless for anything but
+    slow motion. Measured 2026-07-30: rejected at 15.1 °/s, accepted at 15.0.
+
+    The raised cosine has the SAME peak velocity (A·ω), acceleration (A·ω²) and jerk
+    (A·ω³) for the same amplitude and period, but starts and ends at rest, so nothing
+    needs bridging. The excursion is one-sided: it swings from the start pose to
+    ``+2A`` and back, the same peak-to-peak as ``±A``.
+    """
     omega = 2.0 * math.pi / period_s
     total = cycles * period_s
     ts = np.arange(0.0, total + knot_dt * 0.5, knot_dt)  # include the endpoint
@@ -88,8 +102,8 @@ def _build_sine(q_start_rad, joint_idx, amp_rad: float, period_s: float, cycles:
     q = np.tile(q_start, (len(ts), 1))
     qd = np.zeros((len(ts), NDOF))
     for j in joint_idx:
-        q[:, j] = q_start[j] + amp_rad * np.sin(omega * ts)
-        qd[:, j] = amp_rad * omega * np.cos(omega * ts)
+        q[:, j] = q_start[j] + amp_rad * (1.0 - np.cos(omega * ts))
+        qd[:, j] = amp_rad * omega * np.sin(omega * ts)
     times_ns = [int(round(t * 1e9)) for t in ts]
     return times_ns, q.tolist(), qd.tolist()
 
@@ -131,7 +145,8 @@ def main() -> int:
     if not target.is_fake:
         banner = [
             "REAL ROBOT MOVE — operator must be present, E-STOP in hand, area clear.",
-            f"Sine on J{joints_1based}: ±{args.amplitude_deg:.1f}° about the current pose,",
+            f"Sine on J{joints_1based}: from the current pose to "
+            f"+{2 * args.amplitude_deg:.1f}° and back (starts and ends at rest),",
             f"{args.cycles:g} cycle(s) @ {args.period:.1f}s, peak ~{peak_speed:.1f} deg/s.",
         ]
         if args.stop_after is not None:
@@ -159,9 +174,9 @@ def main() -> int:
         checks.append(("bring-up reached a commandable driver", True))
         q_start = np.asarray(driver.get_state()["q_cmd"], dtype=float)[:NDOF]
 
-        # Pre-motion guard: the sine reaches exactly start ± amplitude on each joint.
+        # Pre-motion guard: the raised cosine reaches exactly start .. start + 2A.
         start_deg = np.degrees(q_start)
-        safe = guard_joint_limits(start_deg - args.amplitude_deg, start_deg + args.amplitude_deg, joint_idx)
+        safe = guard_joint_limits(start_deg, start_deg + 2.0 * args.amplitude_deg, joint_idx)
         checks.append(("sine stays inside the soft limits", safe))
         if not safe:
             return verdict("sine_wave", checks, driver)

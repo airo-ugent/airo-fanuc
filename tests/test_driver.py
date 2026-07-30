@@ -15,6 +15,7 @@ the CAPTURE hook, honest getters and poison-not-exit ``close()``.
 
 from __future__ import annotations
 
+import math
 import socket
 import threading
 import time
@@ -36,6 +37,7 @@ from airo_fanuc import (
     RobotFaultedError,
     TrajectoryValidationError,
 )
+from airo_fanuc import controller_facts as cf
 from airo_fanuc.ownership import OwnershipLock
 from airo_fanuc.testing import FakeCRXConfig, FakeCRXController
 
@@ -242,6 +244,41 @@ def test_validation_table(rig: DriverRig) -> None:
     fast_qd = [[3.0, 0, 0, 0, 0, 0], [3.0, 0, 0, 0, 0, 0]]
     with pytest.raises(TrajectoryValidationError):
         d.move_trajectory(good_t, good_q, fast_qd, speed_scale=1.0)
+
+
+def test_first_knot_velocity_beyond_the_capture_envelope_is_a_typed_error(rig: DriverRig) -> None:
+    """A trajectory the capture splice cannot start must say so, not return REJECTED.
+
+    The splice bridging the commanded pose to knot 0 is bounded by
+    CAPTURE_RATE_DEG_S, and that bound is on its endpoint velocities — a first knot
+    above it is unreachable no matter what the arm is currently doing (measured
+    2026-07-30: accepted at 15.0°/s, refused at 15.1). Left to the core it surfaces
+    as MotionStatus.REJECTED carrying FaultReason.INTERNAL, which reads like a driver
+    bug rather than a trajectory that cannot be started.
+    """
+    d = rig.driver
+    over = math.radians(cf.CAPTURE_RATE_DEG_S + 0.5)
+    inside = math.radians(cf.CAPTURE_RATE_DEG_S - 0.5)
+
+    def submit(qd0: float, **kw: Any) -> MotionResult:
+        # Rebuilt from the CURRENT commanded pose every time: a stale first knot would
+        # trip the 5° position guard instead, which is a different rejection.
+        times, q, _ = _traj_from(d, 0.1)
+        return d.move_trajectory(times, q, [[qd0] + [0.0] * 5, [0.0] * 6], **kw).wait(timeout=4.0)
+
+    times, q, _ = _traj_from(d, 0.1)
+    with pytest.raises(TrajectoryValidationError, match="capture envelope"):
+        d.move_trajectory(times, q, [[over] + [0.0] * 5, [0.0] * 6])
+
+    # speed_scale must NOT rescue it: the core builds the splice from the unscaled first
+    # knot, so a check that scaled would pass a trajectory the core rejects. Verified
+    # against the core below by accepting the inside case for real.
+    with pytest.raises(TrajectoryValidationError, match="capture envelope"):
+        d.move_trajectory(times, q, [[over] + [0.0] * 5, [0.0] * 6], speed_scale=0.5)
+
+    # Just inside the envelope is accepted, and actually runs — so the ceiling is the
+    # capture rate itself and not some smaller fudge.
+    assert submit(inside) == MotionResult.DONE
 
 
 # --------------------------------------------------------------------------- #

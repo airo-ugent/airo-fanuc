@@ -29,6 +29,7 @@ from typing import Any, cast
 import numpy as np
 
 from . import _core
+from . import controller_facts as cf
 from ._core import Mode, MotionStatus, StreamCore
 from .config import DriverPolicy, MotionResult
 from .controller_facts import SettlePolicy
@@ -713,6 +714,36 @@ class FanucDriver:
             over = np.where(peak > vlim + 1e-9)[0].tolist()
             raise TrajectoryValidationError(
                 f"|s·qd| exceeds velocity limit on joint(s) {over}: peak={peak.tolist()} vs {vlim.tolist()}"
+            )
+
+        # FIRST-KNOT velocity vs the capture envelope. The core bridges the commanded
+        # pose to knot 0 with a capture splice bounded by CAPTURE_RATE_DEG_S, and that
+        # bound applies to the splice's ENDPOINT velocities, not to the gap it closes:
+        # measured 2026-07-30, a first knot at 15.1°/s is unreachable even when the arm
+        # is already travelling at exactly that speed. Left to the core this surfaces as
+        # MotionStatus.REJECTED carrying FaultReason.INTERNAL, which tells the caller
+        # nothing and reads like a driver bug rather than a trajectory the driver cannot
+        # start. Checked here so it is a typed error naming the offending joints and the
+        # ceiling. NB this caps the START velocity only — the interior of the trajectory
+        # is bounded by the joint velocity limits checked above, so a profile that begins
+        # at rest may run as fast as those allow.
+        # Deliberately UNSCALED by speed_scale, because the core is: consume() calls
+        # generate_capture_path(q_cmd, qd_cmd, q0, qd0) with the raw first-knot velocity
+        # and only assigns speed_scale_ afterwards, where it scales Hermite playback and
+        # the terminal wire blend. Scaling here would pass trajectories the core then
+        # rejects — the same "the checked path IS the executed path" trap the CAPTURE
+        # collision gate exists to avoid.
+        capture_rate = float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
+        qd_first = np.abs(qd_arr[0])
+        if np.any(qd_first > capture_rate * (1.0 + 1e-9)):
+            over = np.where(qd_first > capture_rate * (1.0 + 1e-9))[0].tolist()
+            raise TrajectoryValidationError(
+                f"first-knot |qd| exceeds the {cf.CAPTURE_RATE_DEG_S:g}°/s capture envelope on "
+                f"joint(s) {over}: {np.rad2deg(qd_first).round(3).tolist()}°/s. The capture splice "
+                f"that bridges the commanded pose to knot 0 cannot reach that velocity, whatever "
+                f"the arm is currently doing, and speed_scale does not help (the splice is built "
+                f"from the unscaled first knot). Start the trajectory at rest, or within the "
+                f"envelope — a profile beginning at rest may then run up to the joint velocity limits."
             )
         return times_ns, q_arr, qd_arr
 
