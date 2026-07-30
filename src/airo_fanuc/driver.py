@@ -212,7 +212,6 @@ class FanucDriver:
         q: Sequence[Sequence[float]] | np.ndarray,
         qd: Sequence[Sequence[float]] | np.ndarray,
         *,
-        speed_scale: float = 1.0,
         settle: SettlePolicy | None = None,
         deadman_s: float | None = None,
         force_stop_n: float | None = None,
@@ -223,8 +222,18 @@ class FanucDriver:
 
         Validation — every violation raises its own typed error naming the offending
         joint/knot, never a generic reject: strictly-increasing int64 ns times, ≥2
-        knots, finite q/qd, ``|s·qd| ≤ v_lim``, ``s ≤ 1.0``.
-        The CAPTURE collision-check hook runs when ``policy.capture_check`` is set.
+        knots, finite q/qd, ``|qd| ≤ v_lim``, and a first knot inside the capture
+        envelope. The CAPTURE collision-check hook runs when ``policy.capture_check``
+        is set.
+
+        There is no speed-scale knob: the trajectory's own ``times`` and ``qd`` ARE the
+        speed. To replay a plan slower, stretch it — ``times / s`` with ``qd * s`` for
+        ``s < 1`` — which leaves the position path identical and is exactly what a scale
+        factor would have meant. Doing it caller-side is also strictly safer: it scales
+        the FIRST knot too, so the capture splice bridges to the velocity playback will
+        actually begin at. The core's scale factor did not (it built the splice from the
+        unscaled first knot and scaled only playback), which stepped the commanded
+        velocity at the handover — 5 °/s for a 10 °/s first knot at half speed.
         """
         self._require_commandable()
         assert self.core is not None
@@ -238,7 +247,7 @@ class FanucDriver:
                 "CONTACT_STOP), or upgrade to a v4 / type-204 controller for a numeric force "
                 "threshold. See controller-notes.md §1.8."
             )
-        times_ns, q_arr, qd_arr = self._validate_trajectory(times, q, qd, speed_scale)
+        times_ns, q_arr, qd_arr = self._validate_trajectory(times, q, qd)
         settle = settle if settle is not None else self._policy.settle
 
         self._capture_gate(q_arr, qd_arr, asynchronous)
@@ -247,7 +256,7 @@ class FanucDriver:
             times_ns,
             q_arr.tolist(),
             qd_arr.tolist(),
-            float(speed_scale),
+            1.0,  # speed_scale: pinned. The trajectory's own times/qd are the speed.
             settle_tol_rad=math.radians(settle.tol_deg),
             settle_vel_eps_rad_s=math.radians(settle.vel_eps_deg_s),
             settle_timeout_s=float(settle.timeout_s),
@@ -678,13 +687,7 @@ class FanucDriver:
         times: Sequence[int] | np.ndarray,
         q: Sequence[Sequence[float]] | np.ndarray,
         qd: Sequence[Sequence[float]] | np.ndarray,
-        speed_scale: float,
     ) -> tuple[list[int], np.ndarray, np.ndarray]:
-        if not math.isfinite(speed_scale) or speed_scale <= 0.0:
-            raise TrajectoryValidationError(f"speed_scale must be finite and > 0, got {speed_scale}")
-        if speed_scale > 1.0:
-            raise TrajectoryValidationError(f"speed_scale must be ≤ 1.0 (s>1 rejected), got {speed_scale}")
-
         q_arr = np.asarray(q, dtype=np.float64)
         qd_arr = np.asarray(qd, dtype=np.float64)
         if q_arr.ndim != 2 or q_arr.shape[1] != _NDOF:
@@ -709,11 +712,11 @@ class FanucDriver:
             raise TrajectoryValidationError("times must be strictly increasing (ns, relative)")
 
         vlim = self._cfg.velocity_limits
-        peak = np.max(np.abs(speed_scale * qd_arr), axis=0)
+        peak = np.max(np.abs(qd_arr), axis=0)
         if np.any(peak > vlim + 1e-9):
             over = np.where(peak > vlim + 1e-9)[0].tolist()
             raise TrajectoryValidationError(
-                f"|s·qd| exceeds velocity limit on joint(s) {over}: peak={peak.tolist()} vs {vlim.tolist()}"
+                f"|qd| exceeds velocity limit on joint(s) {over}: peak={peak.tolist()} vs {vlim.tolist()}"
             )
 
         # FIRST-KNOT velocity vs the capture envelope. The core bridges the commanded
@@ -727,12 +730,9 @@ class FanucDriver:
         # ceiling. NB this caps the START velocity only — the interior of the trajectory
         # is bounded by the joint velocity limits checked above, so a profile that begins
         # at rest may run as fast as those allow.
-        # Deliberately UNSCALED by speed_scale, because the core is: consume() calls
-        # generate_capture_path(q_cmd, qd_cmd, q0, qd0) with the raw first-knot velocity
-        # and only assigns speed_scale_ afterwards, where it scales Hermite playback and
-        # the terminal wire blend. Scaling here would pass trajectories the core then
-        # rejects — the same "the checked path IS the executed path" trap the CAPTURE
-        # collision gate exists to avoid.
+        # FIRST-KNOT velocity vs the capture envelope, checked against the same raw qd the
+        # core splices to (consume() calls generate_capture_path with the first knot as
+        # given) — the "checked path IS the executed path" rule.
         capture_rate = float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
         qd_first = np.abs(qd_arr[0])
         if np.any(qd_first > capture_rate * (1.0 + 1e-9)):
@@ -741,9 +741,8 @@ class FanucDriver:
                 f"first-knot |qd| exceeds the {cf.CAPTURE_RATE_DEG_S:g}°/s capture envelope on "
                 f"joint(s) {over}: {np.rad2deg(qd_first).round(3).tolist()}°/s. The capture splice "
                 f"that bridges the commanded pose to knot 0 cannot reach that velocity, whatever "
-                f"the arm is currently doing, and speed_scale does not help (the splice is built "
-                f"from the unscaled first knot). Start the trajectory at rest, or within the "
-                f"envelope — a profile beginning at rest may then run up to the joint velocity limits."
+                f"the arm is currently doing. Start the trajectory at rest, or within the envelope "
+                f"— a profile beginning at rest may then run up to the joint velocity limits."
             )
         return times_ns, q_arr, qd_arr
 

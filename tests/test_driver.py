@@ -185,29 +185,6 @@ def test_move_trajectory_asynchronous_returns_immediately(rig: DriverRig) -> Non
     assert handle.wait(timeout=4.0) == MotionResult.DONE
 
 
-def test_speed_scale_half_halves_peak_velocity(rig: DriverRig) -> None:
-    def peak_qd(scale: float) -> float:
-        times, q, qd = _traj_from(rig.driver, 0.5, duration_ns=1_500_000_000)
-        rig.driver.move_trajectory(times, q, qd, speed_scale=scale)
-        # Wait for the motion to actually start (leave the initial steady HOLD)
-        # before sampling — otherwise the loop exits on the pre-move steadiness.
-        start_deadline = time.monotonic() + 2.0
-        while time.monotonic() < start_deadline and rig.driver.is_steady():
-            time.sleep(0.002)
-        peak = 0.0
-        deadline = time.monotonic() + (2.0 / scale) + 2.0
-        while time.monotonic() < deadline and not rig.driver.is_steady():
-            peak = max(peak, abs(rig.driver.get_state()["qd_cmd"][0]))
-            time.sleep(0.003)
-        rig.driver.wait_until_steady(2.0)
-        return peak
-
-    full = peak_qd(1.0)
-    half = peak_qd(0.5)
-    assert full > 0.05
-    assert 0.35 < half / full < 0.65, (half, full)
-
-
 # --------------------------------------------------------------------------- #
 # Validation table (each violation → its typed error)
 # --------------------------------------------------------------------------- #
@@ -234,16 +211,14 @@ def test_validation_table(rig: DriverRig) -> None:
     # wrong DOF
     with pytest.raises(TrajectoryValidationError):
         d.move_trajectory(good_t, [[0, 0, 0], [0.2, 0, 0]], [[0.0] * 3, [0.0] * 3])
-    # s > 1.0
-    with pytest.raises(TrajectoryValidationError):
-        d.move_trajectory(good_t, good_q, good_qd, speed_scale=1.5)
-    # s <= 0
-    with pytest.raises(TrajectoryValidationError):
-        d.move_trajectory(good_t, good_q, good_qd, speed_scale=0.0)
-    # |s·qd| > v_lim (v_lim J0 = 2.094 rad/s; qd=3.0 exceeds)
+    # |qd| > v_lim (v_lim J0 = 2.094 rad/s; qd=3.0 exceeds)
     fast_qd = [[3.0, 0, 0, 0, 0, 0], [3.0, 0, 0, 0, 0, 0]]
     with pytest.raises(TrajectoryValidationError):
-        d.move_trajectory(good_t, good_q, fast_qd, speed_scale=1.0)
+        d.move_trajectory(good_t, good_q, fast_qd)
+    # There is no speed_scale parameter to abuse — the trajectory's times/qd are the
+    # speed. Passing one is a TypeError, not a value to validate.
+    with pytest.raises(TypeError):
+        d.move_trajectory(good_t, good_q, good_qd, speed_scale=0.5)  # type: ignore[call-arg]
 
 
 def test_first_knot_velocity_beyond_the_capture_envelope_is_a_typed_error(rig: DriverRig) -> None:
@@ -260,21 +235,15 @@ def test_first_knot_velocity_beyond_the_capture_envelope_is_a_typed_error(rig: D
     over = math.radians(cf.CAPTURE_RATE_DEG_S + 0.5)
     inside = math.radians(cf.CAPTURE_RATE_DEG_S - 0.5)
 
-    def submit(qd0: float, **kw: Any) -> MotionResult:
+    def submit(qd0: float) -> MotionResult:
         # Rebuilt from the CURRENT commanded pose every time: a stale first knot would
         # trip the 5° position guard instead, which is a different rejection.
         times, q, _ = _traj_from(d, 0.1)
-        return d.move_trajectory(times, q, [[qd0] + [0.0] * 5, [0.0] * 6], **kw).wait(timeout=4.0)
+        return d.move_trajectory(times, q, [[qd0] + [0.0] * 5, [0.0] * 6]).wait(timeout=4.0)
 
     times, q, _ = _traj_from(d, 0.1)
     with pytest.raises(TrajectoryValidationError, match="capture envelope"):
         d.move_trajectory(times, q, [[over] + [0.0] * 5, [0.0] * 6])
-
-    # speed_scale must NOT rescue it: the core builds the splice from the unscaled first
-    # knot, so a check that scaled would pass a trajectory the core rejects. Verified
-    # against the core below by accepting the inside case for real.
-    with pytest.raises(TrajectoryValidationError, match="capture envelope"):
-        d.move_trajectory(times, q, [[over] + [0.0] * 5, [0.0] * 6], speed_scale=0.5)
 
     # Just inside the envelope is accepted, and actually runs — so the ceiling is the
     # capture rate itself and not some smaller fudge.

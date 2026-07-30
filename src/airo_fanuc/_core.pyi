@@ -187,7 +187,14 @@ class StreamCore:
     ) -> int:
         """Submit ONE whole trajectory (radians). CAPTURE-or-REJECT splice from
         the commanded pose. Returns a motion_id. ``force_stop_n`` arms the C++
-        force-guard; ``deadman_s`` arms the caller-fed watchdog (kick())."""
+        force-guard; ``deadman_s`` arms the caller-fed watchdog (kick()).
+
+        ``speed_scale`` scales Hermite playback (qd by s, qdd by s²) but NOT the
+        capture splice, which is built from the unscaled first knot — so s ≠ 1 steps
+        the commanded velocity at the capture→trajectory handover.
+        :meth:`airo_fanuc.FanucDriver.move_trajectory` therefore pins it to 1.0 and
+        exposes no scale knob: a trajectory's own ``times``/``qd`` are its speed, and
+        stretching them caller-side scales the first knot too."""
 
     def submit_servo(self, q: list[float], duration: float) -> int: ...
     def submit_servo_ff(
