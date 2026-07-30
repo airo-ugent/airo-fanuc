@@ -19,6 +19,7 @@ This is example support code, not part of the package's public API.
 from __future__ import annotations
 
 import argparse
+import logging
 import tempfile
 import time
 from collections.abc import Sequence
@@ -33,6 +34,20 @@ from airo_fanuc import controller_facts as cf
 #: Joint count. Six is baked into the C++ core (the online trajectory generator's
 #: DOF is a compile-time template parameter), so this is a constant, not a knob.
 NDOF = 6
+
+#: CRX-10iA/L active joint position limits (deg), measured on OUR controller and
+#: recorded in docs/controller-notes.md §1.1 — not read from the robot, so they are
+#: only true for that arm. §1.1 also records that the vendored URDF's J6 (±190) is
+#: narrower than the controller's own (±225); the controller's values are the
+#: authoritative ones and are what is used here.
+LIMIT_LOWER_DEG = np.array([-180.0, -180.0, -270.0, -190.0, -180.0, -225.0])
+LIMIT_UPPER_DEG = np.array([180.0, 180.0, 270.0, 190.0, 180.0, 225.0])
+
+#: Kept back from the soft limit by the pre-motion guard. A validation script should
+#: refuse a move *before* the controller does: a Python abort with no motion is a
+#: readable result, while a commanded overrun is a servo alarm that needs a reset on
+#: the pendant before anything else can run.
+LIMIT_MARGIN_DEG = 1.0
 
 
 def degrees(q_rad: Any) -> list[float]:
@@ -76,6 +91,16 @@ def add_connection_args(ap: argparse.ArgumentParser) -> None:
     )
     ap.add_argument("--rt-priority", type=int, default=80, help="SCHED_FIFO priority for --sched-fifo")
     ap.add_argument("--lock-path", default=None, help="ownership flock path (default: the package's)")
+    ap.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="show the driver's own log: -v for INFO (lifecycle transitions, the bring-up "
+        "ladder, recovery attempts), -vv for DEBUG (every RMI exchange). The library logs "
+        "through the stdlib and installs no handler of its own, so without this the reason "
+        "behind a state change is computed and then discarded.",
+    )
 
 
 class Target(NamedTuple):
@@ -108,6 +133,15 @@ def open_target(args: argparse.Namespace) -> Target:
     Under ``--fake`` the fake's own interpolation period follows ``--itp-ms``, so the
     offline run stays self-consistent whatever period is asked for.
     """
+    if args.verbose:
+        # Bare stderr handler on the package's logger only, so the driver's narrative
+        # interleaves with the report instead of being discarded.
+        logging.basicConfig(
+            level=logging.DEBUG if args.verbose > 1 else logging.INFO,
+            format="  %(levelname)-7s %(name)s: %(message)s",
+        )
+        logging.getLogger("airo_fanuc").setLevel(logging.DEBUG if args.verbose > 1 else logging.INFO)
+
     itp_s = float(args.itp_ms) / 1000.0
     hygiene = {
         "itp_s": itp_s,
@@ -370,9 +404,17 @@ def report_motion(w: Watch, *, expect_result: MotionResult) -> bool:
     print(f"  peak speed   : {w.max_speed_deg_s:.2f} deg/s")
     lag_s = cf.INTERIM_FACTS.tracking_lag_s
     print(
-        f"  peak lag     : {w.max_lag_deg:.3f} deg — the {lag_s * 1000:.0f} ms servo lag accounts "
-        f"for about {w.max_speed_deg_s * lag_s:.3f} deg at this peak speed"
+        f"  peak lag     : {w.max_lag_deg:.3f} deg — the {lag_s * 1000:.0f} ms recorded servo lag "
+        f"accounts for {w.max_speed_deg_s * lag_s:.3f} deg at this peak speed"
     )
+    if w.max_speed_deg_s > 0.5:
+        # Lag divided by speed is the offset expressed as a time. Reported because it is
+        # comparable across runs at different speeds, unlike the raw degrees: if it stays
+        # put as the speed changes, the offset is a delay rather than measurement noise.
+        # NB this is command-to-reported-measurement, so it includes the status-packet
+        # pipeline as well as the servo — it is not the cross-correlation lag of §1.9.
+        implied_ms = 1000.0 * w.max_lag_deg / w.max_speed_deg_s
+        print(f"                  ⇒ implied offset {implied_ms:.0f} ms at {w.max_speed_deg_s:.1f} deg/s")
     print(
         f"  slew clips   : {w.slew_clips}"
         + ("" if w.slew_clips == 0 else "  <-- a commanded step was clipped")
@@ -442,6 +484,34 @@ def report_rt_health(driver: Any, config: DriverConfig) -> bool:
         print(f"  [{'PASS' if passed else 'FAIL'}] {label}")
         ok = ok and passed
     return ok
+
+
+def guard_joint_limits(lo_deg: Any, hi_deg: Any, joints: Sequence[int]) -> bool:
+    """Pre-motion guard: does the commanded envelope stay inside the soft limits?
+
+    ``lo_deg`` / ``hi_deg`` are per-joint degree bounds of everything the motion will
+    command — the two endpoints of a rest-to-rest move (a cubic Hermite with zero end
+    velocities does not leave them), or pose ± amplitude for a sine. Prints one line
+    per offending joint and returns False, so the caller can abort before issuing
+    anything. Guards the *commanded* path; the controller enforces the real limit.
+    """
+    lo = np.asarray(lo_deg, dtype=float)[:NDOF]
+    hi = np.asarray(hi_deg, dtype=float)[:NDOF]
+    bad = []
+    for j in joints:
+        floor = LIMIT_LOWER_DEG[j] + LIMIT_MARGIN_DEG
+        ceil = LIMIT_UPPER_DEG[j] - LIMIT_MARGIN_DEG
+        if lo[j] < floor or hi[j] > ceil:
+            bad.append(
+                f"J{j + 1}: would reach [{lo[j]:.1f}, {hi[j]:.1f}] deg, "
+                f"limit [{LIMIT_LOWER_DEG[j]:.0f}, {LIMIT_UPPER_DEG[j]:.0f}] "
+                f"less a {LIMIT_MARGIN_DEG:.0f} deg margin"
+            )
+    if bad:
+        print("  ABORT (no motion issued) — the move would leave the soft limits:")
+        for line in bad:
+            print(f"    {line}")
+    return not bad
 
 
 def close_driver(driver: Any) -> bool:

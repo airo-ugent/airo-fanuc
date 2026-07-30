@@ -45,6 +45,7 @@ from _common import (
     close_driver,
     confirm,
     degrees,
+    guard_joint_limits,
     open_target,
     report_bringup,
     report_motion,
@@ -55,14 +56,6 @@ from _common import (
 )
 from airo_fanuc import FanucDriver, MotionResult
 from airo_fanuc import controller_facts as cf
-
-# CRX-10iA/L active joint limits (deg), measured on OUR controller and recorded in
-# docs/controller-notes.md §1.1 — not read from the robot, so they are only true for that
-# arm. Used as the pre-motion safety guard for this all-joints exercise. §1.1 also records
-# that the vendored URDF's J6 (±190) is narrower than the controller's own (±225): the
-# controller's values are the authoritative ones and are what is used here.
-_LIMIT_LOWER_DEG = np.array([-180.0, -180.0, -270.0, -190.0, -180.0, -225.0])
-_LIMIT_UPPER_DEG = np.array([180.0, 180.0, 270.0, 190.0, 180.0, 225.0])
 
 
 def _wait_streaming(driver, hold_s: float = 2.0, timeout_s: float = 10.0) -> bool:
@@ -167,19 +160,11 @@ def main() -> int:
         checks.append(("bring-up reached a commandable driver", True))
         q_start = np.asarray(driver.get_state()["q_cmd"], dtype=float)[:NDOF]
 
-        # Joint-limit guard: abort (no motion) if any joint's start±amplitude leaves limits.
+        # Pre-motion guard: the sine reaches exactly start ± amplitude on each joint.
         start_deg = np.degrees(q_start)
-        bad = []
-        for j in joint_idx:
-            lo, hi = start_deg[j] - args.amplitude_deg, start_deg[j] + args.amplitude_deg
-            if lo < _LIMIT_LOWER_DEG[j] or hi > _LIMIT_UPPER_DEG[j]:
-                lim = f"[{_LIMIT_LOWER_DEG[j]:.0f},{_LIMIT_UPPER_DEG[j]:.0f}]"
-                bad.append(f"J{j + 1}: [{lo:.1f},{hi:.1f}] deg outside {lim} deg")
-        if bad:
-            print("  ABORT (no motion) — sine would exceed joint limits:")
-            for b in bad:
-                print(f"    {b}")
-            checks.append(("sine stays inside the joint limits", False))
+        safe = guard_joint_limits(start_deg - args.amplitude_deg, start_deg + args.amplitude_deg, joint_idx)
+        checks.append(("sine stays inside the soft limits", safe))
+        if not safe:
             return verdict("sine_wave", checks, driver)
 
         if not _wait_streaming(driver):

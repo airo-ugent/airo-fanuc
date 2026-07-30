@@ -51,6 +51,7 @@ from _common import (
     close_driver,
     confirm,
     degrees,
+    guard_joint_limits,
     open_target,
     report_bringup,
     report_motion,
@@ -153,9 +154,21 @@ def main() -> int:
 
         # --- no-motion bring-up validation: stream state, confirm no fault, hold ----
         if args.no_move:
-            print(rule(f"streaming for {args.observe:.0f}s (NO commanded motion)"))
+            # Settle first, exactly as the motion paths do. A bring-up over a controller
+            # that has recently run STREAM_MOTN drops motion_possible for about a second
+            # and the recovery ladder restores it (measured, docs/controller-notes.md
+            # §4.2), so judging faults from the first sample would report the driver's
+            # designed behaviour as a failure. What must hold is that it settles and
+            # then STAYS settled.
+            settled = _wait_streaming(driver)
+            checks.append(("settled into stable streaming", settled))
+            if not settled:
+                print("  never reached stable streaming — see the fault above.")
+
+            print(rule(f"holding for {args.observe:.0f}s (NO commanded motion)"))
             deadline = time.monotonic() + args.observe
             faulted = False
+            recoveries_before = int(driver.get_state().get("recovery_count", 0))
             while time.monotonic() < deadline:
                 st = driver.get_state()
                 print(
@@ -165,7 +178,11 @@ def main() -> int:
                 if str(st.get("fault_reason") or "none").lower() != "none":
                     faulted = True
                 time.sleep(1.0)
-            checks.append((f"no fault while streaming for {args.observe:.0f}s", not faulted))
+            # Recoveries are reported, not failed on: one during bring-up is expected on a
+            # re-connect. Any during the quiescent hold is not, and shows up as a fault too.
+            recoveries = int(driver.get_state().get("recovery_count", 0))
+            print(f"  recovery ladder runs: {recoveries_before} during bring-up, {recoveries} total")
+            checks.append((f"no fault while holding for {args.observe:.0f}s", not faulted))
             checks.append(("rt loop held its deadline", report_rt_health(driver, target.config)))
             return verdict("bring-up validation", checks, driver)
 
@@ -175,6 +192,16 @@ def main() -> int:
             checks.append(("driver reached stable streaming", False))
             return verdict("move_joints", checks, driver)
         checks.append(("driver reached stable streaming", True))
+
+        # Pre-motion guard. The move is rest-to-rest, so its endpoints bound everything
+        # it commands; --return comes back to the start, which is where we already are.
+        start_deg = np.degrees(q_start)
+        end_deg = start_deg.copy()
+        end_deg[jidx] += args.delta_deg
+        safe = guard_joint_limits(np.minimum(start_deg, end_deg), np.maximum(start_deg, end_deg), [jidx])
+        checks.append((f"J{args.joint} move stays inside the soft limits", safe))
+        if not safe:
+            return verdict("move_joints", checks, driver)
 
         times, q, qd = _build_trajectory(q_start, jidx, delta_rad, args.duration)
         print(rule(f"moving J{args.joint} by {args.delta_deg:+.1f} deg over {args.duration:.1f}s"))

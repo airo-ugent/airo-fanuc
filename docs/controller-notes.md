@@ -159,6 +159,37 @@ drift guard predicts the measured pose as `commanded @ (now − tracking_lag_s)`
 `tracking_lag_s` makes it over-predict: at roughly 4× the true lag a spurious DRIFT fault becomes
 possible above ~57–61 °/s. Hence `tracking_lag_s = 0.025`, matching the measurement.
 
+#### 1.9a OPEN: the observed command-to-report offset is ~3.4× `tracking_lag_s` (2026-07-30)
+
+Every motion run on 2026-07-30 showed a steady `|q_cmd − q_meas|` far above what 25 ms predicts.
+Dividing by the concurrent measured speed expresses it as a time, which is comparable across runs:
+
+| Run | Peak speed | Peak \|q_cmd − q_meas\| | Implied offset |
+|---|---|---|---|
+| J6 +10° rest-to-rest | 3.74 °/s | 0.306° | 82 ms |
+| ±5° sine, all joints | 3.45 °/s | 0.291° | 84 ms |
+| ±10° sine, 6 s period | 11.38 °/s | 1.031° | 91 ms |
+
+**~85 ms, stable across a 3.3× speed range** — proportional to speed, which is what a fixed delay
+looks like and not what noise looks like.
+
+This does **not** by itself contradict the 25 ms above: that figure is a *cross-correlation* of the
+commanded and measured series, whereas this is the instantaneous offset between the setpoint for the
+current tick and the most recent status packet, so it also contains the command→report pipeline
+(command buffering, the controller's own status generation, and up to one ITP of packet age). The two
+measure different things and ~60 ms of pipeline would reconcile them. Separating the two needs the
+xcorr method on logged series, not this ratio.
+
+**Why it matters anyway.** The drift guard compares `q_cmd @ (now − drift_lag_ticks)` against
+`q_meas @ now`, with `drift_lag_ticks = round(0.025 / 0.008) = 3`. If the *empirical* offset is ~11
+ticks, the guard's reference sits ~8 ticks ahead of what the measurement reflects, and that residual
+counts as drift: `8 × 8 ms × v`. At the tested speeds it is negligible (0.7° at 11 °/s against
+`DRIFT_FAULT_DEG = 10`), but at this arm's 120 °/s ceiling it is ~7.7° — inside 25% of a false DRIFT
+fault, in the false-positive direction. **Resolve before running fast moves (>50 °/s):** log q_cmd
+and q_meas through a swept-speed move, cross-correlate, and re-derive `tracking_lag_s` (and hence
+`drift_lag_ticks`) from that. Until then the guard is a bound with less margin than its constants
+imply, not a wrong bound.
+
 ---
 
 ## 2. Recovery / fault procedures
@@ -238,6 +269,33 @@ re-anchors to the frozen pose and stays there is indistinguishable from a health
 from outside — status keeps flowing, no fault is raised — while the robot has silently stopped
 following. Exercise starvation-resume with real trajectory motion: a per-tick hold target is not a
 substitute, because holding a pose produces no motion to observe in the first place.
+
+### 4.2 Post-bring-up `motion_possible` transient (measured 2026-07-30)
+
+On a bring-up over a controller that has recently had `STREAM_MOTN` launched, `motion_possible`
+asserts, then **drops roughly 1 s after bring-up reports complete**, and the recovery ladder
+restores it in under a second:
+
+```
+bring-up complete (attempt 1) → streaming (fault=none)
+lifecycle → faulted (fault=motion_not_possible)
+lifecycle → recovering → streaming
+recovery complete → STREAMING (from MOTION_NOT_POSSIBLE)
+```
+
+Streaming was then stable for the rest of the run (12 s observed, `fault=none`, `rx_age` 0.1–0.5 ms).
+
+- **No alarm accompanies it**: `FRC_ReadError` says `No Error`, and an RMI probe taken between runs
+  reports the controller entirely healthy (`servo_ready=True`, `drives_powered=True`, AUTO,
+  `override=100%`, `control_mode=LOCAL`).
+- **Reproducible on re-bring-up, absent on the first**: 3 consecutive re-connects showed it; the
+  first bring-up after the robot had been powered on and left idle did not. The mechanism is not
+  measured — that `STREAM_MOTN` state carries across sessions is the hypothesis the pattern fits,
+  not something confirmed.
+- **Consequence for callers:** wait for streaming to *hold* before commanding rather than trusting
+  the first post-bring-up sample. Both example scripts do this (`_wait_streaming`, 2 s of stable
+  streaming), and any consumer should. A validation check that reads the first sample will report
+  this as a fault.
 
 ---
 
