@@ -55,7 +55,6 @@ from _common import (
     watch,
 )
 from airo_fanuc import FanucDriver, MotionResult
-from airo_fanuc import controller_facts as cf
 
 
 def _wait_streaming(driver, hold_s: float = 2.0, timeout_s: float = 10.0) -> bool:
@@ -188,21 +187,14 @@ def main() -> int:
                 w.max_speed_deg_s > 0.5,
             )
         )
-        # Tracking. Asserted against the divergence the RT core itself faults on, NOT
-        # against a budget modelled from tracking_lag_s: on this arm the observed
-        # command-to-report offset is ~3.4x what that constant predicts (measured,
-        # docs/controller-notes.md §1.9a), so a modelled budget fails runs that tracked
-        # perfectly well — it would be asserting the model rather than the robot. Half the
-        # DRIFT threshold keeps real margin to the point where the driver would stop, and
-        # report_motion prints the offset in ms so the discrepancy stays visible.
-        lag_ceiling = cf.DRIFT_FAULT_DEG / 2.0
-        checks.append(
-            (
-                f"tracking lag {w.max_lag_deg:.3f} deg stayed clear of the {lag_ceiling:.1f} deg "
-                f"half-way mark to a DRIFT fault",
-                w.max_lag_deg <= lag_ceiling,
-            )
-        )
+        # Tracking is MEASURED AND REPORTED, not asserted (report_motion prints the peak
+        # lag and the offset it implies in ms). There is no threshold here because no
+        # honest one exists at this altitude: a budget modelled on tracking_lag_s asserts
+        # the model rather than the robot — and on this arm that model is out by ~3.4x
+        # (docs/controller-notes.md §1.9a) — while a bound near the DRIFT threshold would
+        # sit so far above these gentle speeds that it could never fire. Real divergence
+        # is already caught where it belongs: the RT core latches DRIFT and holds, which
+        # lands here as a non-DONE result.
         checks.append((f"no slew clips (got {w.slew_clips})", w.slew_clips == 0))
 
         if args.stop_after is None:
