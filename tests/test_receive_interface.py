@@ -165,25 +165,27 @@ def test_rmi_unconverted_hard_rejected_for_calibration() -> None:
     with pytest.raises(CalibrationSourceError) as ei:
         ri.capture_calibration_sample()
     assert ei.value.source == SOURCE_RMI_UNCONVERTED
-    assert ei.value.fact == "rmi_joints_identical_to_stream"
+    assert ei.value.fact == "rmi_to_stream_j3_plus_j2_verified"
 
 
-def test_rmi_accepted_once_identity_proven() -> None:
-    # Flip the fact, as a hardware measurement proving the RMI J2/J3 representation
-    # is identical to the Stream Motion one would (docs/controller-notes.md §1.5):
-    # rmi joints become acceptable and are retagged rmi_converted via the single
-    # per-model policy point.
+def test_rmi_accepted_once_conversion_verified() -> None:
+    # Flip the gate, as a second J2 confirming the RMI→stream J3 conversion would
+    # (docs/controller-notes.md §1.5): RMI joints become acceptable and are retagged
+    # rmi_converted via the single per-model policy point.
     clock = _Clock()
-    facts = replace(INTERIM_FACTS, rmi_joints_identical_to_stream=True)
+    facts = replace(INTERIM_FACTS, rmi_to_stream_j3_plus_j2_verified=True)
     ri = FanucReceiveInterface(now_ns=clock, facts=facts)
     _feed(ri, clock, _Q_A, [0.0] * 6, source=SOURCE_RMI_UNCONVERTED)
     sample = ri.capture_calibration_sample()
     assert sample.source == "rmi_converted"
+    # That policy point retags only: q[2] += q[1] is not written there, so the values
+    # pass through. Writing it must update this assertion in the same change.
+    np.testing.assert_allclose(sample.q_deg, _Q_A)
 
 
 def test_no_mixing_sources_in_one_dataset() -> None:
     clock = _Clock()
-    facts = replace(INTERIM_FACTS, rmi_joints_identical_to_stream=True)
+    facts = replace(INTERIM_FACTS, rmi_to_stream_j3_plus_j2_verified=True)
     ri = FanucReceiveInterface(now_ns=clock, facts=facts)
     _feed(ri, clock, _Q_A, [0.0] * 6, source=SOURCE_STREAM)
     ri.capture_calibration_sample()  # accept a stream sample first

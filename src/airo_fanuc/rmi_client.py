@@ -239,8 +239,8 @@ class CartesianPosition:
     they matter to anyone converting a pose back into joints.
 
     Unlike :meth:`RmiClient.read_joint_angles`, this read carries **no
-    representation caveat**: the controller runs the FK internally, so the ``J3 +=
-    J2`` question (``controller_facts.INTERIM_FACTS.rmi_j3_plus_j2_conversion``)
+    representation caveat**: the controller runs the FK internally, so the J2/J3
+    question (``controller_facts.INTERIM_FACTS.rmi_to_stream_j3_plus_j2_measured``)
     cannot reach the result.
     """
 
@@ -623,14 +623,14 @@ class RmiClient:
         still reports nine axes with the trailing three zero, so callers get the
         contiguous run starting at J1 (six or nine values).
 
-        **UNCONVERTED joints.** The vendor applies ``J3 += J2`` on RMI
-        reads (``controller_facts.INTERIM_FACTS.rmi_j3_plus_j2_conversion``), so
-        these are NOT interchangeable with Stream Motion joints. A caller feeding
-        them to calibration must tag them
+        **UNCONVERTED joints.** RMI reports J3 one J2 below the Stream Motion
+        value (``controller_facts.INTERIM_FACTS.rmi_to_stream_j3_plus_j2_measured``),
+        so these are NOT interchangeable with Stream Motion joints: reaching that
+        frame takes ``J3 += J2``. A caller feeding them to calibration must tag them
         :data:`~airo_fanuc.receive_interface.SOURCE_RMI_UNCONVERTED`
         (:class:`~airo_fanuc.receive_interface.RmiClientJointReader` does), which
-        the calibration path hard-rejects until the two representations are
-        proven identical on hardware.
+        the calibration path hard-rejects until that conversion is verified at a
+        second J2.
 
         Raises :class:`RmiError` on a non-zero ErrorID or a malformed reply
         (missing / empty ``JointAngle``), :class:`RmiSessionDown` on persistent

@@ -312,15 +312,16 @@ class FakeRmiServer:
         return self._echo(req, error_id=ERR_TP_NOT_PAUSED)
 
     def _handle_read_joint_angles(self, req: dict[str, Any]) -> dict[str, Any]:
-        # Report the plant's true measured joints, but with the vendor RMI
-        # conversion J3 += J2 applied (INTERIM_FACTS.rmi_j3_plus_j2_conversion):
-        # RMI joint reads are UNCONVERTED relative to Stream Motion. Wired to the
-        # shared plant so the reply tracks whatever the plant is currently at.
+        # The plant array is the Stream Motion frame (the SM plane streams it
+        # unmodified), so this plane subtracts J2 to serve J3 in the RMI frame:
+        # RMI J3 = SM J3 − J2 (INTERIM_FACTS.rmi_to_stream_j3_plus_j2_measured), which
+        # a reader must add back. Wired to the shared plant so the reply tracks
+        # whatever the plant is currently at.
         with self._state.lock:
             q_deg, _qd = self._state._plant.snapshot_deg()
         j = [float(v) for v in q_deg.tolist()]
         if len(j) >= 3:
-            j[2] = j[2] + j[1]  # J3 += J2 (vendor behavior on RMI reads)
+            j[2] = j[2] - j[1]  # RMI J3 = SM J3 − J2
         joint_angle = {f"J{idx + 1}": j[idx] for idx in range(len(j))}
         with self._lock:
             tag = self._joint_time_tag

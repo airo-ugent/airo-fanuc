@@ -29,9 +29,11 @@ Usage — hand-guide the arm, taking each joint you care about to its stop, then
 
   python examples/check_joint_limits.py --ip 192.168.1.100
 
-It also records J2 at each J3 extreme, because RMI joint reads may apply ``J3 += J2``
-and that is still UNVERIFIED (§1.5). Compare the reported J3 against the pendant's
-displayed J3 at the same pose and that question is settled too.
+It also records J2 at each J3 extreme, because RMI reports J3 one J2 below the Stream
+Motion value (§1.5, measured at a single J2). Reading only the RMI plane, this script
+cannot confirm that offset — it records the pair. Comparing the reported J3 against the
+pendant's displayed J3 at the same pose does settle a different open question: which
+plane the pendant shows.
 """
 
 from __future__ import annotations
@@ -182,12 +184,12 @@ def main() -> int:
         for line in wider:
             print(f"    {line}")
 
-    # J2/J3: RMI reads may apply J3 += J2 and that is UNVERIFIED (§1.5).
-    print(rule("J2/J3 representation (docs/controller-notes.md §1.5, UNVERIFIED)"))
-    print("  MEASURED 2026-07-30 (§1.5): RMI reports J3 WITHOUT the J2 coupling that Stream")
-    print("  Motion carries, so the RMI→stream conversion is J3 += J2. Shown here so a")
-    print("  re-run at a DIFFERENT J2 can confirm it holds across the range, not just at")
-    print("  the one pose it was measured at:")
+    # J2/J3: the RMI→stream J3 offset is measured at one J2 only (§1.5).
+    print(rule("J2/J3 representation (docs/controller-notes.md §1.5, one J2 measured)"))
+    print("  MEASURED 2026-07-30 (§1.5): RMI reports J3 one J2 BELOW the Stream Motion value,")
+    print("  so the RMI→stream conversion is J3 += J2. This plane is the only one read here,")
+    print("  so this run cannot confirm it; it records the pair for a run that reads BOTH")
+    print("  planes at one pose, at a materially different J2:")
     for label, pose, j3 in (("J3 min", pose_at_lo[2], lo[2]), ("J3 max", pose_at_hi[2], hi[2])):
         print(
             f"    {label}: RMI J3 = {j3:+8.3f}°, J2 = {pose[1]:+8.3f}° "

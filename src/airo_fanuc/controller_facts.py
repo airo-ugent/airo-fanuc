@@ -6,9 +6,9 @@ Two kinds of constant live here, and neither is a property of the *arm*:
 * **Measured controller facts** — values whose true value was read off the physical
   controller, each carrying a ``MEASURED`` marker and the observation that produced
   it. They were transcribed from a hardware-in-the-loop probe run on 2026-07-06
-  (``confirmed=True``). One fact is still UNVERIFIED and keeps its safe default:
-  e-stop continuation path A, unprovable during the probe because the Stream Motion
-  status feed never came up.
+  (``confirmed=True``). Two keep a safe default for want of a measurement: e-stop
+  continuation path A, unprovable during the probe because the Stream Motion status
+  feed never came up, and the RMI→stream J3 conversion, read at a single J2 value.
 * **Driver tuning** — the brake scales, capture and servo windows, RX-silence ladder,
   anti-flap dwell and watchdog thresholds. Chosen against those measurements, but they
   are decisions rather than observations, and they carry across FANUC models unchanged.
@@ -75,10 +75,10 @@ class P1Facts:
 
     Each field carries the observation that produced it. ``confirmed`` is ``True``
     because these values are transcribed from a hardware probe (2026-07-06) rather
-    than guessed. The one UNVERIFIED fact (e-stop continuation path A) keeps its safe
-    default; code paths that would be unsafe under a wrong guess still assert on the
-    facts they depend on (e.g. the calibration loader hard-rejects RMI joints while
-    ``rmi_joints_identical_to_stream`` is False).
+    than guessed. The UNVERIFIED facts (e-stop continuation path A, the RMI→stream J3
+    conversion) keep their safe defaults; code paths that would be unsafe under a wrong
+    guess still assert on the facts they depend on (e.g. the calibration loader
+    hard-rejects RMI joints while ``rmi_to_stream_j3_plus_j2_verified`` is False).
     """
 
     confirmed: bool = True  # values transcribed from the 2026-07-06 hardware probe output
@@ -112,17 +112,17 @@ class P1Facts:
     sm_session_survives_estop: bool = False  # UNVERIFIED: not proven (stream never came up)
 
     # --- J2/J3 representation ---
-    # MEASURED 2026-07-30 (docs/controller-notes.md §1.5): the two interfaces do NOT agree.
-    # RMI omits the J2 coupling that Stream Motion carries, so RMI J3 = SM J3 − J2 and the
-    # RMI→stream conversion is `q_stream[2] = q_rmi[2] + q_rmi[1]` — the documented vendor
-    # default, in the vendor's sign, matched to 0.0001 deg (the RMI wire quantization
-    # itself; every other joint agreed to 0.000).
-    # Captured at ONE J2 value, so the conversion stays DISABLED pending a second: the
-    # coupling is linear in J2 and a single point cannot separate it from a fixed offset.
-    # While disabled, RMI-sourced joints are tagged rmi_unconverted and calibration
-    # HARD-REJECTS them, because applying a wrong conversion is a silent J2-sized FK error.
-    rmi_joints_identical_to_stream: bool = False  # MEASURED: not identical (RMI J3 = SM J3 − J2)
-    rmi_j3_plus_j2_conversion: bool = True  # MEASURED at one J2; awaiting a second before it is applied
+    # MEASURED 2026-07-30 (docs/controller-notes.md §1.5): the two planes do NOT agree.
+    # At the one pose read on both, RMI J3 = SM J3 − J2, matched to 0.0001 deg (the RMI wire
+    # quantization itself; every other joint agreed to 0.000), so the RMI→stream conversion
+    # is `q_stream[2] = q_rmi[2] + q_rmi[1]`.
+    # NOT MEASURED: the form of that offset. J2 was 2.595 deg at the one pose, where −J2 and a
+    # fixed −2.595 deg offset fit the data equally well; separating them needs a second pose at
+    # a materially different J2, with both planes read at one standstill.
+    # So the conversion stays DISABLED: RMI-sourced joints are tagged rmi_unconverted and
+    # calibration HARD-REJECTS them, because a wrong conversion is a silent J2-sized FK error.
+    rmi_to_stream_j3_plus_j2_measured: bool = True  # MEASURED at one J2 (RMI J3 = SM J3 − J2 there)
+    rmi_to_stream_j3_plus_j2_verified: bool = False  # NOT verified: one J2 only → conversion stays off
 
     # --- RMI angle read quantization ---
     # Calibration stillness gate is 0.1 deg/s; quantization budget ≤ 0.0067 deg/read.

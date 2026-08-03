@@ -136,7 +136,7 @@ Mitigation: flock ownership + operator-facing "kill <PID>" hint + documented wor
 | Fact | Value |
 |------|-------|
 | RMI joint-read command name + reply schema | **`FRC_ReadJointAngles`** → `{ErrorID, TimeTag:<int>, JointAngle:{J1..J9 deg}}`, 0.001° precision (see §1.7) |
-| Verdict: identical / RMI applies `J3 += J2` / other | **MEASURED 2026-07-30 — RMI omits the J2 coupling that Stream Motion carries.** `RMI J3 = SM J3 − J2`, so the RMI→stream conversion is `J3 += J2`, the documented vendor default and sign. |
+| Verdict: identical / RMI applies `J3 += J2` / other | **MEASURED 2026-07-30 — not identical: RMI reports J3 one J2 BELOW the Stream Motion value.** `RMI J3 = SM J3 − J2` at the measured pose, so the RMI→stream conversion is `J3 += J2`. |
 | Conversion formula | `q_stream[2] = q_rmi[2] + q_rmi[1]` |
 | ε achieved (deg) | **0.0001** — the RMI wire quantization itself (§1.7). Every other joint agreed to 0.000. |
 
@@ -154,19 +154,21 @@ RMI     92.678     2.595    -3.975   -45.464   -27.230   -11.037
 
 **Still open, and why it is not yet enough to enable the conversion:**
 
-1. **One pose, one J2 value** (2.595°). The offset equalling −J2 exactly is not plausibly a
-   coincidence, but a second pose with a materially different J2 makes it airtight.
-   `examples/check_joint_limits.py` prints the stream-frame value at its J3 extremes, so a
-   hand-guided run at another J2 confirms it for free.
+1. **One pose, one J2 value** (2.595°). At that J2, "−J2" and "a fixed −2.595° offset" fit the
+   data equally well, so only the offset's value at this pose is measured, not its form.
+   Settling it needs a second pose at a materially different J2, read the same way: BOTH planes
+   at one standstill pose inside a `FanucDriver` session, which no script in this repo does.
+   `examples/check_joint_limits.py` opens a connect-only RMI session and never reads the Stream
+   Motion plane, so it can only record the RMI J3/J2 pair at its J3 extremes.
 2. **Which plane matches the pendant** is unmeasured — this fixes the RMI↔stream
    relationship, not which one is "true J3". It does not matter for converting RMI into the
    stream frame (what the driver needs), but it does for anything trusting absolute J3.
 
 **Rule (unchanged until 1 is done):** RMI-sourced joints stay tagged `rmi_unconverted`;
 calibration **hard-rejects** them. The single conversion point is
-`FanucReceiveInterface._apply_rmi_joint_policy`, whose disabled `q[2] += q[1]` line is now
-confirmed correct in formula and sign — enable it together with the
-`rmi_joints_identical_to_stream` gate, not before.
+`FanucReceiveInterface._apply_rmi_joint_policy`, which only retags: the `q[2] += q[1]` line
+is not written there and has to be added together with the
+`rmi_to_stream_j3_plus_j2_verified` gate, not before.
 
 ### 1.6 RMI reads during manual motion
 

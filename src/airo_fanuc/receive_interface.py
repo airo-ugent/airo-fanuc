@@ -23,11 +23,11 @@ bad sample — "surface latent issues loudly"):
 
 * **J2/J3 source gate.** RMI-sourced joints are tagged
   :data:`SOURCE_RMI_UNCONVERTED` and calibration **HARD-REJECTS** them while
-  ``controller_facts.INTERIM_FACTS.rmi_joints_identical_to_stream`` is ``False``
-  (the vendor is known to apply ``J3 += J2`` on RMI reads — a wrong guess is a
-  silent J2-sized FK error). Once a hardware measurement proves identity and that
-  fact is flipped, :meth:`_apply_rmi_joint_policy` is the single per-model conversion
-  point. RMI and Stream Motion joints are never mixed in one dataset.
+  ``controller_facts.INTERIM_FACTS.rmi_to_stream_j3_plus_j2_verified`` is
+  ``False``: RMI reports J3 one J2 below the Stream Motion value, so reaching the
+  stream frame takes ``J3 += J2`` and skipping it is a silent J2-sized FK error.
+  :meth:`_apply_rmi_joint_policy` is the single per-model conversion point. RMI
+  and Stream Motion joints are never mixed in one dataset.
 
 Joint source
 ------------
@@ -37,10 +37,10 @@ joint-read transport — the gates above are testable without a controller, and 
 new transport cannot quietly bypass them. :class:`RmiClientJointReader` is the
 RMI-backed implementation — it reads ``FRC_ReadJointAngles`` off an
 :class:`~airo_fanuc.rmi_client.RmiClient` and tags every sample
-:data:`SOURCE_RMI_UNCONVERTED` (the vendor ``J3 += J2`` representation is
-unproven, so calibration HARD-REJECTS it until it is measured). The optional
-``rmi`` client passed here is used only for status polling (``get_status`` /
-``get_extended_status``), which the commands-only session already supports.
+:data:`SOURCE_RMI_UNCONVERTED` (it applies no J3 correction, so calibration
+HARD-REJECTS it). The optional ``rmi`` client passed here is used only for
+status polling (``get_status`` / ``get_extended_status``), which the
+commands-only session already supports.
 
 Dependency-light on purpose: stdlib ``logging`` / ``threading`` / ``time`` +
 numpy (LSQ).
@@ -79,8 +79,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger("airo_fanuc.receive")
 
-# Joint-source tags. RMI reads are UNCONVERTED (the J2/J3 representation is unproven
-# until measured on hardware); Stream Motion joints are the calibration-safe reference.
+# Joint-source tags. RMI reads are UNCONVERTED — RMI J3 sits one J2 below the Stream
+# Motion J3 and nothing corrects it; Stream Motion joints are the calibration reference.
 SOURCE_STREAM = "stream"
 SOURCE_RMI_UNCONVERTED = "rmi_unconverted"
 SOURCE_RMI_CONVERTED = "rmi_converted"
@@ -136,13 +136,13 @@ class RmiClientJointReader:
     with a monotonic wall-clock time (the same clock the cameras stamp grab time
     with) and tagged :data:`SOURCE_RMI_UNCONVERTED`.
 
-    The tag is load-bearing: the vendor applies ``J3 += J2`` on RMI reads
-    (``controller_facts.INTERIM_FACTS.rmi_j3_plus_j2_conversion``), so these
-    joints are HARD-rejected for calibration by
-    :meth:`FanucReceiveInterface._apply_source_policy` until a hardware
-    measurement flips ``rmi_joints_identical_to_stream``. This reader NEVER
-    converts — conversion is the single per-model job of
-    ``_apply_rmi_joint_policy``, downstream and gated on that fact.
+    The tag is load-bearing: RMI J3 is reported one J2 below the Stream Motion
+    value (``controller_facts.INTERIM_FACTS.rmi_to_stream_j3_plus_j2_measured``),
+    so these joints are HARD-rejected for calibration by
+    :meth:`FanucReceiveInterface._apply_source_policy` until a second J2 flips
+    ``rmi_to_stream_j3_plus_j2_verified``. This reader NEVER converts —
+    conversion is the single per-model job of ``_apply_rmi_joint_policy``,
+    downstream and gated on that fact.
 
     Per the :class:`JointReader` contract a transport blip / dead session
     surfaces as ``None`` (logged at DEBUG), not an exception, so the receive
@@ -427,8 +427,8 @@ class FanucReceiveInterface:
         Raises (never returns a bad sample):
 
         * :class:`CalibrationSourceError` — RMI joints while
-          ``rmi_joints_identical_to_stream`` is False (the J2/J3 hard-reject), or
-          an attempt to mix sources in one dataset.
+          ``rmi_to_stream_j3_plus_j2_verified`` is False (the J2/J3 hard-reject),
+          or an attempt to mix sources in one dataset.
         * :class:`CalibrationVelocityUnavailable` — velocity is ``None``.
         * :class:`CalibrationError` — no samples, robot still moving, or the
           pose is unchanged vs the previous accepted sample (frozen feed).
@@ -440,7 +440,7 @@ class FanucReceiveInterface:
         if newest is None:
             raise CalibrationError("no joint samples available to capture")
 
-        # Source policy: hard-reject rmi_unconverted until identity is proven.
+        # Source policy: hard-reject rmi_unconverted until the conversion is verified.
         accepted = self._apply_source_policy(newest)
 
         # Never mix joint representations within one calibration dataset.
@@ -493,36 +493,35 @@ class FanucReceiveInterface:
     def _apply_source_policy(self, sample: JointSample) -> JointSample:
         if sample.source != SOURCE_RMI_UNCONVERTED:
             return sample
-        if not self._facts.rmi_joints_identical_to_stream:
-            # HARD reject: the RMI J2/J3 representation is unproven. Using it now
-            # would inject a silent J2-sized FK error into the calibration.
+        if not self._facts.rmi_to_stream_j3_plus_j2_verified:
+            # HARD reject: RMI J3 = SM J3 − J2 is measured at one J2 only and the
+            # conversion is not applied, so calibrating off these joints would inject
+            # a silent J2-sized FK error.
             raise CalibrationSourceError(
                 "RMI-sourced joints are hard-rejected for calibration until "
-                "rmi_joints_identical_to_stream is proven on hardware (the vendor "
-                "applies J3+=J2 on RMI reads — a wrong guess is a silent J2-sized "
-                "FK error)",
+                "rmi_to_stream_j3_plus_j2_verified: RMI J3 is reported one J2 below "
+                "the Stream Motion J3 and this driver does not correct it — an "
+                "uncorrected capture is a silent J2-sized FK error",
                 source=sample.source,
-                fact="rmi_joints_identical_to_stream",
+                fact="rmi_to_stream_j3_plus_j2_verified",
             )
         return self._apply_rmi_joint_policy(sample)
 
     def _apply_rmi_joint_policy(self, sample: JointSample) -> JointSample:
-        """Convert RMI joints into the Stream Motion frame. SINGLE per-model point.
+        """Move RMI joints into the Stream Motion frame. SINGLE per-model point.
 
-        Reached ONLY once a hardware measurement has flipped
-        ``rmi_joints_identical_to_stream`` to True. "Identical to stream" means the
-        RMI reads already match the Stream Motion representation, so the default
-        policy is a pass-through (retag as :data:`SOURCE_RMI_CONVERTED` for
-        provenance). If the measurement instead reveals a residual coupling
-        (``rmi_j3_plus_j2_conversion``), THIS method is the one place to apply
-        ``q[2] += q[1]`` (J3 += J2) — and the measurement must confirm the exact
-        sign/formula before that line is enabled.
+        Reached ONLY when ``rmi_to_stream_j3_plus_j2_verified`` is True. The two
+        frames differ — RMI J3 = SM J3 − J2 — so the conversion is ``q[2] += q[1]``
+        and this method is the one place it belongs.
+
+        The body does NOT apply it: it only retags to
+        :data:`SOURCE_RMI_CONVERTED` for provenance. Pass-through is therefore the
+        WRONG policy, and flipping the gate on its own hands calibration joints
+        tagged converted that are still one J2 short in J3. Write the line and flip
+        the gate in one change, once a second J2 has confirmed the offset tracks J2
+        (``rmi_to_stream_j3_plus_j2_measured`` covers one J2 value).
         """
         q = np.asarray(sample.q_deg, dtype=np.float64).copy()
-        # NOTE: if a stream-vs-RMI sweep shows RMI J3 is reported WITHOUT the J2
-        # coupling that Stream Motion carries, enable the documented correction
-        # here (per INTERIM_FACTS.rmi_j3_plus_j2_conversion) — kept disabled
-        # until the sign/formula is measured, so identity == pass-through today.
         return replace(sample, q_deg=q, source=SOURCE_RMI_CONVERTED)
 
     # ------------------------------------------------------------------

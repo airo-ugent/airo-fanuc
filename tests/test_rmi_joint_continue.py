@@ -5,16 +5,18 @@ and FRC_Continue.
 Covers, against the real-socket :class:`~airo_fanuc.testing.FakeCRXController`
 RMI emulator (mirroring the ``test_rmi_client`` pattern):
 
-* :meth:`RmiClient.read_joint_angles` returns the controller joints, with the
-  vendor ``J3 += J2`` conversion visible in the reply (see
-  ``controller_facts.rmi_j3_plus_j2_conversion``);
+* :meth:`RmiClient.read_joint_angles` returns the controller joints in the RMI
+  frame, i.e. with J3 sitting one J2 below the Stream Motion value (see
+  ``controller_facts.rmi_to_stream_j3_plus_j2_measured``);
 * the emitted request bytes byte-match the committed RMI wire goldens;
 * :meth:`RmiClient.program_continue` succeeds on a paused program, tolerates
   2556938 ("TP Program is Not Paused.") as a no-op on an unpaused one, and still
   raises :class:`RmiError` on any other ErrorID;
 * :class:`RmiClientJointReader` tags samples :data:`SOURCE_RMI_UNCONVERTED` and
   the :class:`FanucReceiveInterface` calibration path HARD-REJECTS them — an
-  unconverted J3 would silently bias a calibration by the J2 angle.
+  unconverted J3 would silently bias a calibration by the J2 angle;
+* the RMI plane and the Stream Motion plane differ by exactly J2 in J3, in the
+  direction ``docs/controller-notes.md`` §1.5 measured.
 """
 
 from __future__ import annotations
@@ -35,13 +37,13 @@ from airo_fanuc.receive_interface import (
     RmiClientJointReader,
 )
 from airo_fanuc.rmi_client import RmiClient
-from airo_fanuc.testing import FakeCRXController
+from airo_fanuc.testing import FakeCRXController, wire
 from airo_fanuc.testing.fake_crx_rmi import ERR_INVALID_CONTROLLER_STATE, ERR_TP_NOT_PAUSED
 
 _GOLDENS_DIR = Path(__file__).resolve().parent / "goldens" / "rmi"
 
-# True plant joints (deg) chosen so J3 + J2 is unambiguous: J2=5, J3=30 →
-# reported J3=35, distinct from every other axis, so the +J2 offset is visible.
+# Plant joints (deg) — the Stream Motion frame — chosen so the RMI J3 is
+# unambiguous: J2=5, J3=30 → RMI J3=25, distinct from every other axis.
 _Q_TRUE = [10.0, 5.0, 30.0, 40.0, 50.0, 60.0]
 
 
@@ -98,11 +100,11 @@ class _RecordingRmiClient(RmiClient):
 
 
 # ---------------------------------------------------------------------------
-# read_joint_angles: values + the vendor J3 += J2 conversion
+# read_joint_angles: values, in the RMI frame (J3 one J2 below stream)
 # ---------------------------------------------------------------------------
 
 
-def test_read_joint_angles_returns_joints_with_j3_plus_j2() -> None:
+def test_read_joint_angles_returns_joints_with_j3_minus_j2() -> None:
     with FakeCRXController(initial_q_deg=_Q_TRUE) as c:
         with _client(c) as rmi:
             joints = rmi.read_joint_angles()
@@ -111,8 +113,8 @@ def test_read_joint_angles_returns_joints_with_j3_plus_j2() -> None:
     assert len(joints) == 9
     assert joints[0] == pytest.approx(10.0)
     assert joints[1] == pytest.approx(5.0)  # J2 unchanged
-    # J3 carries the vendor +J2 offset: 30 + 5 = 35 (NOT the true 30).
-    assert joints[2] == pytest.approx(35.0)
+    # J3 is reported one J2 below the stream value: 30 − 5 = 25.
+    assert joints[2] == pytest.approx(25.0)
     assert joints[2] != pytest.approx(30.0)
     assert joints[3:6] == pytest.approx([40.0, 50.0, 60.0])
     assert joints[6:] == pytest.approx([0.0, 0.0, 0.0])
@@ -124,7 +126,80 @@ def test_read_joint_angles_tracks_the_plant() -> None:
         with _client(c) as rmi:
             joints = rmi.read_joint_angles()
     assert joints[1] == pytest.approx(2.0)
-    assert joints[2] == pytest.approx(5.0)  # 3 + 2
+    assert joints[2] == pytest.approx(1.0)  # 3 − 2
+
+
+# ---------------------------------------------------------------------------
+# The two planes: J3 differs by exactly J2, in the measured direction
+# ---------------------------------------------------------------------------
+
+# The one pose read on both planes on hardware (docs/controller-notes.md §1.5),
+# transcribed as two independent rows.
+_SM_ROW_MEASURED = [92.678, 2.595, -1.380, -45.464, -27.230, -11.037]
+_RMI_ROW_MEASURED = [92.678, 2.595, -3.975, -45.464, -27.230, -11.037]
+
+# The Stream Motion status packet carries joint angles as float32.
+_SM_WIRE_TOL_DEG = 1e-4
+
+
+def _stream_plane_joints(c: FakeCRXController, cli: socket.socket) -> list[float]:
+    """The six joints the Stream Motion plane streams: handshake, tick, one status."""
+    addr = (c.sm.host, c.sm_port)
+    cli.sendto(wire.encode_stop_packet(), addr)
+    cli.sendto(wire.encode_get_capability_packet(), addr)
+    c.tick()
+    cap = wire.decode_capability_result_packet(cli.recvfrom(4096)[0])
+    assert cap is not None
+    cli.sendto(wire.encode_start_packet(version_no=cap.available_version), addr)
+    c.tick()
+    status = wire.decode_status_packet(cli.recvfrom(4096)[0])
+    assert status is not None
+    return [float(v) for v in status.joint_angle_deg[:6]]
+
+
+def test_rmi_plane_serves_the_stream_pose_with_j3_minus_j2() -> None:
+    """Both planes at one standstill pose: J3 differs by J2, nothing else differs.
+
+    The plant is parked at the Stream Motion row of the hardware observation, so the
+    RMI plane must serve that observation's RMI row. Every relation asserted after
+    that is derived from the two readings rather than transcribed, so an RMI plane
+    that offsets J3 the other way fails here, and so does one that offsets a joint
+    the hardware showed agreeing.
+    """
+    cli = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    cli.settimeout(1.0)
+    with FakeCRXController(initial_q_deg=_SM_ROW_MEASURED) as c:
+        try:
+            sm = _stream_plane_joints(c, cli)
+            with _client(c) as rmi:
+                rmi_j = rmi.read_joint_angles()
+        finally:
+            cli.close()
+
+    assert sm == pytest.approx(_SM_ROW_MEASURED, abs=_SM_WIRE_TOL_DEG)
+    assert rmi_j[:6] == pytest.approx(_RMI_ROW_MEASURED, abs=_SM_WIRE_TOL_DEG)
+    for j in (0, 1, 3, 4, 5):
+        assert rmi_j[j] == pytest.approx(sm[j], abs=_SM_WIRE_TOL_DEG)
+    assert sm[1] > 0.0  # J2 is positive at this pose...
+    assert rmi_j[2] < sm[2]  # ...so the RMI J3 sits BELOW the stream J3
+    # The conversion the driver owes: q[2] += q[1] reconstructs the stream frame
+    # from the RMI reply alone.
+    assert rmi_j[2] + rmi_j[1] == pytest.approx(sm[2], abs=_SM_WIRE_TOL_DEG)
+
+
+@pytest.mark.parametrize(("j2", "j3"), [(2.595, -1.380), (-45.0, 30.0)])
+def test_rmi_plane_j3_offset_follows_j2(j2: float, j3: float) -> None:
+    """The RMI J3 offset is −J2 at every J2, negative ones included.
+
+    This pins the relation the driver's conversion assumes, in the fake. Hardware has
+    it at one J2 (2.595°, §1.5), where −J2 and a fixed −2.595° offset are
+    indistinguishable; the second J2 is still owed.
+    """
+    with FakeCRXController(initial_q_deg=[10.0, j2, j3, 40.0, 50.0, 60.0]) as c:
+        with _client(c) as rmi:
+            rmi_j = rmi.read_joint_angles()
+    assert rmi_j[1] == pytest.approx(j2)
+    assert rmi_j[2] == pytest.approx(j3 - j2)
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +270,8 @@ def test_rmi_client_joint_reader_tags_unconverted() -> None:
     assert sample is not None
     assert sample.source == SOURCE_RMI_UNCONVERTED
     assert sample.t_wall_ns > 0
-    # J3 carries the +J2 offset the reader deliberately does NOT convert.
-    assert sample.q_deg[2] == pytest.approx(35.0)
+    # J3 is short by J2 — the correction the reader deliberately does NOT apply.
+    assert sample.q_deg[2] == pytest.approx(25.0)
 
 
 def test_receive_interface_hard_rejects_rmi_reader_sample() -> None:
@@ -213,7 +288,7 @@ def test_receive_interface_hard_rejects_rmi_reader_sample() -> None:
     with pytest.raises(CalibrationSourceError) as ei:
         ri.capture_calibration_sample()
     assert ei.value.source == SOURCE_RMI_UNCONVERTED
-    assert ei.value.fact == "rmi_joints_identical_to_stream"
+    assert ei.value.fact == "rmi_to_stream_j3_plus_j2_verified"
 
 
 def test_rmi_client_joint_reader_returns_none_on_dead_session() -> None:

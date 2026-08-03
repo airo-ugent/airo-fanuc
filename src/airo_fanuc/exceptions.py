@@ -145,14 +145,15 @@ class CalibrationError(FanucError):
 
 
 class CalibrationSourceError(CalibrationError):
-    """RMI-sourced joints were used for a calibration capture while the J2/J3
-    representation is not proven identical to Stream Motion.
+    """RMI-sourced joints were used for a calibration capture while the RMI→stream
+    J3 conversion is unverified.
 
     Carries the offending ``source`` tag and the name of the ``controller_facts``
-    field that gates the reject (``rmi_joints_identical_to_stream``). While that
-    fact is ``False`` a vendor J3+=J2 coupling would inject a silent J2-sized FK
-    error, so RMI joints are HARD-rejected. Also raised on an attempt to mix RMI
-    and Stream Motion joints in a single dataset ("never mix representations").
+    field that gates the reject (``rmi_to_stream_j3_plus_j2_verified``). While that
+    fact is ``False`` the uncorrected RMI J3 — reported one J2 below the Stream
+    Motion one — would inject a silent J2-sized FK error, so RMI joints are
+    HARD-rejected. Also raised on an attempt to mix RMI and Stream Motion joints in
+    a single dataset ("never mix representations").
     """
 
     def __init__(
