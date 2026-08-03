@@ -187,7 +187,7 @@ so a plain `uv sync` does *not* install pytest. Use `--extra dev`.
 ```bash
 git clone --recursive <repo-url> && cd airo-fanuc
 uv sync --extra dev            # compiles the extension (scikit-build-core + CMake)
-uv run pytest -q               # ~470 tests, all hardware-free
+uv run pytest -q               # ~475 tests, all hardware-free
 uv run ruff check src tests examples
 uv run ruff format --check src tests examples
 uv run mypy
@@ -227,7 +227,7 @@ defaults to ON:
 cmake -S . -B build/cpp -DAIRO_FANUC_BUILD_TESTS=ON \
       -DPython_EXECUTABLE="$(readlink -f .venv/bin/python)"
 cmake --build build/cpp -j
-ctest --test-dir build/cpp     # ~125 tests
+ctest --test-dir build/cpp     # ~120 tests
 ```
 
 The `Python_EXECUTABLE` hint is only there because this build also configures pybind11, which
