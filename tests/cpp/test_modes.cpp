@@ -342,3 +342,106 @@ TEST(Modes, TrajectoryQdEndBlendCompletes) {
   EXPECT_FALSE(velocity_stepped) << "qd_end blend ramps velocity to 0 (no step at trajectory end)";
   EXPECT_NE(tc.mode(), Mode::SAFE_FOLLOW);
 }
+
+// A SUBMITTED brake is a motion, not the universal preempt — `request_stop()` is that, and
+// it takes a different path in. So this branch is refused in the same states kServo and
+// kTrajectory are refused in, and the RX_SILENT case is the one that matters most: TX is
+// gated on `mode_ != RX_SILENT`, so accepting a brake there would resume transmitting from
+// the stale anchor the park exists to stop sending.
+TEST(Modes, SubmittedBrakeIsRefusedInTheRxSilentPark) {
+  RtCoreConfig cfg;
+  Vec6 q0{};
+  TickCore tc(cfg);
+  init_holding(tc, q0);
+
+  // Starve RX past rx_silent_park_ms so the core parks TX.
+  const int park_ticks = static_cast<int>(cfg.rx_silent_park_ms / (cfg.tick.itp_s * 1000.0)) + 4;
+  for (int i = 0; i < park_ticks; ++i) tc.tick(nullptr, nullptr);
+  ASSERT_EQ(tc.mode(), Mode::RX_SILENT);
+  const Command parked = tc.tick(nullptr, nullptr);
+  ASSERT_FALSE(parked.tx) << "precondition: the park must have TX off";
+
+  Target t{};
+  t.kind = TargetKind::kBrake;
+  t.epoch = tc.epoch();
+  t.motion_id = 4242;
+  const Command cmd = tc.tick(nullptr, &t);
+
+  EXPECT_EQ(tc.mode(), Mode::RX_SILENT) << "a submitted brake must not move the mode off the park";
+  EXPECT_FALSE(cmd.tx) << "and must not resume TX from the stale anchor";
+  EXPECT_EQ(tc.active_motion_status(), MotionStatus::REJECTED);
+  EXPECT_TRUE(drain_for(tc, EventType::kMotionRejected));
+}
+
+// Same gate, out of SAFE_FOLLOW: that state is left only by recover(), which carries the
+// anti-flap dwell with it.
+TEST(Modes, SubmittedBrakeIsRefusedWhileFaulted) {
+  RtCoreConfig cfg;
+  Vec6 q0{};
+  TickCore tc(cfg);
+  init_holding(tc, q0);
+
+  RxSample rx = clean_rx(q0);
+  rx.gates.contact_stop_active = true;
+  rx.contact_stop_status = 4;  // ESCP
+  tc.tick(&rx, nullptr);
+  ASSERT_EQ(tc.mode(), Mode::SAFE_FOLLOW);
+  ASSERT_EQ(tc.fault(), FaultReason::CONTACT_STOP);
+
+  Target t{};
+  t.kind = TargetKind::kBrake;
+  t.epoch = tc.epoch();
+  t.motion_id = 99;
+  RxSample rx2 = clean_rx(tc.q_cmd());
+  tc.tick(&rx2, &t);
+
+  EXPECT_EQ(tc.mode(), Mode::SAFE_FOLLOW) << "the brake must not escape SAFE_FOLLOW";
+  EXPECT_EQ(tc.fault(), FaultReason::CONTACT_STOP) << "and must not clear the fault";
+  EXPECT_EQ(tc.active_motion_status(), MotionStatus::REJECTED);
+}
+
+// The force guard is armed per-motion by a trajectory, with a threshold chosen for it. A
+// servo takeover resolves that trajectory, so the guard must not survive into the stream —
+// it would police a streamed setpoint against a number belonging to a finished motion.
+TEST(Modes, AServoTakeoverDisarmsTheTrajectorysForceGuard) {
+  RtCoreConfig cfg;
+  Vec6 q0{};
+  TickCore tc(cfg);
+  init_holding(tc, q0);
+
+  std::array<std::int64_t, 2> times{0, 2'000'000'000};
+  std::array<Vec6, 2> q{q0, Vec6{0.5, 0, 0, 0, 0, 0}};
+  std::array<Vec6, 2> qd{Vec6{}, Vec6{}};
+  Target traj{};
+  traj.kind = TargetKind::kTrajectory;
+  traj.epoch = tc.epoch();
+  traj.times_ns = times.data();
+  traj.q = q.data();
+  traj.qd = qd.data();
+  traj.n = 2;
+  traj.force_stop_n = 20.0;  // arms the guard
+  RxSample rx0 = clean_rx(q0);
+  tc.tick(&rx0, &traj);
+  for (int i = 0; i < 10; ++i) {
+    RxSample rx = clean_rx(tc.q_cmd());
+    tc.tick(&rx, nullptr);
+  }
+
+  // Preempt with a servo target, then present a wrench well past the trajectory's threshold.
+  Target sv{};
+  sv.kind = TargetKind::kServo;
+  sv.epoch = tc.epoch();
+  sv.servo_q = tc.q_cmd();
+  sv.servo_duration_s = 0.05;
+  RxSample rx1 = clean_rx(tc.q_cmd());
+  tc.tick(&rx1, &sv);
+  ASSERT_EQ(tc.mode(), Mode::SERVO);
+
+  RxSample hot = clean_rx(tc.q_cmd());
+  hot.wrench_valid = true;
+  hot.fx = 500.0;  // 25x the trajectory's 20 N
+  tc.tick(&hot, nullptr);
+
+  EXPECT_EQ(tc.mode(), Mode::SERVO) << "a disarmed guard must not trip the servo into a brake";
+  EXPECT_NE(tc.fault(), FaultReason::FORCE_GUARD);
+}

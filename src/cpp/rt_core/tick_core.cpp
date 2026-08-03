@@ -415,6 +415,23 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
       return r;
     }
     case TargetKind::kBrake: {
+      // Same gate as kServo and kTrajectory below, and for a sharper reason than either.
+      //
+      // A SUBMITTED brake is a motion like any other, not the universal preempt —
+      // `request_stop()` is that, it takes a different path into the core, and it stays
+      // reachable in every mode. So this branch may be refused without weakening the stop.
+      //
+      // It must be. Accepting it moves `mode_` off RX_SILENT, and TX is gated on exactly
+      // that (`streaming_ && mode_ != RX_SILENT`), so a brake submitted into the park would
+      // resume transmitting from the stale commanded anchor the park exists to stop sending.
+      // Out of SAFE_FOLLOW it would leave without `recover()` and without the anti-flap
+      // dwell, and while faulted it would fight the ramp the fault entry already seeded.
+      if (fault_ != FaultReason::NONE || mode_ == Mode::SAFE_FOLLOW || mode_ == Mode::RX_SILENT) {
+        active_motion_id_ = t.motion_id;
+        active_status_ = MotionStatus::REJECTED;
+        emit(EventType::kMotionRejected, fault_, 0, t.motion_id);
+        return r;
+      }
       resolve_active(MotionStatus::PREEMPTED);
       active_motion_id_ = t.motion_id;
       active_status_ = MotionStatus::RUNNING;
@@ -458,6 +475,14 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
       servo_last_dur_ = t.servo_duration_s;
       ticks_since_servo_set_ = 0;
       servo_held_ = false;
+      // Disarm the force guard the preempted motion armed. Only a trajectory arms it, with
+      // a threshold chosen for that trajectory, and a servo takeover resolves that
+      // trajectory — so leaving it armed would police a streamed setpoint against a number
+      // belonging to a motion that is over. kHold and kBrake clear it for the same reason;
+      // this branch is the one that did not, which made the guard outlive its motion only
+      // when the successor happened to be a servo. The deadman is mode-gated to TRAJECTORY
+      // and so was never exposed this way.
+      force_armed_ = false;
       active_motion_id_ = t.motion_id;
       active_status_ = MotionStatus::RUNNING;
       emit(EventType::kMotionRunning, FaultReason::NONE, 0, t.motion_id);
@@ -782,9 +807,9 @@ Vec6 TickCore::dispatch_mode() {
 // the one entry point
 // ---------------------------------------------------------------------------
 Command TickCore::tick(const RxSample* rx, const Target* pending, bool consume_superseded) {
-  // 0) This tick's number. Counted before anything can return, so every commanded state
-  // published carries the tick it was commanded on, and a caller's echoed plan_tick is
-  // comparable against it with no allowance for skipped work.
+  // 0) This tick's number. Counted before anything can return, so a tick that parks TX or
+  // returns early still advances it — which is what makes a stalled `cmd_tick` in the
+  // published snapshot mean the loop has stopped rather than merely gone quiet.
   ++tick_no_;
 
   // 1) Ingest RX or count silence.
