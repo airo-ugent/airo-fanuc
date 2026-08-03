@@ -18,9 +18,12 @@ keywords = ["fanuc", "crx", "stream-motion", "robot", "manipulator", "real-time"
 dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
-# pytest-timeout is required, not optional: 17 tests carry @pytest.mark.timeout
-# guards (incl. a self-deadlock guard) that silently do nothing without it.
-dev = ["pytest>=8", "pytest-timeout>=2.3", "mypy>=1.10", "ruff>=0.4"]
+# pytest-timeout is required, not optional: the deadlock-regression guards carry
+# @pytest.mark.timeout and silently do nothing without it.
+# ruff is pinned to a minor: CI gates on `ruff format --check`, and the formatter's
+# output is not stable across ruff minors, so an unpinned floor would make the gate
+# depend on whichever version the runner resolved.
+dev = ["pytest>=8", "pytest-timeout>=2.3", "mypy>=1.15", "ruff>=0.15,<0.16"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -59,6 +62,15 @@ target-version = "py310"
 # with examples/ on sys.path (it imports its sibling _common). Listing both keeps
 # import sorting from filing our own modules as third-party.
 src = ["src", "examples"]
+# vendor/ is the upstream FANUC driver (a submodule); build/ holds the CMake
+# FetchContent checkouts of pybind11 / ruckig / googletest. Neither is ours to lint
+# or reformat. extend-exclude rather than exclude: `exclude` REPLACES ruff's built-in
+# list (.venv, site-packages, dist, ...), and that built-in list does not contain
+# `build`, so both names are needed here regardless.
+extend-exclude = ["vendor", "build"]
+# Honour those excludes even when a path is passed explicitly, which is what an
+# editor integration and a pre-commit hook both do.
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
