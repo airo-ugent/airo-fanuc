@@ -33,6 +33,7 @@ from airo_fanuc import (
     FanucConnectionError,
     FanucDriver,
     FanucError,
+    Mode,
     MotionResult,
     RejectedStartMismatch,
     RobotFaultedError,
@@ -404,6 +405,38 @@ def test_servo_j_far_target_is_tracked_not_rejected(rig: DriverRig) -> None:
     time.sleep(0.3)
     assert handle.result() != MotionResult.REJECTED
     assert _cur_q0(rig.driver) > start + 0.01, "moved toward the far target"
+
+
+def test_hold_is_the_only_way_a_servo_stream_ends(rig: DriverRig) -> None:
+    """Both halves of the documented contract, because only the pair is the contract.
+
+    A servo stream has no terminal condition: stop feeding it and the core keeps holding
+    the last target in SERVO forever, which looks exactly like a settled arm from outside
+    (status flows, nothing faults) but is not steady and will not accept a trajectory
+    whose first knot assumes rest. ``hold()`` is the documented way out, so a caller that
+    trusted "it stops when I stop sending" would leave the arm in a mode nothing else
+    leaves.
+    """
+    start = _cur_q0(rig.driver)
+    rig.driver.servo_j([start + 0.04, 0, 0, 0, 0, 0], 0.1)
+    time.sleep(0.15)
+    assert Mode(int(rig.driver.get_state()["mode"])) == Mode.SERVO
+
+    # Feed nothing further. The stream does not end on its own.
+    assert not rig.driver.wait_until_steady(0.5), "an unfed servo stream must not settle itself"
+    assert Mode(int(rig.driver.get_state()["mode"])) == Mode.SERVO
+
+    rig.driver.hold()
+    assert rig.driver.wait_until_steady(3.0), "hold() ends the stream at rest"
+    assert Mode(int(rig.driver.get_state()["mode"])) == Mode.HOLD
+
+
+def test_hold_never_raises_when_already_at_rest(rig: DriverRig) -> None:
+    # Same shape as stop_j: callable in any state, including the one where it does nothing.
+    assert rig.driver.is_steady()
+    rig.driver.hold()
+    rig.driver.hold()
+    assert rig.driver.is_steady()
 
 
 def test_servo_j_bad_shape_raises(rig: DriverRig) -> None:

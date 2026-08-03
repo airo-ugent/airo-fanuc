@@ -445,3 +445,143 @@ TEST(Modes, AServoTakeoverDisarmsTheTrajectorysForceGuard) {
   EXPECT_EQ(tc.mode(), Mode::SERVO) << "a disarmed guard must not trip the servo into a brake";
   EXPECT_NE(tc.fault(), FaultReason::FORCE_GUARD);
 }
+
+// hold() is the documented way to end a servo stream: a stream never terminates itself,
+// so without this the core holds the last streamed target in SERVO indefinitely and never
+// reaches HOLD. It is a PREEMPT, not a stop — the distinction the caller sees is the
+// motion's terminal status, and it is the only difference from stop_j at this level.
+TEST(Modes, HoldEndsAServoStreamAsAPreempt) {
+  RtCoreConfig cfg;
+  Vec6 q0{};
+  TickCore tc(cfg);
+  init_holding(tc, q0);
+
+  Target sv{};
+  sv.kind = TargetKind::kServo;
+  sv.epoch = tc.epoch();
+  sv.servo_q = Vec6{0.05, 0, 0, 0, 0, 0};
+  sv.servo_duration_s = 0.1;
+  sv.motion_id = 77;
+  { RxSample rx = clean_rx(q0); tc.tick(&rx, &sv); }
+  ASSERT_EQ(tc.mode(), Mode::SERVO);
+  drain_for(tc, EventType::kMotionDone);  // clear the queue
+
+  tc.request_hold();
+  bool preempted = false;
+  for (int i = 0; i < 400; ++i) {
+    RxSample rx = clean_rx(tc.q_cmd(), tc.qd_cmd());
+    tc.tick(&rx, nullptr);
+    if (drain_for(tc, EventType::kMotionPreempted)) preempted = true;
+    if (tc.mode() == Mode::HOLD) break;
+  }
+  EXPECT_TRUE(preempted) << "hold() resolves the stream's target PREEMPTED, not STOPPED";
+  EXPECT_EQ(tc.mode(), Mode::HOLD) << "the stream ends at rest";
+  EXPECT_EQ(tc.epoch(), sv.epoch) << "hold() does NOT bump epoch (clean preempt)";
+}
+
+// The one mode hold() must leave alone. A submitted brake IS the tracked motion, so
+// answering a hold there would resolve it a second time and re-seed the deceleration —
+// restarting its duration cap and recomputing the decel from an already-decayed velocity.
+// Both are silent, because the arm still reaches rest either way; the caller sees it only
+// as a motion that reported twice, or reported PREEMPTED for a brake nothing preempted.
+TEST(Modes, HoldLeavesABrakeAlreadyHeadingToRestAlone) {
+  RtCoreConfig cfg;
+  Vec6 q0{};
+  TickCore tc(cfg);
+  init_holding(tc, q0);
+
+  // Build real velocity first: a brake seeded from rest is over in one tick and would not
+  // stay in BRAKE long enough for the hold to land on it.
+  std::array<std::int64_t, 2> times{0, 2'000'000'000};
+  std::array<Vec6, 2> q{q0, Vec6{0.5, 0, 0, 0, 0, 0}};
+  std::array<Vec6, 2> qd{Vec6{}, Vec6{}};
+  Target traj{};
+  traj.kind = TargetKind::kTrajectory;
+  traj.epoch = tc.epoch();
+  traj.times_ns = times.data();
+  traj.q = q.data();
+  traj.qd = qd.data();
+  traj.n = 2;
+  traj.motion_id = 11;
+  { RxSample rx = clean_rx(q0); tc.tick(&rx, &traj); }
+  for (int i = 0; i < 40; ++i) {
+    RxSample rx = clean_rx(tc.q_cmd(), tc.qd_cmd());
+    tc.tick(&rx, nullptr);
+  }
+  ASSERT_EQ(tc.mode(), Mode::TRAJECTORY);
+
+  Target brake{};
+  brake.kind = TargetKind::kBrake;
+  brake.epoch = tc.epoch();
+  brake.motion_id = 22;
+  { RxSample rx = clean_rx(tc.q_cmd(), tc.qd_cmd()); tc.tick(&rx, &brake); }
+  ASSERT_EQ(tc.mode(), Mode::BRAKE);
+  ASSERT_EQ(tc.active_motion_id(), 22u);
+  { Event e{}; while (tc.pop_event(e)) {} }
+
+  tc.request_hold();
+  { RxSample rx = clean_rx(tc.q_cmd(), tc.qd_cmd()); tc.tick(&rx, nullptr); }
+  EXPECT_EQ(tc.mode(), Mode::BRAKE) << "the brake keeps its own profile";
+  EXPECT_EQ(tc.active_motion_status(), MotionStatus::RUNNING) << "and is not resolved early";
+  EXPECT_FALSE(drain_for(tc, EventType::kMotionPreempted));
+
+  // It still resolves exactly once, on its own terms, when it reaches rest.
+  int terminals = 0;
+  for (int i = 0; i < 400; ++i) {
+    RxSample rx = clean_rx(tc.q_cmd(), tc.qd_cmd());
+    tc.tick(&rx, nullptr);
+    Event e{};
+    while (tc.pop_event(e)) {
+      if (e.motion_id == 22u && e.type != EventType::kMotionRunning) ++terminals;
+    }
+    if (tc.mode() == Mode::HOLD) break;
+  }
+  EXPECT_EQ(tc.mode(), Mode::HOLD);
+  EXPECT_EQ(terminals, 1) << "one submitted brake, one terminal event";
+}
+
+// A trajectory whose commanded timeline finishes but whose MEASURED joints never arrive.
+// The settle detector's timeout is the only thing that ends such a motion: without it the
+// motion stays RUNNING forever and every caller blocked in wait() blocks forever. The
+// distinct terminal status is what tells the caller the path was commanded but the arm
+// did not confirm it — reporting DONE here would be a lie, and FAULTED would be wrong
+// because nothing in the core failed.
+TEST(Modes, SettleTimeoutEndsAMotionTheArmNeverConfirms) {
+  RtCoreConfig cfg;
+  Vec6 q0{};
+  TickCore tc(cfg);
+  init_holding(tc, q0);
+
+  std::array<std::int64_t, 2> times{0, 200'000'000};
+  std::array<Vec6, 2> q{q0, Vec6{0.05, 0, 0, 0, 0, 0}};
+  std::array<Vec6, 2> qd{Vec6{}, Vec6{}};
+  Target t{};
+  t.kind = TargetKind::kTrajectory;
+  t.epoch = tc.epoch();
+  t.times_ns = times.data();
+  t.q = q.data();
+  t.qd = qd.data();
+  t.n = 2;
+  t.motion_id = 55;
+  { RxSample rx = clean_rx(q0); tc.tick(&rx, &t); }
+
+  // The measured feed lags the command by more than settle_tol_rad and stays there —
+  // the shape of a servo that never closes the gap, and indistinguishable from a frozen
+  // feed. qd_est reads zero throughout, so only the POSITION term withholds convergence.
+  const Vec6 lag{cfg.tick.settle_tol_rad * 10.0, 0, 0, 0, 0, 0};
+  bool timed_out = false;
+  const int ticks = static_cast<int>(cfg.tick.settle_timeout_s / cfg.tick.itp_s) + 400;
+  for (int i = 0; i < ticks; ++i) {
+    Vec6 q_meas = tc.q_cmd();
+    for (std::size_t j = 0; j < kNumJoints; ++j) q_meas[j] -= lag[j];
+    RxSample rx = clean_rx(q_meas);
+    tc.tick(&rx, nullptr);
+    if (drain_for(tc, EventType::kMotionSettleTimeout)) {
+      timed_out = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(timed_out) << "a motion the arm never confirms must still resolve";
+  EXPECT_EQ(tc.active_motion_status(), MotionStatus::SETTLE_TIMEOUT);
+  EXPECT_EQ(tc.fault(), FaultReason::NONE) << "an unconfirmed arrival is not a fault";
+}

@@ -24,73 +24,16 @@ endforeach()
 target_compile_options(test_hermite PRIVATE -ffp-contract=off)
 
 # ---------------------------------------------------------------------------
-# RT core unit + loopback tests. Each links the `rt_core` static lib (TickCore
-# + RealtimeCore + Pll) and gtest_main. test_pll/test_epoch/test_modes/
-# test_tick_core exercise the PURE TickCore + Pll; test_rt_loopback drives the
-# full RealtimeCore over UDP loopback.
+# Everything that links the `rt_core` static lib (TickCore + RealtimeCore + Pll)
+# and gtest_main. Most drive the PURE TickCore; test_rt_loopback and
+# test_rx_finiteness drive the full RealtimeCore over UDP loopback. Each file's
+# own header comment says what it covers and why — restating it here would be a
+# second copy that only this list can make stale.
 # ---------------------------------------------------------------------------
-foreach(_t pll tick_core epoch modes rt_loopback)
+foreach(_t pll tick_core epoch modes rt_loopback seqlock
+         gate_autonomy traj_brake_continuity big_anchor bump_table
+         stop_precedence rx_finiteness latch_and_handles motion_profile capture_seam)
   add_executable(test_${_t} test_${_t}.cpp)
   target_link_libraries(test_${_t} PRIVATE rt_core GTest::gtest_main)
   gtest_discover_tests(test_${_t})
 endforeach()
-
-# ---------------------------------------------------------------------------
-# Additional goldens (gate autonomy, TRAJECTORY→BRAKE qdd-seed continuity,
-# big-anchor int64 timestamps, epoch bump-table completeness). Same rt_core link
-# surface as the tests above.
-# ---------------------------------------------------------------------------
-foreach(_t gate_autonomy traj_brake_continuity big_anchor bump_table)
-  add_executable(test_${_t} test_${_t}.cpp)
-  target_link_libraries(test_${_t} PRIVATE rt_core GTest::gtest_main)
-  gtest_discover_tests(test_${_t})
-endforeach()
-
-# ---------------------------------------------------------------------------
-# Same-tick STOP precedence: a stop_j drained in a tick outranks a
-# trajectory/servo consumed in the SAME tick, so a preempt can never be lost to a
-# submission that landed in the same ITP window. Same rt_core link.
-# ---------------------------------------------------------------------------
-add_executable(test_stop_precedence test_stop_precedence.cpp)
-target_link_libraries(test_stop_precedence PRIVATE rt_core GTest::gtest_main)
-gtest_discover_tests(test_stop_precedence)
-
-# ---------------------------------------------------------------------------
-# Ingest finiteness gate: a status packet carrying a non-finite wire float is
-# dropped at ingest, so no NaN reaches the clamps and thresholds that cannot
-# reject one. Drives the full RealtimeCore over UDP loopback, like
-# test_rt_loopback, against a peer that poisons individual fields.
-# ---------------------------------------------------------------------------
-add_executable(test_rx_finiteness test_rx_finiteness.cpp)
-target_link_libraries(test_rx_finiteness PRIVATE rt_core GTest::gtest_main)
-gtest_discover_tests(test_rx_finiteness)
-
-# ---------------------------------------------------------------------------
-# Exactly-once tick-core invariants: one SUPERVISOR_LOST fault per heartbeat
-# lapse, a stop_j answered in BRAKE, and a terminal event for every motion that
-# consume displaces from the single active-motion slot.
-# ---------------------------------------------------------------------------
-add_executable(test_latch_and_handles test_latch_and_handles.cpp)
-target_link_libraries(test_latch_and_handles PRIVATE rt_core GTest::gtest_main)
-gtest_discover_tests(test_latch_and_handles)
-
-# ---------------------------------------------------------------------------
-# Commanded-position PROFILES across the CAPTURE splice head, the SAFE_FOLLOW fault
-# ramp head, the qd_end blend handoff and the RX_SILENT park exit. These assert the
-# SEQUENCE of commanded positions rather than any single state, because each defect
-# they cover is "one tick commanded the pose it had already commanded" — invisible in
-# every scalar the snapshot exposes. Same rt_core link surface as the tests above.
-# ---------------------------------------------------------------------------
-add_executable(test_motion_profile test_motion_profile.cpp)
-target_link_libraries(test_motion_profile PRIVATE rt_core GTest::gtest_main)
-gtest_discover_tests(test_motion_profile)
-
-# ---------------------------------------------------------------------------
-# The CAPTURE -> TRAJECTORY seam: the splice's sub-tick terminal residue, and the
-# commanded travel the handoff tick carries at every grid phase. Asserts the position
-# SEQUENCE, because the wire carries positions and the controller differentiates them.
-# Links rt_core (which carries tick_engine) like the tests above.
-# ---------------------------------------------------------------------------
-add_executable(test_capture_seam test_capture_seam.cpp)
-target_link_libraries(test_capture_seam PRIVATE rt_core GTest::gtest_main)
-gtest_discover_tests(test_capture_seam)

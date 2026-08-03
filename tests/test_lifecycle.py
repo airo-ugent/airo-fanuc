@@ -102,40 +102,67 @@ def test_to_rt_core_config_maps_protocol_and_hygiene() -> None:
     assert rc.mlock is True
 
 
-def test_the_gate_that_executes_uses_the_constants_the_refusal_is_written_in() -> None:
-    """``move_trajectory`` refuses a submission against the ``controller_facts`` capture
-    window and splice envelope, so the core has to gate on the same two numbers.
+#: Every ``controller_facts`` value the mirror below carries into the core, paired with
+#: the ``RtCoreConfig`` attribute that must receive it and the conversion in between.
+#: The perturbed value matters: each C++ default is bit-identical to the Python constant
+#: it mirrors — deliberately, so the two agree — which means asserting the shipped value
+#: proves nothing. A test that reads the default back cannot tell a populated field from
+#: an omitted one, and omitting one is exactly the defect this guards.
+_MIRRORED_FACTS: list[tuple[str, str, float, float]] = [
+    # (controller_facts name, RtCoreConfig attribute, perturbed input, expected output)
+    ("CAPTURE_RATE_DEG_S", "capture_rate_rad_s", 11.0, math.radians(11.0)),
+    ("CAPTURE_TOL_DEG", "capture_tol_rad", 3.0, math.radians(3.0)),
+    # One constant, both uses: the SAFE_FOLLOW re-anchor envelope IS the capture pair,
+    # so tightening the splice has to tighten the re-anchor with it.
+    ("CAPTURE_RATE_DEG_S", "safe_follow_rate_rad_s", 11.0, math.radians(11.0)),
+    ("CAPTURE_TOL_DEG", "safe_follow_deadband_rad", 3.0, math.radians(3.0)),
+    ("RX_SILENCE_BLIND_HOLD_MS", "rx_silence_blind_hold_ms", 137.0, 137.0),
+    ("RX_SILENCE_QD_RAMP_MS", "rx_silence_qd_ramp_ms", 41.0, 41.0),
+    ("RX_SILENT_PARK_MS", "rx_silent_park_ms", 611.0, 611.0),
+    ("ANTIFLAP_DWELL_MS", "antiflap_dwell_ms", 733.0, 733.0),
+    ("SERVO_LIMIT_SCALE", "servo_limit_scale", 0.75, 0.75),
+    ("QD_END_BLEND_MIN_MS", "qd_end_blend_min_s", 31.0, 0.031),
+]
 
-    Left as C++-only defaults these were a second, independently editable copy: editing
-    ``controller_facts`` moved the refusal and the error text but not the gate, and
-    "the checked path IS the executed path" stopped holding for them without anything
-    failing. ``float(np.deg2rad(...))`` here mirrors how ``driver.py`` builds the
-    threshold, because a refusal decided by a different bit pattern than the gate is the
-    same bug in miniature.
-    """
-    rc = DriverConfig(profile=TEST_PROFILE).to_rt_core_config()
-    assert rc.capture_rate_rad_s == float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
-    assert rc.capture_tol_rad == float(np.deg2rad(cf.CAPTURE_TOL_DEG))
 
-
-def test_mirrored_watchdog_windows_are_populated_from_controller_facts() -> None:
+@pytest.mark.parametrize(("fact", "attr", "given", "want"), _MIRRORED_FACTS)
+def test_a_controller_fact_reaches_the_core_that_enforces_it(
+    monkeypatch: pytest.MonkeyPatch, fact: str, attr: str, given: float, want: float
+) -> None:
     """Every window ``controller_facts`` claims to single-source must actually be sent.
 
-    The C++ defaults agree with these values, which is exactly why omitting them was
-    invisible — the mirror comments in ``rt_core_config.hpp`` name a Python symbol that
-    was not in fact reaching the core.
+    Two of these decide whether a submission is refused: ``move_trajectory`` computes its
+    capture refusal from ``controller_facts`` while the core gates on ``RtCoreConfig``, so
+    a fact that stops arriving splits the refusal from the gate and "the checked path IS
+    the executed path" quietly stops holding for it. The mirror comments in
+    ``rt_core_config.hpp`` name the Python symbol each field expects; this is what makes
+    that claim true rather than aspirational.
     """
+    monkeypatch.setattr(cf, fact, given)
     rc = DriverConfig(profile=TEST_PROFILE).to_rt_core_config()
-    assert rc.rx_silence_blind_hold_ms == cf.RX_SILENCE_BLIND_HOLD_MS
-    assert rc.rx_silence_qd_ramp_ms == cf.RX_SILENCE_QD_RAMP_MS
-    assert rc.rx_silent_park_ms == cf.RX_SILENT_PARK_MS
-    assert rc.antiflap_dwell_ms == cf.ANTIFLAP_DWELL_MS
-    assert rc.servo_limit_scale == cf.SERVO_LIMIT_SCALE
-    assert rc.qd_end_blend_min_s == cf.QD_END_BLEND_MIN_MS / 1000.0
-    # The SAFE_FOLLOW envelope is the capture pair, which is what ``controller_facts``
-    # says: one constant, both uses, so tightening the splice tightens the re-anchor.
-    assert rc.safe_follow_rate_rad_s == float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
-    assert rc.safe_follow_deadband_rad == float(np.deg2rad(cf.CAPTURE_TOL_DEG))
+    assert getattr(rc, attr) == pytest.approx(want, abs=0.0, rel=1e-15)
+
+
+def test_the_mirror_covers_every_fact_the_core_reads() -> None:
+    """A fact added to ``to_rt_core_config`` without a row above is an unguarded mirror.
+
+    Enumerated from the source rather than from a hand-kept list, because the failure
+    mode is a NEW assignment nobody added a row for — which a list of names cannot
+    notice.
+    """
+    import inspect
+
+    body = inspect.getsource(DriverConfig.to_rt_core_config)
+    covered = {fact for fact, _attr, _given, _want in _MIRRORED_FACTS}
+    referenced = {
+        line.split("cf.")[1].split(")")[0].split(" ")[0].strip().rstrip(",)")
+        for line in body.splitlines()
+        if "cf." in line and "=" in line
+    }
+    # ``rc.<attr> = <profile/self value>`` lines carry no ``cf.``, so what is left here is
+    # exactly the controller_facts-sourced set.
+    unmirrored = referenced - covered
+    assert unmirrored == set(), f"unmirrored controller_facts in to_rt_core_config: {unmirrored}"
 
 
 def test_stream_rate_is_derived_from_the_interpolation_period() -> None:
