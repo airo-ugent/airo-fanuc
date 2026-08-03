@@ -165,11 +165,16 @@ so a plain `uv sync` does *not* install pytest. Use `--extra dev`.
 ```bash
 git clone --recursive <repo-url> && cd airo-fanuc
 uv sync --extra dev            # compiles the C++17 extension (scikit-build-core + CMake)
-uv run pytest -q               # 328 tests, all hardware-free
-uvx ruff check src tests
+uv run pytest -q               # ~470 tests, all hardware-free
+uv run ruff check src tests examples
+uv run ruff format --check src tests examples
 uv run mypy
 uv run python examples/move_joints.py --fake   # zero-hardware end-to-end smoke
 ```
+
+Those five are exactly what CI gates on, with the same arguments — `uv run ruff` rather
+than `uvx ruff` on purpose, so the version is the one pinned in the `dev` extra and the
+config in `pyproject.toml` (which excludes `vendor/`) applies.
 
 `--recursive` is not optional: `vendor/fanuc_driver` is a **build dependency**, and CMake fails
 at configure time with an explicit `git submodule update --init vendor/fanuc_driver` message
@@ -200,7 +205,7 @@ defaults to ON:
 cmake -S . -B build/cpp -DAIRO_FANUC_BUILD_TESTS=ON \
       -DPython_EXECUTABLE="$(readlink -f .venv/bin/python)"
 cmake --build build/cpp -j
-ctest --test-dir build/cpp     # 95 tests
+ctest --test-dir build/cpp     # ~125 tests
 ```
 
 The `Python_EXECUTABLE` hint is only there because this build also configures pybind11, which
@@ -279,7 +284,12 @@ Before running against a real robot:
   enforces single ownership with an advisory `flock` (`src/airo_fanuc/ownership.py`) and fails
   loudly with `OwnershipError` naming the holder rather than racing it.
 - **`GRIPDISP` on controller flash** if you want the gripper; otherwise
-  `DriverPolicy(enable_gripper=False)`.
+  `DriverPolicy(enable_gripper=False)`. With the gripper enabled, leave
+  `connect_retries` at its default of 3 — observed twice, the bring-up attempt that
+  RUN-forks the dispatcher times out waiting for `motion_possible`, and the next
+  attempt succeeds because it adopts the now-running fork and has only the
+  `FRC_Call(STREAM_MOTN)` left to do. A single-attempt gripper bring-up fails every
+  time; a no-gripper session forks nothing and reaches streaming on attempt 1.
 
 Two binding behaviours worth reading before an operator is at the pendant. An E-stop, a latched
 controller alarm or an OPERATOR_REQUIRED (SYST-348) condition sets `MOTION_INHIBITED` the moment
