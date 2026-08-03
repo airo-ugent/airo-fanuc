@@ -168,7 +168,17 @@ void TickCore::enter_fault(FaultReason cause, BumpReason bump, MotionStatus moti
   // known in closed form without needing a fresh measurement to plan against.
   qd_blend_.plan(q_cmd_, qd_cmd_, cfg_.rx_silence_qd_ramp_ms / 1000.0, itp());
   follow_phase_ = FollowPhase::kRamp;
-  tau_follow_ns_ = 0;
+  // Start the ramp ONE tick in, not at tau=0, for the reason install_trajectory states
+  // for the trajectory side. The blend's tau=0 sample is (q_end, qd_end), and q_end is
+  // q_cmd_ — the position already commanded last tick — so sampling it re-sends that
+  // position and steps the commanded velocity to 0 for one tick before the ramp begins.
+  // That step is |qd_cmd|/itp of commanded acceleration, the largest on any stop path
+  // (6250 deg/s^2 entering at 50 deg/s, against a 96 deg/s^2 brake clamp), and as a
+  // setpoint step it is one whole tick of travel, which the contact-stop monitor reads
+  // as disturbance torque. Sampling at tau=itp continues from the commanded velocity.
+  // The coast distance is UNCHANGED — the ramp spans the same T and ends on the same
+  // sample — and it reaches kReanchor one tick sooner.
+  tau_follow_ns_ = static_cast<std::int64_t>(std::llround(itp() * 1e9));
   mode_ = Mode::SAFE_FOLLOW;
   recover_pending_ = false;
   all_clear_ticks_ = 0;
@@ -511,7 +521,15 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
       force_armed_ = (t.force_stop_n > 0.0);
       force_stop_n_ = t.force_stop_n;
       mode_ = Mode::CAPTURE;
-      capture_idx_ = 0;
+      // Playback starts at knot 1. Knot 0 IS the anchor (q_cmd, qd_cmd) the generator
+      // was seeded with — the position already commanded last tick — so dispatching it
+      // re-sends that position and steps the commanded velocity to 0 for one tick
+      // whenever qd_cmd != 0. Same off-by-one, same reasoning, as install_trajectory's
+      // tau = itp start. `count >= 2` whenever `ok()`, which is checked above:
+      // CapturePath::finished is only ever set inside the generator's loop at k >= 1.
+      // Knot 0 keeps its role as the anchor that the brake seed and the Python
+      // collision check read; it is simply no longer re-commanded.
+      capture_idx_ = 1;
       active_motion_id_ = t.motion_id;
       active_status_ = MotionStatus::RUNNING;
       emit(EventType::kMotionRunning, FaultReason::NONE, 0, t.motion_id);
@@ -556,7 +574,19 @@ Vec6 TickCore::dispatch_trajectory() {
       if (max_abs(qd_end_wire_) > cfg_.tick.settle_vel_eps_rad_s) {
         qd_blend_.plan(sampler_.q_last(), qd_end_wire_, cfg_.tick.qd_end_blend_min_s, itp());
         traj_phase_ = TrajPhase::kEndBlend;
-        tau_blend_ns_ = 0;
+        // Start the blend at the amount by which tau OVERSHOT the trajectory end, not at
+        // 0. traj_end_tau_ns_ is duration/speed_scale and so is generally NOT a whole
+        // number of ticks, while tau advances in whole ticks: the last playing tick
+        // therefore sampled strictly before the end, covering only a FRACTION of a
+        // tick's travel, and starting the blend at tau=0 re-commands q_last on top of
+        // that. Together they under-step the commanded velocity by a grid-phase-
+        // dependent amount, up to a whole tick. `tau_ns_ - traj_end_tau_ns_` lies in
+        // [0, itp) here, and starting there makes the handoff exactly one tick of travel
+        // at every phase: the residue the trajectory did not cover is covered by the
+        // blend instead. A tick-aligned duration gives residue 0, which is the correct
+        // answer in that case — the last playing tick was then a full tick short of the
+        // end, so tau=0 already lands one tick on.
+        tau_blend_ns_ = tau_ns_ - traj_end_tau_ns_;
       } else {
         traj_phase_ = TrajPhase::kSettling;
         q_hold_ = sampler_.q_last();
@@ -654,8 +684,14 @@ Vec6 TickCore::dispatch_safe_follow() {
   // re-anchor does not chatter against ordinary tracking error.
   qd_cmd_ = Vec6{};
   qdd_cmd_ = Vec6{};
-  if (!have_meas_) {
-    return q_cmd_;  // no fresh measured (e.g. RX degraded) → hold
+  if (!have_meas_ || ticks_since_rx_ != 0) {
+    // No FRESH measured pose → hold. have_meas_ alone does not mean fresh: it latches
+    // true on the first packet and is never cleared, so on its own this guard never
+    // fires, and the re-anchor spends an entire RX gap walking the commanded pose toward
+    // a measurement taken BEFORE the gap — commanded motion toward where the arm no
+    // longer is, in whichever direction the pre-gap sample happens to lie.
+    // ticks_since_rx_ is the age this needs, and it is already maintained per tick.
+    return q_cmd_;
   }
   const double drift = max_abs_diff(q_cmd_, q_meas_);
   if (drift < cfg_.safe_follow_deadband_rad) {
@@ -675,11 +711,19 @@ Vec6 TickCore::dispatch_mode() {
   switch (mode_) {
     case Mode::STREAM_DOWN:
     case Mode::PREROLL:
+    // RX_SILENT is a TX-OFF park, exactly like the two above, so it belongs with them:
+    // the anchor tracks the measured pose instead of freezing where the stream died.
+    // Nothing is transmitted in this mode (cmd.tx is false), so this commands no motion
+    // whatsoever. What it buys is the EXIT: begin_streaming is the only other place
+    // q_cmd_ is re-seeded from q_meas, and it runs once per core lifetime, so without
+    // this the dwell hands over to HOLD still holding a pre-silence anchor and the first
+    // transmitted position steps to it — delivered, through the slew clip, as a ramp at
+    // slew_factor x v_lim with no acceleration or jerk shaping at all.
+    case Mode::RX_SILENT:
       qd_cmd_ = Vec6{};
       qdd_cmd_ = Vec6{};
       return have_meas_ ? q_meas_ : q_cmd_;
     case Mode::HOLD:
-    case Mode::RX_SILENT:
       qd_cmd_ = Vec6{};
       qdd_cmd_ = Vec6{};
       return q_cmd_;
@@ -795,6 +839,19 @@ Command TickCore::tick(const RxSample* rx, const Target* pending, bool consume_s
         // ticks_since_heartbeat_ is deliberately NOT reset, so that case re-faults on the
         // next tick rather than buying another supervisor_lost_s of unwatched streaming.
         supervisor_lost_latched_ = false;
+        // Leaving the RX_SILENT park un-parks TX, so the anchor must EQUAL the measured
+        // pose on the tick that does it. The dispatch above has been walking it there
+        // for the whole dwell, but the slew clip bounds that walk to
+        // slew_factor x v_lim x itp per tick, so a drift larger than the dwell can cover
+        // would still hand over short. Seed it outright, the way begin_streaming does —
+        // legitimate here because TX is still off on this tick, so the assignment moves
+        // no arm. `rx_ok` above already required ticks_since_rx_ == 0 in this mode, so
+        // q_meas_ is this tick's measurement. SAFE_FOLLOW recoveries are untouched: they
+        // have their own bounded re-anchor phase.
+        if (mode_ == Mode::RX_SILENT && have_meas_) {
+          q_cmd_ = q_meas_;
+          slew_.reset(q_meas_);
+        }
         go_hold();
         emit(EventType::kRecoveryComplete);
       }

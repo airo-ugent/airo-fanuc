@@ -73,3 +73,14 @@ gtest_discover_tests(test_rx_finiteness)
 add_executable(test_latch_and_handles test_latch_and_handles.cpp)
 target_link_libraries(test_latch_and_handles PRIVATE rt_core GTest::gtest_main)
 gtest_discover_tests(test_latch_and_handles)
+
+# ---------------------------------------------------------------------------
+# Commanded-position PROFILES across the CAPTURE splice head, the SAFE_FOLLOW fault
+# ramp head, the qd_end blend handoff and the RX_SILENT park exit. These assert the
+# SEQUENCE of commanded positions rather than any single state, because each defect
+# they cover is "one tick commanded the pose it had already commanded" — invisible in
+# every scalar the snapshot exposes. Same rt_core link surface as the tests above.
+# ---------------------------------------------------------------------------
+add_executable(test_motion_profile test_motion_profile.cpp)
+target_link_libraries(test_motion_profile PRIVATE rt_core GTest::gtest_main)
+gtest_discover_tests(test_motion_profile)
