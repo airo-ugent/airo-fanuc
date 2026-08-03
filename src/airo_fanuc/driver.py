@@ -772,7 +772,15 @@ class FanucDriver:
                 logger.debug("airo_fanuc: get_snapshot failed: %s", exc)
         sup = self._supervisor
         if sup is not None:
-            state.update(sup.lifecycle_snapshot())
+            lifecycle = sup.lifecycle_snapshot()
+            # Its `epoch` is the copy the watch loop cached up to one interval ago
+            # (20 ms by default). The core's is from this instant, so it wins wherever
+            # there is one: every other value in this dict is current, and an epoch that
+            # silently lags them is the one thing a getter is not allowed to hand out.
+            # The supervisor's is kept only when there is no core to ask.
+            if "epoch" in state:
+                lifecycle.pop("epoch", None)
+            state.update(lifecycle)
         state["owner"] = self._owner_record()
         return state
 

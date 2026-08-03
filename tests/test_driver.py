@@ -493,6 +493,24 @@ def test_get_state_merges_snapshot_and_lifecycle(rig: DriverRig) -> None:
     assert st["owner"]["mode"] == "control"
 
 
+def test_get_state_publishes_the_cores_epoch_not_the_watch_loops_copy(rig: DriverRig) -> None:
+    """One dict, one instant. The supervisor caches the epoch once per watch interval and
+    its lifecycle view is merged over the core snapshot, so without the guard the epoch
+    lags every other value here by up to that interval — and a caller comparing it against
+    a submission's epoch to decide whether its command is still valid decides on stale
+    data while everything beside it is current."""
+    core = rig.driver.core
+    assert core is not None
+    # Poison the supervisor's cached copy rather than racing a real bump: at rest both
+    # epochs are 0, so a test that merely compared them would pass with or without the
+    # guard. This is the state the guard exists for — the two disagree — made reachable.
+    sup = rig.driver._supervisor
+    assert sup is not None
+    with sup._lock:
+        sup._epoch = 999_999
+    assert rig.driver.get_state()["epoch"] == core.get_snapshot()["epoch"]
+
+
 # --------------------------------------------------------------------------- #
 # Republish path. The driver is the only thing that assembles the Republisher's
 # snapshot contract, so the wiring is only real end to end: a key nothing fills
