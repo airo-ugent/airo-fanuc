@@ -317,42 +317,22 @@ coalesced away rather than queued.
 
 ## Reading the RT numbers
 
-Every run ends with an `rt health` block. The loop must put exactly one command
-packet on the wire every interpolation period; these numbers say whether your host
-does that.
-
-- **`tx interval`** — the real measurement. `p50` should sit within 1% of the ITP.
-  `max` is the worst single late tick: the check allows up to 2 ITP because the
-  controller tolerates roughly 9–15 missed periods before it coasts and drops
-  `motion_possible`, so one late tick is not dangerous — but a `max` that keeps
-  growing means the host is not keeping up.
-- **`cpu migrations`** — expected to be non-zero. This driver sets no CPU affinity
-  and needs no reserved core; migrations are normal, and `tx interval` is what
-  decides whether that is fine on your machine. It is here to be correlated with a
-  bad `max`, not to be zero.
-- **`missed_rx_ticks`** — ticks with no fresh status packet. A few percent is normal
-  (the two clocks are independent). `rx_seq_gaps` counts actually-dropped packets and
-  should be zero on a wired link.
-- **`no two sends inside one ITP`** and **`one tau-advance per tick`** are core
-  invariants, not tuning: the trajectory clock must advance exactly once per tick or
-  playback runs fast or slow. A `FAIL` there is a driver bug, not a host problem.
-
-If `tx interval max` fails on an otherwise idle machine, try `--sched-fifo --mlock`.
-Both are off by default so an unprivileged process runs unchanged, and both are
-best-effort — a denied request is logged and tolerated, not fatal, so if you pass
-them without the privileges (`CAP_SYS_NICE`, a `MEMLOCK` rlimit) nothing will fail
-loudly and nothing will improve either.
+Every run ends with an `rt health` block: whether this host put exactly one command packet on
+the wire every interpolation period. `tx interval p50` is the measurement that matters, `max`
+is the worst single late tick, and `cpu migrations` is expected to be non-zero.
+[docs/troubleshooting.md](../docs/troubleshooting.md#the-real-time-loop) says what each number
+means and what to do about a bad one.
 
 ## What is specific to this arm
 
-The driver itself is far more portable than these scripts are — the top-level README's
-"Which robots this actually works on" is the accurate account of that. The scripts, by
-contrast, name our arm on purpose, so a validation run has concrete numbers to check
-against instead of asking the operator for six of them. Almost all of it is in one
-place: **`crx10ial.py`** holds the `RobotProfile` — velocity, acceleration and jerk
-clamps plus joint position limits, in degrees, each with the provenance of its number.
-That file is what the driver clamps against and what these scripts guard against, so
-for a different FANUC it is the file to copy. What is left:
+The driver itself is far more portable than these scripts are —
+[docs/portability.md](../docs/portability.md) is the accurate account of that. The scripts, by
+contrast, name our arm on purpose, so a validation run has concrete numbers to check against
+instead of asking the operator for six of them. Almost all of it is in one place:
+**`crx10ial.py`** holds the `RobotProfile` — velocity, acceleration and jerk clamps plus joint
+position limits, in degrees, each with the provenance of its number. That file is what the
+driver clamps against and what these scripts guard against, so for a different FANUC it is the
+file to copy. What is left:
 
 | What | Where | Why it is arm- or controller-specific |
 |---|---|---|
@@ -379,43 +359,27 @@ Passing the eight steps validates the motion path end to end. It does not valida
   dispatch reads no measurement), so the plant is not in the loop and the fake cannot
   settle them; step 3 runs the identical path with the core holding the whole
   trajectory, and that comparison is what gives either number meaning.
-- **The acceleration and jerk clamps.** The values in `crx10ial.py` are derived from
-  the velocity limits; FANUC's own `joint_limits.yaml` in the vendored driver
-  publishes accelerations 6–16× lower. Nothing in these runs distinguishes
-  the two: both are permissive enough that 63°/s ran clean on hardware. Decide it by
-  working the speed up further in step 3 and watching for vibration or a servo alarm.
+- **The acceleration and jerk clamps.** `crx10ial.py`'s are derived rather than measured, and
+  nothing in these runs distinguishes them from the much lower published figures — both are
+  permissive enough that 63°/s ran clean. Step 3 is where you would settle it; the question
+  itself is stated in
+  [docs/portability.md](../docs/portability.md#the-accelerationjerk-question).
 - **Recovery from a collision-induced `SystemFault`**, which is a different path from
   the E-stop drill (it can leave RMI unresponsive and forces the cold-reconnect
   escalation). Provoking it deliberately is not something to do casually.
-- **The J2/J3 angle representation on RMI reads**, which only affects the
-  RMI-sourced receive/calibration path, not Stream Motion. A wrong assumption there
-  is a silent J2-sized FK error, so it wants its own check against the pendant's
-  displayed joint angles.
+- **The J2/J3 angle representation on RMI reads**, which affects only the RMI-sourced
+  receive/calibration path, not Stream Motion. `verify_j2j3_coupling.py` is the check;
+  [docs/portability.md](../docs/portability.md#the-j2j3-representation) is why it matters.
 
 ## When something goes wrong
 
-The scripts print the failure and exit non-zero rather than raising a traceback at
-you. Exit codes: `0` all checks passed; `1` aborted before the driver was up (the
-pre-motion banner or bring-up itself was interrupted); `2` bring-up failed, or a check
-failed — including a `Ctrl-C` mid-motion, which is recorded as a failed check because
-the run did not finish what it set out to do.
+The scripts print the failure and exit non-zero rather than raising a traceback at you. Exit
+codes: `0` all checks passed; `1` aborted before the driver was up (the pre-motion banner or
+bring-up itself was interrupted); `2` bring-up failed, or a check failed — including a
+`Ctrl-C` mid-motion, which is recorded as a failed check because the run did not finish what
+it set out to do.
 
-- `OwnershipError: ... already owned by pid=N` — another process holds the
-  controller. Kill it; the lock is released by the kernel, so there is no stale file
-  to clean up.
-- `FanucConnectionError: controller reports a N ms interpolation period` — the ITP
-  guard. Pass `--itp-ms N`.
-- `FanucPreflightError` — the gate refused before any motion, and the message names
-  which check and what to do about it (`SYST-348` wants the payload confirmed on the
-  pendant; `SYST-322` wants a power-cycle).
-- Bring-up hangs or the driver never reaches streaming — `docs/controller-notes.md`
-  §2 has the measured recovery procedures, including the Stream Motion daemon wedge
-  that only a controller power-cycle clears.
-- **`MOTN-603 ST: Receiving interval over` on the pendant after a run ends** — expected,
-  and not a fault in the run that just finished. Closing the session sends the Stop
-  packet and then stops transmitting, and the controller posts this because command
-  packets ceased while `STREAM_MOTN` was still up (`FRC_Abort` does not terminate it —
-  `docs/controller-notes.md` §2.7). It clears on the next bring-up and needs no
-  operator action. Worth distinguishing from the same alarm appearing *during* a run,
-  which would mean the 8 ms deadline is genuinely being missed — check `tx interval`
-  and `skipped_tick_windows` in the run's own `rt health` block before assuming that.
+[docs/troubleshooting.md](../docs/troubleshooting.md) is symptom-first and covers what you
+will actually hit: the ownership lock, the ITP guard, a refused preflight, the ARM gate after
+an E-stop, and the `MOTN-603 ST: Receiving interval over` that appears on the pendant *after*
+a clean run and is not a fault in it.
