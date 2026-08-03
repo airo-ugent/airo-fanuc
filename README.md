@@ -17,28 +17,23 @@ validation and the RMI session.
 
 ---
 
-## Why this exists when FANUC ships an official ROS 2 driver
+## What is vendored, and what is ours
 
-The decision here was narrower than a rewrite: **vendor FANUC's protocol codecs, write our own
-real-time loop.** This repo vendors FANUC's `fanuc_driver` as a submodule and compiles exactly
-two of its headers — the `#pragma pack(1)` Stream Motion wire structs and the byte-swap
-template. Those encode knowledge transcribed from proprietary FANUC manuals we have no
-independent access to, so re-deriving them would be guesswork; `PATCHES.md` records precisely
-what is vendored, that the patch set against it is empty, and why nothing else upstream is
-compiled. FANUC is credited in `NOTICE`.
+The line is drawn at the wire: **vendor FANUC's protocol codecs, write our own real-time loop.**
 
-What is not adopted is their client and loop. Their driver targets ROS 2 through a
-general-purpose client layer and a `ros2_control` `SystemInterface`; this stack is not ROS, and
-the real-time loop, the safety state machine and the trajectory/interpolation layer are exactly
-the parts an application with its own planner needs to own. Different design goals, same
-protocol work underneath.
+This repo vendors FANUC's `fanuc_driver` as a submodule and compiles exactly two of its headers —
+the `#pragma pack(1)` Stream Motion wire structs and the byte-swap template. A packet layout has
+to match the controller byte for byte, and a header published by the protocol's own implementer
+is the authoritative statement of that layout; compiling it directly means the struct we send
+cannot drift from a transcription of ours. `PATCHES.md` records exactly what is vendored, that
+the patch set against it is empty, and why nothing else upstream is compiled. Attribution is in
+`NOTICE`.
 
-The clearest public evidence that the interpolation layer was always going to be ours is in
-FANUC's own issue tracker. Issue **#45** is a CRX-10iA overshoot report from a user driving the
-robot with an MPC controller; the maintainer's answer is that commands should be filtered in the
-user's application before being fed to the position controller. There is no servo-grade smoother
-in their stack **by design** — smoothing is the application's job. That is the job this driver
-does, in C++, on the tick.
+Nothing above the codec is adopted. FANUC's driver reaches ROS 2 through a general-purpose
+client layer and a `ros2_control` `SystemInterface`; this stack is not ROS, and the real-time
+loop, the safety state machine and the interpolation layer are the parts an application with its
+own planner has to own — so they are written here, in C++, on the tick. Same protocol work
+underneath, different thing built on top.
 
 ---
 
@@ -316,7 +311,12 @@ joint travelling furthest runs at it and the rest scale down to land together.
 import numpy as np
 from airo_fanuc import DriverConfig, DriverPolicy, FanucDriver, MotionResult
 
-policy = DriverPolicy(config=DriverConfig(), enable_gripper=False)
+# The arm's envelope has no default and must be supplied — see "Injected, with no
+# default" above. `examples/crx10ial.py` is a written-down CRX-10iA/L profile; for
+# another model, emit one with `python -m airo_fanuc.controller_probe --emit-profile`.
+from crx10ial import CRX10IAL
+
+policy = DriverPolicy(config=DriverConfig(profile=CRX10IAL), enable_gripper=False)
 
 # construct-and-go: blocks until the robot is commandable, or raises with a real reason
 driver = FanucDriver("192.168.1.100", policy)
