@@ -7,7 +7,9 @@ HW-observed 2026-07-17). ``FanucDriver.recover()`` therefore escalates to a cold
 ``reconnect()`` (= full re-bring-up: re-``initialize`` + GRIPDISP re-fork) — but ONLY
 for faults a re-bring-up can clear (not a held e-stop / teach / operator-required).
 ``reconnect()`` holds the gripper fail-fast gate across the rebuild so no gripper
-command actuates GRIPDISP mid-reconnect.
+command actuates GRIPDISP mid-reconnect. What ``recover()`` returns is whether the
+driver reached STREAMING, not whether it is commandable — the ARM gate stays latched
+across a successful e-stop recovery by design.
 
 Unit-level by design: the escalation *decision* + the gripper-gate ordering are pure
 policy, so these drive a ``FanucDriver`` with ``__init__`` bypassed and the
@@ -22,6 +24,7 @@ import pytest
 
 from airo_fanuc.driver import FanucDriver
 from airo_fanuc.exceptions import FanucConnectionError
+from airo_fanuc.lifecycle import LifecycleState
 
 
 def _bare_driver() -> FanucDriver:
@@ -31,6 +34,23 @@ def _bare_driver() -> FanucDriver:
     d.rmi = None
     d.gripper = None
     d._supervisor = None
+    return d
+
+
+def _driver_with_failing_ladder(**human_required: bool) -> FanucDriver:
+    """A driver whose light ladder fails, so ``recover()`` reaches the escalation.
+
+    ``state()`` reports STREAMING because that is what ``recover()`` reads after a
+    reconnect — deliberately NOT ``is_commandable()``, which would also fold in the
+    ARM gate and report a fine robot waiting for ``arm()`` as a failed reconnect.
+    """
+    d = _bare_driver()
+    d._supervisor = SimpleNamespace(
+        recover=lambda timeout_s=None: False,
+        state=lambda: LifecycleState.STREAMING,
+    )
+    st = {"e_stopped": False, "tp_enabled": False, "operator_required": False, **human_required}
+    d.get_state = lambda: st  # type: ignore[method-assign]
     return d
 
 
@@ -44,25 +64,15 @@ class TestRecoverEscalation:
         assert called == []  # never cold-reconnected
 
     def test_escalates_to_reconnect_on_recoverable_fault(self) -> None:
-        d = _bare_driver()
-        d._supervisor = SimpleNamespace(recover=lambda timeout_s=None: False, is_commandable=lambda: True)
-        d.get_state = lambda: {  # type: ignore[method-assign]
-            "e_stopped": False,
-            "tp_enabled": False,
-            "operator_required": False,
-        }
+        d = _driver_with_failing_ladder()
         called: list[str] = []
         d.reconnect = lambda: called.append("reconnect")  # type: ignore[method-assign]
-        assert d.recover() is True  # returns is_commandable() after the reconnect
+        assert d.recover() is True  # STREAMING after the reconnect
         assert called == ["reconnect"]
 
     @pytest.mark.parametrize("flag", ["e_stopped", "tp_enabled", "operator_required"])
     def test_no_reconnect_for_human_required_fault(self, flag: str) -> None:
-        d = _bare_driver()
-        d._supervisor = SimpleNamespace(recover=lambda timeout_s=None: False, is_commandable=lambda: True)
-        state = {"e_stopped": False, "tp_enabled": False, "operator_required": False}
-        state[flag] = True
-        d.get_state = lambda: state  # type: ignore[method-assign]
+        d = _driver_with_failing_ladder(**{flag: True})
         called: list[str] = []
         d.reconnect = lambda: called.append("reconnect")  # type: ignore[method-assign]
         assert d.recover() is False  # human required — leave FAULTED, do not reconnect
@@ -70,26 +80,14 @@ class TestRecoverEscalation:
 
     def test_escalate_reconnect_false_never_reconnects(self) -> None:
         # Calibration free-drive heal opts out: light ladder only, no cold reconnect.
-        d = _bare_driver()
-        d._supervisor = SimpleNamespace(recover=lambda timeout_s=None: False, is_commandable=lambda: True)
+        d = _driver_with_failing_ladder()
         called: list[str] = []
         d.reconnect = lambda: called.append("reconnect")  # type: ignore[method-assign]
-        d.get_state = lambda: {  # type: ignore[method-assign]
-            "e_stopped": False,
-            "tp_enabled": False,
-            "operator_required": False,
-        }
         assert d.recover(escalate_reconnect=False) is False
         assert called == []
 
     def test_reconnect_failure_returns_false(self) -> None:
-        d = _bare_driver()
-        d._supervisor = SimpleNamespace(recover=lambda timeout_s=None: False, is_commandable=lambda: True)
-        d.get_state = lambda: {  # type: ignore[method-assign]
-            "e_stopped": False,
-            "tp_enabled": False,
-            "operator_required": False,
-        }
+        d = _driver_with_failing_ladder()
 
         def _boom() -> None:
             raise FanucConnectionError("reconnect could not reach the controller")

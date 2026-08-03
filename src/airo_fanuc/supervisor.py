@@ -599,14 +599,13 @@ class Supervisor:
             logger.warning("airo_fanuc: recovery did not reach HOLD within %.1fs", ready_wait)
             return False
 
-        # ARM gate: an e-stop / operator-required recovery ends MOTION_INHIBITED, and
-        # every motion method raises until an explicit arm(). Whoever cleared the
-        # fault is standing at the pendant, inside the robot's envelope; resuming
-        # motion on our own initiative would move the robot at them.
+        # The ARM gate is already latched if it applies — _set_state_locked set it when
+        # the fault was first observed, and nothing between then and here clears it. All
+        # that is left is to say so, because reaching STREAMING with motion still
+        # refused is the one success path that looks like a failure from outside.
         with self._lock:
             self._recovery_count += 1
-            if self._policy.arm_gate and (requires_arm(latched) or self._operator_required):
-                self._motion_inhibited = True
+            if self._motion_inhibited:
                 logger.info("airo_fanuc: MOTION_INHIBITED after %s recovery — arm() required", latched.name)
             self._operator_required = False
             self._fault_since_mono = None
@@ -837,6 +836,11 @@ class Supervisor:
             return self._motion_inhibited
 
     def is_commandable(self) -> bool:
+        """True iff a motion issued right now would be accepted: STREAMING *and* armed.
+
+        Deliberately not what :meth:`FanucDriver.recover` returns — that reports
+        whether the ladder reached STREAMING, and an e-stop recovery reaching STREAMING
+        with the ARM gate still latched is a success, not a failure."""
         with self._lock:
             return self._state == LifecycleState.STREAMING and not self._motion_inhibited
 
@@ -949,6 +953,20 @@ class Supervisor:
         self._state = state
         self._fault_reason = fault
         self._fault_reason_str = fault_reason_string(fault)
+        # ARM gate, latched the moment an arm-class fault is OBSERVED — not when a
+        # recovery from one succeeds. Whoever cleared an e-stop or a controller alarm
+        # is standing at the pendant, inside the envelope, so the safe default is
+        # "motion refused" and the only thing that lifts it is an explicit arm().
+        # Latching on the success tail instead makes the gate fail open: every
+        # `return False` in the ladder — held e-stop, teach keyswitch, RMI step
+        # failed, motion_possible probe timed out, HOLD not reached — leaves the flag
+        # unset, and FanucDriver.recover() then escalates to a cold reconnect that
+        # brings the robot back commandable with no arm() ever required. Latching here
+        # covers every path that records a fault, including the reclassify after a
+        # failed ladder, because there is no fault observation that does not pass
+        # through this method.
+        if self._policy.arm_gate and requires_arm(fault):
+            self._motion_inhibited = True
         if fault == FaultReason.NONE and not op_req:
             self._operator_hint = None
         else:

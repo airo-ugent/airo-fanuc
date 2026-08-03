@@ -41,7 +41,7 @@ from .exceptions import (
     TrajectoryValidationError,
 )
 from .gripper_worker import GripperWorker
-from .lifecycle import motion_result_of
+from .lifecycle import LifecycleState, motion_result_of
 from .ownership import OwnershipLock
 from .republisher import Republisher
 from .rmi_client import RmiClient
@@ -521,9 +521,12 @@ class FanucDriver:
         calibration free-drive lifecycle-heal, a best-effort cosmetic latch clear
         that must never tear down + rebuild the RX stream the tool is reading.
 
-        Ends in MOTION_INHIBITED for an e-stop / operator-required class fault
-        (call :meth:`arm` before the next motion). Returns True iff the driver is
-        commandable again."""
+        Returns True iff the driver reached STREAMING. That is NOT the same as
+        commandable: an e-stop or a controller alarm latches the ARM gate the moment
+        it is observed, so for those faults a fully successful recovery still returns
+        True with motion refused until :meth:`arm` is called. Read
+        ``get_state()["motion_inhibited"]`` — or just call :meth:`arm` — rather than
+        reading a False here as a failed recovery."""
         if self._supervisor is None:
             return False
         if self._supervisor.recover(timeout_s=timeout_s):
@@ -550,7 +553,11 @@ class FanucDriver:
         except FanucError as exc:  # FanucConnectionError / FanucPreflightError ⊂ FanucError
             logger.error("airo_fanuc: cold reconnect escalation failed: %s", exc)
             return False
-        return self._supervisor.is_commandable()
+        # STREAMING, not is_commandable(): the latter also folds in the ARM gate, which
+        # is exactly what stays set after an e-stop recovery — reporting that as a
+        # failed reconnect would tell the caller to give up on a robot that is fine and
+        # merely waiting for arm().
+        return self._supervisor.state() is LifecycleState.STREAMING
 
     def reconnect(self) -> None:
         """Cold re-bring-up: quiesce, tear the SM/RMI session down, run the full

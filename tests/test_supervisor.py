@@ -183,6 +183,69 @@ def test_auto_recovery_of_transient_motion_possible_drop(tmp_path: Any) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# ARM gate latches on fault OBSERVATION, not on recovery success. Latching on the
+# success tail instead leaves the gate unset on every ladder failure path, and the
+# cold-reconnect escalation then hands back a commandable robot with no arm() ever
+# asked for — the exact opposite of what the gate is for.
+# --------------------------------------------------------------------------- #
+
+
+def test_estop_latches_arm_gate_before_any_recovery(tmp_path: Any) -> None:
+    rig = _manual_rig(tmp_path)  # auto_recover OFF — no ladder runs at all here
+    try:
+        rig.controller.press_estop()
+        assert _wait(lambda: _state(rig) == "faulted", 2.0)
+        # No recovery has been attempted, and with the e-stop still held none can be.
+        assert rig.driver.get_state()["motion_inhibited"] is True
+        assert rig.driver.recover(timeout_s=1.0) is False
+        assert rig.driver.get_state()["motion_inhibited"] is True
+    finally:
+        rig.controller.release_estop()
+        rig.close()
+
+
+def test_in_error_latches_arm_gate(tmp_path: Any) -> None:
+    rig = _manual_rig(tmp_path)
+    try:
+        rig.controller.inject_alarm("SRVO-050", "Collision detect alarm", in_error=True)
+        assert _wait(lambda: _fault(rig) == "in_error", 2.0)
+        assert rig.driver.get_state()["motion_inhibited"] is True
+    finally:
+        rig.close()
+
+
+def test_arm_gate_survives_recovery_and_only_arm_clears_it(tmp_path: Any) -> None:
+    rig = DriverRig(tmp_path)  # auto_recover ON
+    try:
+        rig.controller.press_estop()
+        assert _wait(lambda: _state(rig) == "faulted", 2.0)
+        assert rig.driver.get_state()["motion_inhibited"] is True
+
+        # Releasing the button is not enough: in_error latches until an FRC_Reset, and
+        # auto-recovery refuses to run while it is set, so the ladder only moves on an
+        # explicit recover(). It succeeds — and returns True even though motion stays
+        # refused, because reaching STREAMING and being commandable are now distinct.
+        rig.controller.release_estop()
+        assert _wait(lambda: rig.driver.get_state()["e_stopped"] is False, 2.0)
+        assert rig.driver.recover(timeout_s=6.0) is True
+        assert _wait(lambda: _state(rig) == "streaming", 6.0), _state(rig)
+        # The gate must NOT come down with the fault — whoever released the e-stop is
+        # still standing inside the envelope.
+        assert rig.driver.get_state()["motion_inhibited"] is True
+
+        times, q, qd = _traj_from(rig.driver, 0.1)
+        with pytest.raises(RobotFaultedError):
+            rig.driver.move_trajectory(times, q, qd)
+
+        rig.driver.arm()
+        assert rig.driver.get_state()["motion_inhibited"] is False
+        times, q, qd = _traj_from(rig.driver, 0.1)
+        assert rig.driver.move_trajectory(times, q, qd).wait(timeout=4.0).value == "done"
+    finally:
+        rig.close()
+
+
+# --------------------------------------------------------------------------- #
 # SYST-348 OPERATOR_REQUIRED flow: FRC_Reset cannot clear a payload-monitor alarm —
 # only a payload confirm at the teach pendant can — so the ladder must stop retrying
 # and hand the fault to a human instead of looping.
