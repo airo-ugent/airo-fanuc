@@ -441,12 +441,23 @@ class RmiClient:
             logger.info("RMI: FRC_Initialize OK — session ready")
 
     def abort(self) -> None:
-        """FRC_Abort; controller aborts all running TP programs. SUPERVISOR-ONLY.
+        """FRC_Abort; flushes the controller-side instruction queue. SUPERVISOR-ONLY.
 
-        Equivalent to the operator pressing ``FCTN → ABORT ALL`` on the teach
-        pendant.  Kills any running ``STREAM_MOTN`` (smooth controller-side
-        decel, not a hard E-stop) and any running ``GRIPDISP``, and flushes the
-        controller-side instruction queue.
+        It is **not** the equivalent of the operator pressing ``FCTN → ABORT ALL``,
+        and it terminates less than its name suggests. Measured against a live
+        session:
+
+        * a running ``STREAM_MOTN`` is **not** terminated. Motion is disarmed —
+          ``motion_possible`` drops and ``rmi_motion_status`` goes to 0 — but the
+          Stream Motion status stream keeps flowing at the full rate, and
+          ``program_status`` is *left* at 2. Re-arming takes the re-``FRC_Call`` every
+          bring-up already issues; no operator action was needed.
+        * a RUN-forked ``GRIPDISP`` **survives** it. The dispatcher still answered the
+          register handshake afterwards, and the gripper still actuated.
+
+        So a RUN-fork outlives every RMI verb this driver has, and only an operator at
+        the pendant clears one (see :mod:`airo_fanuc.supervisor`, which is why the fork
+        is gated on a liveness probe rather than issued per bring-up).
 
         CONTRACT: this is **supervisor-only** and is deliberately NOT on
         the transport auto-reopen path.  A worker whose socket blipped must

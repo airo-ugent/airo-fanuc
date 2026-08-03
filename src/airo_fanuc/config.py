@@ -209,6 +209,13 @@ class DriverPolicy:
     config: DriverConfig
 
     # -- bring-up --------------------------------------------------------
+    #: Bring-up attempts. Must be > 1 when :attr:`enable_gripper` is set: observed
+    #: twice, the attempt that RUN-forks GRIPDISP times out waiting for
+    #: ``motion_possible`` (the fork and the ``FRC_Call(STREAM_MOTN)`` do not both
+    #: land in one attempt), and the NEXT attempt succeeds — it skips the fork via
+    #: the ``_grprun_forked`` latch, finds the dispatcher already alive, and only
+    #: has the ``FRC_Call`` left to do. A no-gripper session forks nothing and
+    #: reaches STREAMING on attempt 1, which is why the examples can pass 1.
     connect_retries: int = 3
     #: Grace, post-bring-up, to observe the seqlock publish HOLD after wait_ready.
     #: ``wait_ready`` flips STREAMING a beat before HOLD is published, so without a

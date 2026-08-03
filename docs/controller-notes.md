@@ -387,6 +387,34 @@ run also re-measures the offset, so it is the check to repeat after any end-effe
   access), fault RESET must come via **RMI / remote**, not the pendant. RMI (port 16001) is ground truth.
 - `2556955` = `FRC_Initialize` rejected when `ServoReady=0` (robot not ready / servos off).
 
+### 2.7 `FRC_Abort` — what it does and does not terminate
+
+Measured against a live, streaming session, with no motion in flight and auto-recovery
+disabled so nothing could relaunch behind the measurement:
+
+| | before `FRC_Abort` | after (10 samples over 10 s) |
+|---|---|---|
+| `program_status` | 0 | **2**, every sample |
+| `rmi_motion_status` | 1 | 0 |
+| `motion_possible` | True | False |
+| SM status `rx_age` | 0.4 ms | **0.2–0.7 ms — the stream never stopped** |
+
+- **It does not terminate `STREAM_MOTN`.** Motion is disarmed, but status keeps flowing at
+  the full rate and `program_status` is *left* at 2. Re-arming took only the
+  re-`FRC_Call` that every bring-up already issues: a plain bring-up straight afterwards
+  reached STREAMING with `alarms=['No Error']` and needed no operator action.
+- **It does not kill a RUN-forked `GRIPDISP`.** With a dispatcher forked, the register
+  handshake still answered after the Abort (twice, in 0.27 s and 0.33 s — a live
+  dispatcher's latency, not the probe's 6 s timeout), and the gripper still actuated.
+  Clearing the fork took `FCTN → ABORT ALL` at the pendant.
+- **So it is not the equivalent of `FCTN → ABORT ALL`**, and a RUN-fork outlives every
+  RMI verb this driver has.
+
+One caveat on the first point: continued *status* alone would not prove the TP program
+survived, if status were served by something independent of it. It is the combination with
+`program_status` being left at 2 — the signature §4.2 already relies on — that makes
+"not terminated" the supported reading.
+
 ---
 
 ## 3. Missed-packet tolerance (J519 manual) — partially measured
@@ -474,9 +502,9 @@ Streaming was then stable for the rest of the run (12 s observed, `fault=none`, 
 - **Why the settle cannot be replaced by doing something up front.** The natural question is which
   step of the second application ends the previous instance, so it can be done first instead. There
   is no such step: both applications are the same four calls (`reset` → `Continue` → reseed →
-  `FRC_Call`), the `FRC_Call` is already first, and per the 2026-07-07 measurement neither
-  `FRC_Abort` nor `FRC_Reset` terminates STREAM_MOTN at all — only an operator at the pendant
-  (FCTN → ABORT ALL) does.
+  `FRC_Call`), the `FRC_Call` is already first, and neither `FRC_Abort` nor `FRC_Reset`
+  terminates STREAM_MOTN at all — only an operator at the pendant (FCTN → ABORT ALL) does
+  (§2.7).
 
   What the 2026-07-30 runs add: the **second Call never drops `motion_possible`** (every run needed
   exactly one settle attempt) even though it too is issued while an instance is running — ours. So

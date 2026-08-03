@@ -250,13 +250,15 @@ class Supervisor:
         if self._policy.enable_gripper and not self._grprun_forked:
             # CROSS-PROCESS anti-stacking: the _grprun_forked latch alone only makes
             # the fork at-most-once WITHIN one process, which is not enough. A
-            # RUN-forked GRIPDISP survives the process that forked it
-            # (FRC_Reset/FRC_Disconnect can't kill it — only FRC_Abort / TP ABORT
-            # ALL can), so every fresh driver bring-up blindly re-forking stacks
-            # un-killable GRIPDISP tasks that wedge STREAM_MOTN at program_status=2 —
-            # and the only way out of that wedge is an operator at the teach pendant
-            # pressing FCTN → ABORT ALL. So gate the fork on a liveness probe: if a
-            # dispatcher is already running, skip the fork entirely.
+            # RUN-forked GRIPDISP survives the process that forked it, and no RMI verb
+            # this driver has kills one: FRC_Reset and FRC_Disconnect do not, and
+            # neither does FRC_Abort — measured, the dispatcher still answered the
+            # register handshake and the gripper still actuated afterwards. So every
+            # fresh driver bring-up blindly re-forking stacks un-killable GRIPDISP
+            # tasks that wedge STREAM_MOTN at program_status=2, and the only way out of
+            # that wedge is an operator at the teach pendant pressing FCTN → ABORT ALL.
+            # So gate the fork on a liveness probe: if a dispatcher is already running,
+            # skip the fork entirely.
             if self._gripdisp_alive():
                 logger.info(
                     "airo_fanuc: GRIPDISP already running (probe: R[%d] auto-cleared) — "
