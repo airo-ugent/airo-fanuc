@@ -8,10 +8,13 @@ recorder) can observe the robot without holding a handle on the driver:
 * ``fanuc/joint_states``  100 Hz — ``positions_deg`` / ``velocities_deg_s`` +
   ``t_meas_ns`` / ``age_ms`` / ``stale`` / ``source``.
 * ``fanuc/robot_status``  10 Hz — the controller safety/status keys +
-  ``lifecycle_state`` / ``fault_reason`` / ``operator_hint`` / ``command_epoch``
-  / ``owner`` / ``tick_p99_ms``.
+  ``lifecycle_state`` / ``fault_reason`` / ``faulted`` / ``operator_hint`` /
+  ``command_epoch`` / ``recovery_count`` / ``owner`` / ``tick_p99_ms``.
 * ``fanuc/external_force`` 50 Hz — force/moment/magnitude + ``age_ms``.
-* ``fanuc/ext_status``     1 Hz — override / speed-clamp / control-mode.
+* ``fanuc/ext_status``     1 Hz — override / speed-clamp / control-mode. These come
+  off an RMI round trip rather than the Stream Motion snapshot, so they arrive
+  through their own injected :data:`ExtStatusFn` and are read on this 1 Hz thread
+  only; with no accessor the topic stays silent.
 * :data:`TOPIC_LOG_EVENT` — typed toast events. A consumer's toast whitelist
   matches on the exact ``(kind, tag, status)`` triple, so the two triples this
   module emits are a pinned contract, not a formatting choice:
@@ -26,21 +29,27 @@ The hosting application supplies the real session; tests inject
 
 Snapshot contract
 -----------------
-The driver passes a ``snapshot() -> dict`` callable returning the current state.
-All keys are optional and None-safe, and the republisher is **publish-always,
-annotate**: a missing or None value is published as an explicit annotation
-rather than suppressed, so a consumer can always tell "no data" from "stale
-data" and never has to infer either from silence.
+The driver passes a ``snapshot() -> dict`` callable returning the current state —
+``FanucDriver._republish_snapshot`` assembles exactly these keys. All keys are
+optional and None-safe, and the republisher is **publish-always, annotate**: a
+missing or None value is published as an explicit annotation rather than
+suppressed, so a consumer can always tell "no data" from "stale data" and never
+has to infer either from silence.
 
     q_meas_deg, qd_meas_deg (None ⇒ velocity_valid=False, NEVER zeros),
     joint_names, t_meas_ns, source,
     e_stopped, in_error, tp_enabled, motion_possible, motion_in_progress,
-    contact_stop_mode, safety_scale, rx_silent, recovery_event_id,
-    starvation_active, system_fault_event_id, gen_override_pct,
-    speed_clamp_limit_pct, lifecycle_state, fault_reason, operator_hint,
-    command_epoch, owner, tick_p99_ms,
-    wrench = {"force":[x,y,z], "moment":[x,y,z], "magnitude_n":float} | None,
-    control_mode, in_motion, drives_powered.
+    contact_stop_status, safety_scale, rx_silent,
+    lifecycle_state, fault_reason, faulted, operator_hint, command_epoch,
+    recovery_count, owner, tick_p99_ms,
+    wrench = {"force":[x,y,z], "moment":[x,y,z], "magnitude_n":float} | None.
+
+``t_meas_ns`` and the ``now_ns`` ages are taken against MUST be the same clock —
+wall-clock nanoseconds by default; see :meth:`_age_ms`. ``faulted`` is the
+driver's own lifecycle classification (:data:`airo_fanuc.lifecycle.FAULT_STATES`)
+travelling as data: fault classification has one definition, in
+:mod:`airo_fanuc.lifecycle`, and this module does not re-derive it from a status
+string.
 
 Every republished payload serializes to < 3072 B: zenoh silently drops samples
 above its shared-memory threshold, so an oversized payload would vanish without
@@ -82,6 +91,12 @@ STALE_MS = 200.0
 #: threshold, so every republished payload must stay under it.
 MAX_PAYLOAD_BYTES = 3072
 
+#: Age ceiling above which :meth:`Republisher._age_ms` reports "no age" instead of a
+#: number. Nothing on these topics is telemetry a minute after it was measured, so a
+#: result beyond this means the stamp is not in the ``now_ns`` clock domain — a
+#: CLOCK_MONOTONIC stamp is the near miss, and it subtracts to the host's uptime.
+MAX_AGE_MS = 60_000.0
+
 # -- Pinned toast triple identifiers -----------------------------------------
 # A consumer's toast whitelist matches on the exact (kind, tag, status) triple,
 # so these strings cannot be reworded without breaking it. tag = "{system}:{feature}".
@@ -113,6 +128,11 @@ class Publisher(Protocol):
 
 SnapshotFn = Callable[[], dict[str, Any]]
 JointsAtWallFn = Callable[[int], Any]
+#: Injected reader for the RMI extended-status block (``gen_override_pct``,
+#: ``speed_clamp_limit_pct``, ``control_mode``, ``in_motion``, ``drives_powered``,
+#: optional wall-clock ``t_read_ns``). ``None`` means "not readable now" and
+#: publishes nothing.
+ExtStatusFn = Callable[[], "dict[str, Any] | None"]
 
 
 class Republisher:
@@ -124,6 +144,7 @@ class Republisher:
         snapshot: SnapshotFn,
         *,
         joints_at_wall: JointsAtWallFn | None = None,
+        ext_status: ExtStatusFn | None = None,
         now_ns: Callable[[], int] = time.time_ns,
         joint_states_hz: float = JOINT_STATES_HZ,
         robot_status_hz: float = ROBOT_STATUS_HZ,
@@ -133,6 +154,7 @@ class Republisher:
         self._publisher = publisher
         self._snapshot = snapshot
         self._joints_at_wall_fn = joints_at_wall
+        self._ext_status_fn = ext_status
         self._now_ns = now_ns
         self._periods = {
             TOPIC_JOINT_STATES: 1.0 / float(joint_states_hz),
@@ -149,6 +171,7 @@ class Republisher:
         # Toast edge-detection state (robot_status loop).
         self._prev_motion_possible: bool | None = None
         self._prev_faulted: bool | None = None
+        self._age_domain_warned = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -237,7 +260,9 @@ class Republisher:
             "positions_deg": [float(v) for v in q],
             "t_meas_ns": int(t_meas_ns) if t_meas_ns is not None else None,
             "age_ms": age_ms,
-            "stale": age_ms is not None and age_ms > STALE_MS,
+            # An unknown age is stale: a consumer gating on freshness must not read
+            # "age unavailable" as "fresh".
+            "stale": age_ms is None or age_ms > STALE_MS,
             "source": snap.get("source", "stream"),
         }
         qd = snap.get("qd_meas_deg")
@@ -260,19 +285,21 @@ class Republisher:
             "tp_enabled": bool(snap.get("tp_enabled", False)),
             "motion_possible": bool(snap.get("motion_possible", False)),
             "motion_in_progress": bool(snap.get("motion_in_progress", False)),
-            "contact_stop_mode": int(snap.get("contact_stop_mode", 0)),
+            # The status packet's contact-stop enum as the controller reports it
+            # (2 = STOP, 4 = ESCP — rt_core_config.hpp decode_gates), not a mode
+            # selector: the vendored ROS driver derives a separate mode enum from it
+            # (fanuc_client.cpp ToContactStopMode), so the two names are different
+            # values and this one is the raw status.
+            "contact_stop_status": int(snap.get("contact_stop_status", 0)),
             "safety_scale": float(snap.get("safety_scale", 1.0)),
             "rx_silent": bool(snap.get("rx_silent", False)),
-            "recovery_event_id": int(snap.get("recovery_event_id", 0)),
-            "starvation_active": bool(snap.get("starvation_active", False)),
-            "system_fault_event_id": int(snap.get("system_fault_event_id", 0)),
-            "gen_override_pct": _opt_int(snap.get("gen_override_pct")),
-            "speed_clamp_limit_pct": _opt_float(snap.get("speed_clamp_limit_pct")),
             # Driver lifecycle keys
             "lifecycle_state": snap.get("lifecycle_state"),
             "fault_reason": snap.get("fault_reason"),
+            "faulted": bool(snap.get("faulted", False)),
             "operator_hint": snap.get("operator_hint"),
             "command_epoch": _opt_int(snap.get("command_epoch")),
+            "recovery_count": _opt_int(snap.get("recovery_count")),
             "owner": snap.get("owner"),
             "tick_p99_ms": _opt_float(snap.get("tick_p99_ms")),
             "age_ms": self._age_ms(t_meas_ns),
@@ -297,14 +324,28 @@ class Republisher:
         self._put(TOPIC_EXTERNAL_FORCE, payload)
 
     def publish_ext_status(self) -> None:
-        snap = self._snapshot()
+        """Publish the RMI extended-status block from the injected :data:`ExtStatusFn`.
+
+        Nothing is published without an accessor, or when it returns ``None`` (the
+        driver refuses the read unless the RMI session is steady): a topic that says
+        nothing is honest, an all-null payload is not. The read happens here, on the
+        1 Hz thread, and never on the 100 Hz joint path.
+        """
+        read = self._ext_status_fn
+        if read is None:
+            return
+        ext = read()
+        if ext is None:
+            return
         payload: dict[str, Any] = {
-            "gen_override_pct": _opt_int(snap.get("gen_override_pct")),
-            "speed_clamp_limit_pct": _opt_float(snap.get("speed_clamp_limit_pct")),
-            "control_mode": snap.get("control_mode"),
-            "in_motion": _opt_bool(snap.get("in_motion")),
-            "drives_powered": _opt_bool(snap.get("drives_powered")),
-            "age_ms": self._age_ms(snap.get("t_meas_ns")),
+            "gen_override_pct": _opt_int(ext.get("gen_override_pct")),
+            "speed_clamp_limit_pct": _opt_float(ext.get("speed_clamp_limit_pct")),
+            "control_mode": ext.get("control_mode"),
+            "in_motion": _opt_bool(ext.get("in_motion")),
+            "drives_powered": _opt_bool(ext.get("drives_powered")),
+            # Age of the RMI read itself, not of a Stream Motion sample: the two
+            # planes are read independently and one cannot date the other.
+            "age_ms": self._age_ms(ext.get("t_read_ns")),
         }
         self._put(TOPIC_EXT_STATUS, payload)
 
@@ -331,18 +372,15 @@ class Republisher:
             )
         self._prev_motion_possible = motion_possible
 
-        faulted = self._is_faulted(snap)
+        # The snapshot's own classification (airo_fanuc.lifecycle.FAULT_STATES). Not
+        # re-derived here: fault_reason carries the string "none" when there is no
+        # fault, so any local truthiness test latches "faulted" on a healthy robot and
+        # the rising edge below never arrives.
+        faulted = bool(snap.get("faulted", False))
         if self._prev_faulted is not None and not self._prev_faulted and faulted:
             reason = snap.get("fault_reason") or "fault"
             self.emit_event(EVENT_KIND_SYSTEM, TAG_BRIDGE_FAULT, STATUS_FAIL, str(reason))
         self._prev_faulted = faulted
-
-    @staticmethod
-    def _is_faulted(snap: dict[str, Any]) -> bool:
-        state = snap.get("lifecycle_state")
-        if isinstance(state, str) and state.upper() == "FAULTED":
-            return True
-        return snap.get("fault_reason") not in (None, "")
 
     @staticmethod
     def _motion_possible_specifics(snap: dict[str, Any]) -> str:
@@ -420,9 +458,27 @@ class Republisher:
         handle.put(data)
 
     def _age_ms(self, t_meas_ns: Any) -> float | None:
+        """Age of ``t_meas_ns`` against ``now_ns``, or ``None`` if it cannot be one.
+
+        Both stamps must be read from the SAME clock — wall-clock nanoseconds with the
+        default ``now_ns``. A stamp from another clock still subtracts to a number, and
+        a published age is used to decide whether a pose may be trusted, so a result
+        outside ``0 .. MAX_AGE_MS`` is reported as "no age" and logged once instead.
+        """
         if t_meas_ns is None:
             return None
-        return (int(self._now_ns()) - int(t_meas_ns)) / 1e6
+        age_ms = (int(self._now_ns()) - int(t_meas_ns)) / 1e6
+        if age_ms < 0.0 or age_ms > MAX_AGE_MS:
+            if not self._age_domain_warned:
+                self._age_domain_warned = True
+                logger.error(
+                    "republisher: age %.0f ms is outside 0..%.0f ms — t_meas_ns is not in the "
+                    "now_ns clock domain (or the wall clock stepped); publishing age_ms=None",
+                    age_ms,
+                    MAX_AGE_MS,
+                )
+            return None
+        return age_ms
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +552,7 @@ __all__ = [
     "TOPIC_EXTERNAL_FORCE",
     "TOPIC_EXT_STATUS",
     "TOPIC_LOG_EVENT",
+    "MAX_AGE_MS",
     "MAX_PAYLOAD_BYTES",
     "STALE_MS",
 ]

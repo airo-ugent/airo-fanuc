@@ -32,6 +32,7 @@ __all__ = [
     "ARM_FAULTS",
     "DEGRADED_FAULTS",
     "FAULTED_FAULTS",
+    "FAULT_STATES",
     "LifecycleState",
     "classify",
     "fault_reason_string",
@@ -56,6 +57,19 @@ class LifecycleState(Enum):
     RECOVERING = "recovering"
     LOST = "lost"
     SHUTTING_DOWN = "shutting_down"
+
+
+#: States in which the robot is stopped or held by a controller-side condition, as
+#: opposed to a bring-up step or a clean shutdown. The single definition of "faulted"
+#: for anything outside the state machine — the supervisor reports it in its snapshot
+#: and the republisher publishes it, so no consumer re-derives it from a fault-reason
+#: string (``fault_reason`` is ``"none"``, not empty, when nothing is wrong).
+#: State-level: the FaultReason sets below classify *reasons*, this classifies the
+#: *state* those reasons produce, and DEGRADED belongs here because motion is refused
+#: there too even though the controller manages the decel itself.
+FAULT_STATES: frozenset[LifecycleState] = frozenset(
+    {LifecycleState.DEGRADED, LifecycleState.FAULTED, LifecycleState.LOST}
+)
 
 
 # --------------------------------------------------------------------------- #

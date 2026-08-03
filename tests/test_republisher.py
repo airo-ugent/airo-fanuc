@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from airo_fanuc.republisher import (
+    MAX_AGE_MS,
     MAX_PAYLOAD_BYTES,
     TOPIC_EXT_STATUS,
     TOPIC_EXTERNAL_FORCE,
@@ -26,11 +27,14 @@ from airo_fanuc.republisher import (
 
 
 def _base_snapshot() -> dict[str, Any]:
+    """A healthy STREAMING snapshot, in the shape ``FanucDriver._republish_snapshot``
+    assembles: lifecycle values are the enum's own lowercase strings and
+    ``fault_reason`` is ``"none"`` (not None) when nothing is wrong."""
     now = time.time_ns()
     return {
         "q_meas_deg": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
         "qd_meas_deg": [0.1, 0.2, 0.0, -0.1, 0.0, 0.0],
-        "joint_names": ["j1", "j2", "j3", "j4", "j5", "j6"],
+        "joint_names": ["J1", "J2", "J3", "J4", "J5", "J6"],
         "t_meas_ns": now,
         "source": "stream",
         "e_stopped": False,
@@ -38,30 +42,35 @@ def _base_snapshot() -> dict[str, Any]:
         "tp_enabled": False,
         "motion_possible": True,
         "motion_in_progress": False,
-        "contact_stop_mode": 0,
+        "contact_stop_status": 0,
         "safety_scale": 1.0,
         "rx_silent": False,
-        "recovery_event_id": 3,
-        "starvation_active": False,
-        "system_fault_event_id": 1,
-        "gen_override_pct": 100,
-        "speed_clamp_limit_pct": 100.0,
-        "lifecycle_state": "STREAMING",
-        "fault_reason": None,
+        "lifecycle_state": "streaming",
+        "fault_reason": "none",
+        "faulted": False,
         "operator_hint": None,
         "command_epoch": 7,
+        "recovery_count": 3,
         "owner": "pid=1234 mode=control",
         "tick_p99_ms": 8.2,
         "wrench": {"force": [1.0, 2.0, 3.0], "moment": [0.1, 0.2, 0.3], "magnitude_n": 3.74},
-        "control_mode": "RemoteControl",
-        "in_motion": False,
-        "drives_powered": True,
     }
 
 
-def _repub(snap: dict[str, Any]) -> tuple[Republisher, FakePublisher]:
+def _ext_status() -> dict[str, Any]:
+    return {
+        "gen_override_pct": 100,
+        "speed_clamp_limit_pct": 100.0,
+        "control_mode": "RemoteControl",
+        "in_motion": False,
+        "drives_powered": True,
+        "t_read_ns": time.time_ns(),
+    }
+
+
+def _repub(snap: dict[str, Any], ext: dict[str, Any] | None = None) -> tuple[Republisher, FakePublisher]:
     pub = FakePublisher()
-    r = Republisher(pub, lambda: snap)
+    r = Republisher(pub, lambda: snap, ext_status=(lambda: ext) if ext is not None else None)
     # Declare handles without starting the threads (deterministic one-shot tests).
     for topic in (
         TOPIC_JOINT_STATES,
@@ -101,27 +110,53 @@ def test_robot_status_payload_has_status_and_lifecycle_keys() -> None:
         "tp_enabled",
         "motion_possible",
         "motion_in_progress",
-        "contact_stop_mode",
+        "contact_stop_status",
         "safety_scale",
         "rx_silent",
-        "recovery_event_id",
-        "starvation_active",
-        "system_fault_event_id",
-        "gen_override_pct",
-        "speed_clamp_limit_pct",
     ):
         assert key in payload, f"missing status key {key}"
     for key in (
         "lifecycle_state",
         "fault_reason",
+        "faulted",
         "operator_hint",
         "command_epoch",
+        "recovery_count",
         "owner",
         "tick_p99_ms",
     ):
         assert key in payload, f"missing lifecycle key {key}"
-    assert payload["lifecycle_state"] == "STREAMING"
+    assert payload["lifecycle_state"] == "streaming"
     assert payload["command_epoch"] == 7
+    assert payload["recovery_count"] == 3
+    assert payload["tick_p99_ms"] == pytest.approx(8.2)
+
+
+def test_robot_status_publishes_no_field_the_driver_cannot_fill() -> None:
+    """Every published key must have a producer. A key nothing assembles publishes as
+    a constant default forever, which reads as real data — the whole payload is a
+    safety block a consumer acts on."""
+    r, pub = _repub(_base_snapshot())
+    r.publish_robot_status()
+    (payload,) = pub.payloads(TOPIC_ROBOT_STATUS)
+    for key in (
+        "contact_stop_mode",  # the controller reports contact_stop_status
+        "recovery_event_id",  # the supervisor counts ladders, it mints no event ids
+        "starvation_active",
+        "system_fault_event_id",
+        "gen_override_pct",  # RMI-sourced: fanuc/ext_status, at its own 1 Hz
+        "speed_clamp_limit_pct",
+    ):
+        assert key not in payload, f"{key} has no producer in this package"
+
+
+def test_contact_stop_status_is_published_as_reported() -> None:
+    snap = _base_snapshot()
+    snap["contact_stop_status"] = 2  # controller STOP
+    r, pub = _repub(snap)
+    r.publish_robot_status()
+    (payload,) = pub.payloads(TOPIC_ROBOT_STATUS)
+    assert payload["contact_stop_status"] == 2
 
 
 def test_external_force_payload_shape() -> None:
@@ -142,12 +177,30 @@ def test_external_force_skipped_when_wrench_none() -> None:
 
 
 def test_ext_status_payload_shape() -> None:
-    r, pub = _repub(_base_snapshot())
+    r, pub = _repub(_base_snapshot(), _ext_status())
     r.publish_ext_status()
     (payload,) = pub.payloads(TOPIC_EXT_STATUS)
     assert payload["gen_override_pct"] == 100
+    assert payload["speed_clamp_limit_pct"] == pytest.approx(100.0)
     assert payload["control_mode"] == "RemoteControl"
     assert payload["drives_powered"] is True
+    assert payload["age_ms"] is not None
+
+
+def test_ext_status_silent_without_accessor() -> None:
+    """The block behind this topic is an RMI round trip. With no accessor the topic
+    says nothing rather than publishing a payload of nulls."""
+    r, pub = _repub(_base_snapshot())
+    r.publish_ext_status()
+    assert pub.payloads(TOPIC_EXT_STATUS) == []
+
+
+def test_ext_status_silent_when_read_unavailable() -> None:
+    pub = FakePublisher()
+    r = Republisher(pub, _base_snapshot, ext_status=lambda: None)
+    r._handles[TOPIC_EXT_STATUS] = pub.declare_publisher(TOPIC_EXT_STATUS)
+    r.publish_ext_status()
+    assert pub.payloads(TOPIC_EXT_STATUS) == []
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +245,41 @@ def test_stale_annotation() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Clock domain: t_meas_ns and now_ns must be the same clock. A CLOCK_MONOTONIC stamp
+# subtracts to the host's uptime, which would publish as an age of years.
+# ---------------------------------------------------------------------------
+
+
+def test_age_from_foreign_clock_is_reported_as_unknown() -> None:
+    snap = _base_snapshot()
+    snap["t_meas_ns"] = time.monotonic_ns()  # wrong clock
+    r, pub = _repub(snap)
+    r.publish_joint_states()
+    (payload,) = pub.payloads(TOPIC_JOINT_STATES)
+    assert payload["age_ms"] is None
+    assert payload["stale"] is True  # unknown age is never "fresh"
+
+
+def test_age_beyond_ceiling_and_from_the_future_is_unknown() -> None:
+    r, _pub = _repub(_base_snapshot())
+    assert r._age_ms(time.time_ns() - int(MAX_AGE_MS * 1e6) - 1_000_000_000) is None
+    assert r._age_ms(time.time_ns() + 1_000_000_000) is None
+    assert r._age_ms(None) is None
+    assert r._age_ms(time.time_ns() - 10_000_000) == pytest.approx(10.0, abs=5.0)
+
+
+def test_ages_are_measured_against_the_injected_clock() -> None:
+    snap = _base_snapshot()
+    snap["t_meas_ns"] = 1_000_000_000_000
+    pub = FakePublisher()
+    r = Republisher(pub, lambda: snap, now_ns=lambda: 1_000_000_000_000 + 50_000_000)
+    r._handles[TOPIC_JOINT_STATES] = pub.declare_publisher(TOPIC_JOINT_STATES)
+    r.publish_joint_states()
+    (payload,) = pub.payloads(TOPIC_JOINT_STATES)
+    assert payload["age_ms"] == pytest.approx(50.0)
+
+
+# ---------------------------------------------------------------------------
 # Toast triples — exact (kind, tag, status). Subscribers match on the literal triple,
 # so these identifiers are wire contract: a renamed tag silently stops a toast.
 # ---------------------------------------------------------------------------
@@ -213,14 +301,33 @@ def test_bridge_fault_toast_triple() -> None:
     snap = _base_snapshot()
     r, pub = _repub(snap)
     r.publish_robot_status()  # seed prev_faulted=False
-    snap["lifecycle_state"] = "FAULTED"
-    snap["fault_reason"] = "E-stop pressed"
+    snap["lifecycle_state"] = "faulted"
+    snap["fault_reason"] = "e_stop"
+    snap["faulted"] = True
     r.publish_robot_status()  # edge into FAULTED
     events = pub.payloads(TOPIC_LOG_EVENT)
     # BRIDGE:FAULT whitelist matches ANY status (None wildcard) — assert the
     # (kind, tag) pair is emitted exactly.
     pairs = [(e["kind"], e["tag"]) for e in events]
     assert ("SYSTEM", "BRIDGE:FAULT") in pairs
+    assert [e["specifics"] for e in events if e["tag"] == "BRIDGE:FAULT"] == ["e_stop"]
+
+
+def test_healthy_fault_reason_string_does_not_latch_the_fault_edge() -> None:
+    """A healthy snapshot carries ``fault_reason="none"`` — a non-empty string. If the
+    republisher judged "faulted" by that field's truthiness it would seed prev=True on
+    the first tick and the rising edge into a real fault would never be published."""
+    snap = _base_snapshot()
+    r, pub = _repub(snap)
+    for _ in range(3):
+        r.publish_robot_status()  # steady, healthy
+    assert pub.payloads(TOPIC_LOG_EVENT) == []
+    snap["lifecycle_state"] = "faulted"
+    snap["fault_reason"] = "in_error"
+    snap["faulted"] = True
+    r.publish_robot_status()
+    tags = [e["tag"] for e in pub.payloads(TOPIC_LOG_EVENT)]
+    assert tags.count("BRIDGE:FAULT") == 1
 
 
 def test_no_toast_without_edge() -> None:

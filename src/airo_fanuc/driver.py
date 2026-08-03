@@ -43,6 +43,7 @@ from .exceptions import (
 from .gripper_worker import GripperWorker
 from .lifecycle import LifecycleState, motion_result_of
 from .ownership import OwnershipLock
+from .receive_interface import SOURCE_STREAM
 from .republisher import Republisher
 from .rmi_client import RmiClient
 from .supervisor import Supervisor
@@ -61,6 +62,56 @@ def _snap(core: StreamCore) -> dict[str, Any]:
 _NDOF = 6
 _INT64_MAX = 2**63 - 1
 _STEADY_QD_EPS_RAD_S = math.radians(2.0)  # SettlePolicy vel_eps default
+
+#: Axis labels published alongside the joint stream: the pendant's own J1..J6, in
+#: Stream Motion wire order. This package ships no URDF, so they are labels for a
+#: consumer to map, not URDF joint names.
+_JOINT_NAMES: tuple[str, ...] = tuple(f"J{i}" for i in range(1, _NDOF + 1))
+
+
+def _republish_block(snap: dict[str, Any]) -> dict[str, Any]:
+    """Seqlock snapshot → the republisher's snapshot keys (degrees, wall-clock ns).
+
+    ``rx_mono_ns`` is CLOCK_MONOTONIC at packet ingest, while the published ages are
+    wall-clock, so ``t_meas_ns`` is that same instant converted through one offset
+    read — both clocks sampled now, the way ``RealtimeCore::joints_at_wall`` does it.
+    Publishing the monotonic stamp unconverted would report an age of the host's
+    uptime. Wall clock is also the clock a camera stamps a grab with, which is what
+    makes a published pose pairable with an image.
+
+    The joint block is gated on ``rx_mono_ns > 0``: before the first status packet it
+    is still zero-initialised, and all-zero joints are a pose rather than a "no data"
+    marker — the same gate :meth:`FanucDriver.get_flange_pose` applies.
+    """
+    rx_mono_ns = int(snap["rx_mono_ns"])
+    have_rx = rx_mono_ns > 0
+    wrench: dict[str, Any] | None = None
+    if bool(snap["wrench_valid"]):
+        fx, fy, fz = float(snap["fx"]), float(snap["fy"]), float(snap["fz"])
+        wrench = {
+            "force": [fx, fy, fz],
+            "moment": [float(snap["mx"]), float(snap["my"]), float(snap["mz"])],
+            "magnitude_n": math.hypot(fx, fy, fz),
+        }
+    return {
+        "q_meas_deg": np.degrees(snap["q_meas"]).tolist() if have_rx else None,
+        "qd_meas_deg": np.degrees(snap["qd_est"]).tolist() if have_rx else None,
+        "joint_names": list(_JOINT_NAMES),
+        "t_meas_ns": (time.time_ns() - (time.monotonic_ns() - rx_mono_ns)) if have_rx else None,
+        "source": SOURCE_STREAM,
+        "e_stopped": bool(snap["e_stopped"]),
+        "in_error": bool(snap["in_error"]),
+        "tp_enabled": bool(snap["tp_enabled"]),
+        "motion_possible": bool(snap["motion_possible"]),
+        "motion_in_progress": bool(snap["motion_in_progress"]),
+        "contact_stop_status": int(snap["contact_stop_status"]),
+        "safety_scale": float(snap["safety_scale"]),
+        # RX_SILENT is the core's parked mode, entered together with the RX_SILENT
+        # fault (tick_core.enter_rx_silent).
+        "rx_silent": Mode(int(snap["mode"])) == Mode.RX_SILENT,
+        "command_epoch": int(snap["epoch"]),
+        "wrench": wrench,
+    }
 
 
 class MotionHandle:
@@ -201,8 +252,9 @@ class FanucDriver:
             if self._policy.publisher is not None:
                 self._republisher = Republisher(
                     self._policy.publisher,
-                    self.get_state,
+                    self._republish_snapshot,
                     joints_at_wall=self.joints_at_wall,
+                    ext_status=self._read_ext_status,
                 )
                 self._republisher.start()
         except BaseException:
@@ -644,6 +696,59 @@ class FanucDriver:
             state.update(sup.lifecycle_snapshot())
         state["owner"] = self._owner_record()
         return state
+
+    def _republish_snapshot(self) -> dict[str, Any]:
+        """The :class:`~airo_fanuc.republisher.Republisher` snapshot contract (never raises).
+
+        Separate from :meth:`get_state`, which reports the core's own names and units —
+        radians, monotonic stamps, the raw force fields. The published topics are
+        degrees, wall-clock nanoseconds and a wrench block, so the conversion lives
+        here instead of widening the getter every other caller reads.
+        """
+        state: dict[str, Any] = {}
+        core = self.core
+        if core is not None:
+            try:
+                state.update(_republish_block(_snap(core)))
+                state["tick_p99_ms"] = self.timing_stats().get("tx_interval_p99_ms")
+            except Exception as exc:  # noqa: BLE001 - telemetry never raises
+                logger.debug("airo_fanuc: republish snapshot assembly failed: %s", exc)
+        sup = self._supervisor
+        if sup is not None:
+            life = sup.lifecycle_snapshot()
+            for key in ("lifecycle_state", "fault_reason", "faulted", "operator_hint", "recovery_count"):
+                state[key] = life.get(key)
+        state["owner"] = self._owner_record()
+        return state
+
+    def _read_ext_status(self) -> dict[str, Any] | None:
+        """RMI extended status for the 1 Hz ``fanuc/ext_status`` topic, or ``None``.
+
+        Only while STREAMING. This is a telemetry read on the one RMI session the
+        bring-up and recovery ladders also use, and ``RmiClient`` holds its request
+        lock across a reopen ladder, so a poll issued while the session is being torn
+        down or rebuilt would both compete with FRC_Reset / FRC_Call for that lock and
+        be able to reopen the session under them. Reads at this rate are measured safe
+        during live motion (``controller_facts.INTERIM_FACTS.rmi_reads_ok_in_t1``:
+        450/450 at 15 Hz).
+        """
+        rmi = self.rmi
+        sup = self._supervisor
+        if rmi is None or sup is None or sup.state() is not LifecycleState.STREAMING:
+            return None
+        try:
+            ext = rmi.get_extended_status(quiet=True)
+        except Exception as exc:  # noqa: BLE001 - telemetry never raises
+            logger.debug("airo_fanuc: ext-status poll failed: %s", exc)
+            return None
+        return {
+            "gen_override_pct": ext.gen_override_pct,
+            "speed_clamp_limit_pct": ext.speed_clamp_limit_pct,
+            "control_mode": ext.control_mode,
+            "in_motion": ext.in_motion,
+            "drives_powered": ext.drives_powered,
+            "t_read_ns": time.time_ns(),
+        }
 
     def _force_telemetry_available(self) -> bool:
         """True iff the controller is currently delivering a valid wrench (fs_type

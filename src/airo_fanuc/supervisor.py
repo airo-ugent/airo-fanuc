@@ -48,6 +48,7 @@ from .config import DriverPolicy
 from .exceptions import FanucConnectionError, FanucPreflightError, RmiError, RmiSessionDown
 from .gripper import ACTION_OPEN, OPEN_FULL, REG_ACTION, REG_CMD, REG_R3
 from .lifecycle import (
+    FAULT_STATES,
     LifecycleState,
     classify,
     fault_reason_string,
@@ -876,10 +877,16 @@ class Supervisor:
             logger.warning("airo_fanuc: gripper set_recovery(%s) failed: %s", active, exc)
 
     def lifecycle_snapshot(self) -> dict[str, Any]:
+        """Lifecycle view for the getters and the republished status.
+
+        ``faulted`` is the classification itself (:data:`FAULT_STATES`) rather than
+        something a reader derives from ``fault_reason``, which is the string
+        ``"none"`` — not empty — when nothing is wrong."""
         with self._lock:
             return {
                 "lifecycle_state": self._state.value,
                 "fault_reason": self._fault_reason_str,
+                "faulted": self._state in FAULT_STATES,
                 "operator_hint": self._operator_hint,
                 "operator_required": self._operator_required,
                 "motion_inhibited": self._motion_inhibited,

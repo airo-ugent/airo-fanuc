@@ -20,6 +20,7 @@ from airo_fanuc._core import FaultReason, Mode, MotionStatus, RtCoreConfig, gene
 from airo_fanuc.config import DriverConfig, MotionResult
 from airo_fanuc.lifecycle import (
     ARM_FAULTS,
+    FAULT_STATES,
     OPERATOR_REQUIRED_HINT,
     LifecycleState,
     classify,
@@ -128,6 +129,24 @@ def test_classify(mode: Mode, fault: FaultReason, expected: LifecycleState) -> N
 def test_classify_lost_when_rmi_down_and_rx_silent() -> None:
     assert classify(Mode.RX_SILENT, FaultReason.RX_SILENT, rmi_down=True) == LifecycleState.LOST
     assert classify(Mode.STREAM_DOWN, FaultReason.NONE, rmi_down=True) == LifecycleState.LOST
+
+
+def test_fault_states_cover_every_fault_classification() -> None:
+    """FAULT_STATES is what "faulted" means for everything outside the state machine
+    (the supervisor snapshot, the republished status). Any observed fault must land in
+    it, and no healthy or bring-up state may."""
+    for fault in FaultReason.__members__.values():
+        if fault == FaultReason.NONE:
+            continue
+        assert classify(Mode.SAFE_FOLLOW, fault) in FAULT_STATES, fault
+    assert classify(Mode.RX_SILENT, FaultReason.RX_SILENT, rmi_down=True) in FAULT_STATES
+    assert LifecycleState.STREAMING not in FAULT_STATES
+    assert LifecycleState.RECOVERING not in FAULT_STATES
+    assert LifecycleState.SHUTTING_DOWN not in FAULT_STATES
+    assert LifecycleState.DISCONNECTED not in FAULT_STATES
+    # "none" is a fault-reason string, not an absence of one: nothing may classify by
+    # testing that field for emptiness.
+    assert fault_reason_string(FaultReason.NONE) == "none"
 
 
 def test_fault_classification_predicates() -> None:

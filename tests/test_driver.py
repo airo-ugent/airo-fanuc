@@ -41,6 +41,13 @@ from airo_fanuc import (
 from airo_fanuc import controller_facts as cf
 from airo_fanuc.exceptions import RmiSessionDown
 from airo_fanuc.ownership import OwnershipLock
+from airo_fanuc.republisher import (
+    TOPIC_EXT_STATUS,
+    TOPIC_JOINT_STATES,
+    TOPIC_LOG_EVENT,
+    TOPIC_ROBOT_STATUS,
+    FakePublisher,
+)
 from airo_fanuc.testing import FakeCRXConfig, FakeCRXController
 
 _READY_TIMEOUT_S = 6.0
@@ -451,6 +458,101 @@ def test_get_state_merges_snapshot_and_lifecycle(rig: DriverRig) -> None:
         assert key in st, key
     assert st["fault_reason"] == "none"
     assert st["owner"]["mode"] == "control"
+
+
+# --------------------------------------------------------------------------- #
+# Republish path. The driver is the only thing that assembles the Republisher's
+# snapshot contract, so the wiring is only real end to end: a key nothing fills
+# publishes as its default forever and still reads to a consumer as measured data.
+# --------------------------------------------------------------------------- #
+
+
+def test_republished_topics_carry_measured_state(tmp_path: Any) -> None:
+    pub = FakePublisher()
+    rig = DriverRig(tmp_path, policy_overrides={"publisher": pub})
+    try:
+        rig.controller.set_ext_status(gen_override_pct=42)
+        deadline = time.monotonic() + 4.0
+        while time.monotonic() < deadline:
+            if pub.payloads(TOPIC_JOINT_STATES) and pub.payloads(TOPIC_EXT_STATUS):
+                break
+            time.sleep(0.02)
+
+        joints = pub.payloads(TOPIC_JOINT_STATES)
+        assert joints, "fanuc/joint_states never published"
+        last = joints[-1]
+        assert len(last["positions_deg"]) == 6
+        assert last["joint_names"] == ["J1", "J2", "J3", "J4", "J5", "J6"]
+        assert last["velocity_valid"] is True
+        assert last["source"] == "stream"
+        # A wall-clock stamp ages in milliseconds. A CLOCK_MONOTONIC one would
+        # subtract to the host's uptime, i.e. years.
+        assert all(p["age_ms"] is not None and p["age_ms"] < 1000.0 for p in joints)
+        assert any(p["stale"] is False for p in joints)
+
+        status = pub.payloads(TOPIC_ROBOT_STATUS)[-1]
+        assert status["lifecycle_state"] == "streaming"
+        assert status["faulted"] is False
+        assert status["motion_possible"] is True
+        assert status["contact_stop_status"] == 0
+        assert status["command_epoch"] is not None
+        assert status["recovery_count"] == 0
+        assert status["tick_p99_ms"] is not None and status["tick_p99_ms"] > 0.0
+        assert status["age_ms"] is not None and status["age_ms"] < 1000.0
+
+        ext = pub.payloads(TOPIC_EXT_STATUS)
+        assert ext, "fanuc/ext_status never published"
+        assert ext[-1]["gen_override_pct"] == 42  # the value the controller reports
+        assert ext[-1]["drives_powered"] is True
+    finally:
+        rig.close()
+
+
+def test_republished_fault_toast_fires_on_the_real_fault_edge(tmp_path: Any) -> None:
+    """The pinned BRIDGE:FAULT toast on a live fault. Its trigger is the driver's own
+    lifecycle classification, so it must survive a healthy prologue — several
+    ``fault_reason="none"`` publishes — before the fault arrives."""
+    pub = FakePublisher()
+    rig = DriverRig(tmp_path, policy_overrides={"publisher": pub, "auto_recover": False})
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(pub.payloads(TOPIC_ROBOT_STATUS)) < 3:
+            time.sleep(0.02)
+        assert pub.payloads(TOPIC_LOG_EVENT) == [], "a healthy robot toasted a fault"
+
+        rig.controller.press_estop()
+        toast = None
+        deadline = time.monotonic() + 4.0
+        while time.monotonic() < deadline:
+            faults = [e for e in pub.payloads(TOPIC_LOG_EVENT) if e["tag"] == "BRIDGE:FAULT"]
+            if faults:
+                toast = faults[0]
+                break
+            time.sleep(0.02)
+        assert toast is not None, "no BRIDGE:FAULT toast on the e-stop edge"
+        assert (toast["kind"], toast["tag"], toast["status"]) == ("SYSTEM", "BRIDGE:FAULT", "FAIL")
+        assert toast["specifics"] in ("e_stop", "in_error")
+    finally:
+        rig.controller.release_estop()
+        rig.close()
+
+
+def test_ext_status_is_not_published_while_the_session_is_not_streaming(tmp_path: Any) -> None:
+    """The ext-status read is an RMI round trip on the session the recovery ladder
+    uses, so it is refused outside STREAMING rather than competing for the client's
+    request lock."""
+    pub = FakePublisher()
+    rig = DriverRig(tmp_path, policy_overrides={"publisher": pub, "auto_recover": False})
+    try:
+        rig.controller.press_estop()
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and rig.driver.get_state()["lifecycle_state"] != "faulted":
+            time.sleep(0.02)
+        assert rig.driver.get_state()["lifecycle_state"] == "faulted"
+        assert rig.driver._read_ext_status() is None  # noqa: SLF001 - the gate is the point
+    finally:
+        rig.controller.release_estop()
+        rig.close()
 
 
 def test_get_wrench_none_on_v3_controller(rig: DriverRig) -> None:
