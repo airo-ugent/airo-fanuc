@@ -1,6 +1,10 @@
 .venv/
 .venv-dev/
-build/
+# `build*/`, not `build/`: scikit-build-core filters the sdist through this file, so a
+# CMake tree under any other name (`build-debug`, an IDE's `build-Release`) is copied
+# into the tarball wholesale — a few hundred kB of source becomes tens of MB of object
+# files, and nothing in the build fails to say so.
+build*/
 _skbuild/
 *.so
 __pycache__/

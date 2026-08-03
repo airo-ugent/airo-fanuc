@@ -1,6 +1,6 @@
 # airo-fanuc
 
-A standalone driver for FANUC controllers: a C++17 real-time core speaking **Stream Motion**
+A standalone driver for FANUC controllers: a compiled real-time core speaking **Stream Motion**
 (UDP, 125 Hz / 8 ms ITP) plus an **RMI** JSON client (TCP 16001), behind a Python API.
 
 The Python surface is split the conventional way for an industrial-arm client library: a
@@ -47,10 +47,11 @@ all.
 Stream Motion and RMI are FANUC's own protocols, not a CRX feature. What is required is
 controller option **S636** (the External Control Package, which bundles J519 Stream Motion +
 R912 RMI). Default endpoints are UDP 60015 and TCP 16001 (`DriverConfig.sm_port` /
-`rmi_port`), and the negotiated Stream Motion version is configurable via
-`DriverConfig.sm_version` (3 = no force telemetry, 4 = FSConfig/force). On v3 the controller
-streams type-202 packets, `get_wrench()` returns `None`, and a numeric `force_stop_n` is
-rejected with a typed error rather than armed as a silent no-op.
+`rmi_port`). `DriverConfig.sm_version` is the version *requested* at handshake; the session
+then adopts whatever the controller reports it can do. Either way this driver does not send a
+ForceSensorConfig packet, so no force block is ever streamed: `get_wrench()` returns `None`
+and a numeric `force_stop_n` is rejected with a typed error rather than armed as a silent
+no-op. On v3 the controller streams type-202 status packets.
 
 The 8 ms ITP is an **R-30iB** fact, not a collaborative-robot fact — that is FANUC's mainstream
 controller class, so this covers many arms rather than only cobots. It is also a config field
@@ -158,13 +159,34 @@ not "a measured width was reached".
 
 ## Install, build, test
 
+### Installing the released package
+
+**It builds from source.** There are no pre-built wheels: the only runtime dependency is
+numpy, but the real-time core is a compiled extension, and `pip install airo-fanuc` compiles
+it on your machine. That needs, beyond a Python toolchain:
+
+- a **C++20-capable compiler** — GCC 10+ or Clang 10+. Our own code targets C++17, but
+  ruckig requires C++20 and propagates it to everything that links it.
+- **CMake ≥ 3.22** and a build tool (`make` or `ninja`).
+- **Python development headers** (`python3-dev` / `python3-devel`). pip's build isolation
+  does not supply these.
+- **`git` and network access to github.com.** ruckig and pybind11 are fetched at configure
+  time by CMake's `FetchContent`, so a fully offline or hash-pinned install will fail.
+- **Linux.** The RT thread is `timerfd_create` + `epoll` + `SCHED_FIFO`; there is no
+  portable fallback, which is why the only OS classifier is POSIX/Linux.
+
+The package also deliberately ships **no arm profile** — you must supply a `RobotProfile`,
+and `examples/crx10ial.py` is a worked one. See *Robot profile* below.
+
+### Working on the driver
+
 `uv` for everything — never system `python`, never `pip`. The one detail worth knowing up front:
 the dev tools are an **extra** (`[project.optional-dependencies] dev`), not a dependency group,
 so a plain `uv sync` does *not* install pytest. Use `--extra dev`.
 
 ```bash
 git clone --recursive <repo-url> && cd airo-fanuc
-uv sync --extra dev            # compiles the C++17 extension (scikit-build-core + CMake)
+uv sync --extra dev            # compiles the extension (scikit-build-core + CMake)
 uv run pytest -q               # ~470 tests, all hardware-free
 uv run ruff check src tests examples
 uv run ruff format --check src tests examples
@@ -271,11 +293,11 @@ Before running against a real robot:
 
 - **Controller option S636** (J519 Stream Motion + R912 RMI). It is verified once on the bench
   and recorded in `docs/controller-notes.md` §1.1 rather than re-fetched on every connect;
-  `run_preflight(rmi, full=True)` is the hook for re-reading the P-level / S636 / orderfile facts
-  off the controller's file server, and currently reports that it is not implemented. The
-  per-connect gate does run on every bring-up: AUTO mode, servo ready, drives powered, general
-  override, DCS speed clamp, and alarm classification (SYST-348 / SYST-322 are hard blocks with
-  operator instructions).
+  `run_preflight(rmi, full=True)` re-reads the P-level / S636 / orderfile facts off the
+  controller's file server and cross-checks them against the configured profile; it is what
+  `DriverPolicy(preflight_full=True)` turns on. The per-connect gate runs on every bring-up
+  regardless: AUTO mode, servo ready, drives powered, general override, DCS speed clamp, and
+  alarm classification (SYST-348 / SYST-322 are hard blocks with operator instructions).
 - **Controller in AUTO**, drives powered, E-stop released, alarms reset. T1/T2 is a soft
   DEGRADED warning, not a hard block.
 - **No other Stream Motion peer.** One peer per controller is a hardware-level constraint, not a
@@ -324,7 +346,8 @@ from airo_fanuc import DriverConfig, DriverPolicy, FanucDriver, MotionResult
 
 # The arm's envelope has no default and must be supplied — see "Injected, with no
 # default" above. `examples/crx10ial.py` is a written-down CRX-10iA/L profile; for
-# another model, emit one with `python -m airo_fanuc.controller_probe --emit-profile`.
+# another model, emit one with
+# `python -m airo_fanuc.controller_probe --ip <controller> --emit-profile`.
 from crx10ial import CRX10IAL
 
 policy = DriverPolicy(config=DriverConfig(profile=CRX10IAL), enable_gripper=False)

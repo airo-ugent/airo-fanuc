@@ -8,7 +8,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "airo-fanuc"
 version = "0.1.0"
-description = "FANUC driver: C++17 real-time Stream Motion core behind a Python receive/control API"
+description = "FANUC driver: a compiled real-time Stream Motion core behind a Python receive/control API"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

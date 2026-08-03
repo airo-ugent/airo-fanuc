@@ -10,8 +10,11 @@
 cmake_minimum_required(VERSION 3.22)  # exact host minimum (cmake 3.22.1)
 project(airo_fanuc LANGUAGES CXX VERSION 0.1.0)
 
-# C++17 is enough: the only vendored code that would force C++20 is upstream's
-# RMI library (reflect-cpp), which we do not compile — RMI lives in Python.
+# Our own code is written to C++17 and the codec compiles at it. The real floor for the
+# build as a whole is C++20, because ruckig declares `target_compile_features(ruckig PUBLIC
+# cxx_std_20)` and that propagates to everything linking it: tick_engine, rt_core and the
+# _core module all compile at -std=c++20. This setting is therefore a minimum that ruckig
+# raises, not a ceiling — a compiler with no C++20 mode cannot build this package.
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
