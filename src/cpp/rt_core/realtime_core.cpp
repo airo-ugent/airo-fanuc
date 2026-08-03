@@ -32,9 +32,6 @@ namespace airo_fanuc::rt_core {
 
 namespace {
 
-constexpr double kPi = 3.141592653589793238462643383279502884;
-constexpr double kRadToDeg = 180.0 / kPi;
-constexpr double kDegToRad = kPi / 180.0;
 
 inline std::int64_t now_ns() {
   struct timespec ts;
@@ -436,7 +433,7 @@ void RealtimeCore::rt_main_() {
           // deg → rad measured.
           Vec6 q_meas{};
           for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
-            q_meas[j] = v.joint_angle[j] * kDegToRad;
+            q_meas[j] = tick_engine::deg2rad(v.joint_angle[j]);
           }
           // velocity history.
           vel_t_[static_cast<std::size_t>(vel_head_)] = rx_mono;
@@ -592,7 +589,7 @@ void RealtimeCore::rt_main_() {
     if (cmd.tx) {
       std::array<double, 9> pos_deg{};
       for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
-        pos_deg[j] = cmd.q_rad[j] * kRadToDeg;
+        pos_deg[j] = tick_engine::rad2deg(cmd.q_rad[j]);
       }
       ++tx_seq_;  // independent monotonic TX seq
       const auto pkt = codec::encode_command_packet(tx_seq_, cmd.is_last, /*do_motn_ctrl=*/1, pos_deg);
@@ -635,7 +632,7 @@ void RealtimeCore::rt_main_() {
     std::array<double, 9> pos_deg{};
     const Vec6& q = tick_core_.q_cmd();
     for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
-      pos_deg[j] = q[j] * kRadToDeg;
+      pos_deg[j] = tick_engine::rad2deg(q[j]);
     }
     ++tx_seq_;
     const auto pkt = codec::encode_command_packet(tx_seq_, /*is_last=*/true, /*do_motn_ctrl=*/1, pos_deg);

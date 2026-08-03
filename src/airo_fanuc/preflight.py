@@ -54,7 +54,7 @@ __all__ = ["PreflightReport", "run_preflight"]
 # FRC_GetStatus.TPMode values that mean AUTO. The standard FANUC AUTO code is 2,
 # but this SOP-less CRX reports 0 in its (permanent) AUTO — measured on the
 # controller (docs/controller-notes.md §1.6). Both are AUTO here; only 1 (T1) /
-# 3 (T2) are genuine TEACH modes. Mirrors supervisor._TP_MODES_AUTO.
+# 3 (T2) are genuine TEACH modes. The supervisor imports this rather than restating it.
 _TP_MODES_AUTO = (0, 2)
 
 # Alarm-prefix classification: alarms that no amount of retrying will clear, so

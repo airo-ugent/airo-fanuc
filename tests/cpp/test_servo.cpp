@@ -27,7 +27,7 @@ using airo_fanuc::tick_engine::Vec6;
 
 namespace {
 Vec6 axis0(double x) { return Vec6{x, 0, 0, 0, 0, 0}; }
-constexpr double kTwoPi = 2.0 * 3.141592653589793;
+constexpr double kTwoPi = 2.0 * airo_fanuc::tick_engine::kPi;
 }  // namespace
 
 // minimum_duration = duration prevents the reach-early freeze sawtooth.

@@ -39,8 +39,12 @@ TEST_PROFILE = RobotProfile.from_degrees(
     velocity_limits_deg_s=[120.0, 120.0, 180.0, 180.0, 180.0, 180.0],
     acceleration_limits_deg_s2=[240.0, 240.0, 360.0, 360.0, 360.0, 360.0],
     jerk_limits_deg_s3=[1920.0, 1920.0, 2880.0, 2880.0, 2880.0, 2880.0],
-    position_limits_lower_deg=[-180.0, -180.0, -270.0, -190.0, -180.0, -225.0],
-    position_limits_upper_deg=[180.0, 180.0, 270.0, 190.0, 180.0, 225.0],
+    # ±179.999 on J1/J2/J5, not the ±180 a datasheet rounds to: these mirror the
+    # controller's own active limits as recorded in ``examples/crx10ial.py``, and that
+    # file says outright that the 0.001° is the kind of difference a hand-transcribed
+    # table loses. It had been lost here.
+    position_limits_lower_deg=[-179.999, -179.999, -270.0, -190.0, -179.999, -225.0],
+    position_limits_upper_deg=[179.999, 179.999, 270.0, 190.0, 179.999, 225.0],
     max_payload_kg=10.0,
     source="tests/conftest.py",
 )

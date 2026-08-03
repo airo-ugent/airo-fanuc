@@ -42,6 +42,7 @@ Stdlib only (``ftplib``), so it costs the distribution nothing.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from ftplib import FTP, all_errors
@@ -573,7 +574,7 @@ def probe_controller(
 
 
 def _rad_tuple_to_deg(values: tuple[float, ...]) -> tuple[float, ...]:
-    return tuple(v * 180.0 / 3.141592653589793 for v in values)
+    return tuple(math.degrees(v) for v in values)
 
 
 def _limits_from_sysvars(

@@ -405,7 +405,7 @@ TEST(StopPrecedence, LoopbackSubmitThenStopHoldsTheStop) {
 
   const std::vector<std::int64_t> times{0, 1'000'000'000};
   const std::uint64_t mid = core.submit_trajectory(times, j0_line(0.0, 0.4), j0_line(0.0, 0.0),
-                                                    1.0, 0.0087, 0.035, 2.0, 0.0, 0.0);
+                                                    1.0, airo_fanuc::tick_engine::deg2rad(0.5), airo_fanuc::tick_engine::deg2rad(2.0), 2.0, 0.0, 0.0);
   core.stop_j();  // issued AFTER the submit → supersedes it
   ASSERT_GT(mid, 0u);
 
@@ -451,7 +451,7 @@ TEST(StopPrecedence, LoopbackStopThenSubmitRuns) {
 
   const std::vector<std::int64_t> times{0, 1'000'000'000};
   const std::uint64_t mid = core.submit_trajectory(times, j0_line(0.0, 0.4), j0_line(0.0, 0.0),
-                                                    1.0, 0.0087, 0.035, 2.0, 0.0, 0.0);
+                                                    1.0, airo_fanuc::tick_engine::deg2rad(0.5), airo_fanuc::tick_engine::deg2rad(2.0), 2.0, 0.0, 0.0);
   ASSERT_GT(mid, 0u);
 
   // The trajectory must activate and drive q_cmd toward 0.4 — never REJECTED.

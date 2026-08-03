@@ -20,7 +20,8 @@
 // UNIT CONVENTION (binding): the engine works entirely in RADIANS — the same unit a
 // `RobotProfile` stores (rad, rad/s, rad/s², rad/s³) and the unit of curobo
 // trajectories. The Stream Motion wire is DEGREES; that conversion happens ONLY at
-// the wire, in the codec. Every C++ unit test states rad.
+// the wire, in `RealtimeCore` either side of the codec call — the codec itself
+// converts nothing. Every C++ unit test states rad.
 
 #pragma once
 
@@ -44,10 +45,13 @@ using Vec6 = std::array<double, kNumJoints>;
 // Mirrors controller_facts.ITP_S.
 inline constexpr double kItpSeconds = 0.008;
 
-// Degrees→radians at compile time (kept local so the header has no <cmath> dep
-// for a constexpr; matches numpy.deg2rad to double precision).
+// Degrees↔radians at compile time (kept local so the header has no <cmath> dep
+// for a constexpr; matches numpy.deg2rad to double precision). `rad2deg` is the
+// wire-boundary direction and belongs here beside its inverse rather than as a
+// factor re-derived where it is used.
 inline constexpr double kPi = 3.141592653589793238462643383279502884;
 constexpr double deg2rad(double deg) { return deg * (kPi / 180.0); }
+constexpr double rad2deg(double rad) { return rad * (180.0 / kPi); }
 
 // ---------------------------------------------------------------------------
 // Kinematic limits (radians) — the ceiling every stage clamps against.

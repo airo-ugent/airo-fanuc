@@ -55,7 +55,7 @@ from .lifecycle import (
     operator_hint_for,
     requires_arm,
 )
-from .preflight import PreflightReport, run_preflight
+from .preflight import _TP_MODES_AUTO, PreflightReport, run_preflight
 from .rmi_client import RmiClient
 
 if TYPE_CHECKING:
@@ -78,10 +78,6 @@ _STREAM_MOTN = "STREAM_MOTN"
 # is not the answer — RMI churn is itself an SM-daemon wedge vector (controller-notes §2.5).
 _SETTLE_ATTEMPTS = 2
 
-# TPMode values that mean AUTO. The standard FANUC AUTO code is 2, but this
-# SOP-less CRX reports 0 in its (permanent) AUTO — measured on the controller
-# (docs/controller-notes.md §1.6). Both are AUTO here; only 1/3 are genuine T1/T2.
-_TP_MODES_AUTO = (0, 2)
 _SYST348_WATCH_PERIOD_S = 1.0
 
 # Supervisor-liveness heartbeat (SUPERVISOR_LOST). A dedicated lightweight thread

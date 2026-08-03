@@ -1161,10 +1161,9 @@ class FanucDriver:
         # start. Checked here so it is a typed error naming the offending joints and the
         # ceiling. NB this caps the START velocity only — the interior of the trajectory
         # is bounded by the joint velocity limits checked above, so a profile that begins
-        # at rest may run as fast as those allow.
-        # FIRST-KNOT velocity vs the capture envelope, checked against the same raw qd the
-        # core splices to (consume() calls generate_capture_path with the first knot as
-        # given) — the "checked path IS the executed path" rule.
+        # at rest may run as fast as those allow. Checked against the same raw qd the
+        # core splices to — consume() calls generate_capture_path with the first knot as
+        # given — which is the "checked path IS the executed path" rule.
         capture_rate = float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
         qd_first = np.abs(qd_arr[0])
         if np.any(qd_first > capture_rate * (1.0 + 1e-9)):

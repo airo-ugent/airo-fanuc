@@ -32,7 +32,7 @@ SlewResult SlewLimiter::apply(const Vec6& q_desired) {
 
   int clipped = 0;
   for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
-    const double step = cfg_.slew_factor * cfg_.limits.v[j] * cfg_.itp_s;  // ≥ 0
+    const double step = max_step(static_cast<int>(j));  // ≥ 0; same TU, inlines
     const double delta = q_desired[j] - prev_q_[j];
     if (delta > step) {
       r.q[j] = prev_q_[j] + step;

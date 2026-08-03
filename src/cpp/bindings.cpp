@@ -662,8 +662,8 @@ PYBIND11_MODULE(_core, m) {
       .def("wait_ready", &StreamCore::wait_ready, py::arg("timeout_s") = 5.0)
       .def_property_readonly("running", &StreamCore::running)
       .def("submit_trajectory", &StreamCore::submit_trajectory, py::arg("times_ns"), py::arg("q"),
-           py::arg("qd"), py::arg("speed_scale") = 1.0, py::arg("settle_tol_rad") = 0.008726646259971648,
-           py::arg("settle_vel_eps_rad_s") = 0.03490658503988659, py::arg("settle_timeout_s") = 2.0,
+           py::arg("qd"), py::arg("speed_scale") = 1.0, py::arg("settle_tol_rad") = airo_fanuc::tick_engine::deg2rad(0.5),
+           py::arg("settle_vel_eps_rad_s") = airo_fanuc::tick_engine::deg2rad(2.0), py::arg("settle_timeout_s") = 2.0,
            py::arg("force_stop_n") = 0.0, py::arg("deadman_s") = 0.0, py::arg("plan_tick") = 0)
       .def("submit_servo", &StreamCore::submit_servo, py::arg("q"), py::arg("duration"))
       .def("submit_servo_ff", &StreamCore::submit_servo_ff, py::arg("q"), py::arg("qd"),
