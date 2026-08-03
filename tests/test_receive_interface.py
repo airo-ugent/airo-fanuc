@@ -169,18 +169,30 @@ def test_rmi_unconverted_hard_rejected_for_calibration() -> None:
 
 
 def test_rmi_accepted_once_conversion_verified() -> None:
-    # Flip the gate, as a second J2 confirming the RMI→stream J3 conversion would
-    # (docs/controller-notes.md §1.5): RMI joints become acceptable and are retagged
-    # rmi_converted via the single per-model policy point.
+    # Flip the gate, as an installation confirming it serves the J2/J3-coupled
+    # representation would (docs/controller-notes.md §1.5): RMI joints become
+    # acceptable and are converted + retagged via the single per-model policy point.
     clock = _Clock()
     facts = replace(INTERIM_FACTS, rmi_to_stream_j3_plus_j2_verified=True)
     ri = FanucReceiveInterface(now_ns=clock, facts=facts)
     _feed(ri, clock, _Q_A, [0.0] * 6, source=SOURCE_RMI_UNCONVERTED)
     sample = ri.capture_calibration_sample()
     assert sample.source == "rmi_converted"
-    # That policy point retags only: q[2] += q[1] is not written there, so the values
-    # pass through. Writing it must update this assertion in the same change.
-    np.testing.assert_allclose(sample.q_deg, _Q_A)
+    # RMI J3 = SM J3 − J2, so reaching the stream frame adds J2 into J3 and touches
+    # nothing else. 30 + 20 = 50.
+    np.testing.assert_allclose(sample.q_deg, [10.0, 20.0, 50.0, 40.0, 50.0, 60.0])
+
+
+def test_rmi_conversion_is_off_by_default_so_the_values_are_never_touched() -> None:
+    # The gate's default is the loud failure, not a silent pass-through: an
+    # installation that has not confirmed the coupling gets a typed rejection rather
+    # than joints that may or may not have had J2 folded into J3.
+    clock = _Clock()
+    ri = FanucReceiveInterface(now_ns=clock)
+    assert not INTERIM_FACTS.rmi_to_stream_j3_plus_j2_verified
+    _feed(ri, clock, _Q_A, [0.0] * 6, source=SOURCE_RMI_UNCONVERTED)
+    with pytest.raises(CalibrationSourceError):
+        ri.capture_calibration_sample()
 
 
 def test_no_mixing_sources_in_one_dataset() -> None:

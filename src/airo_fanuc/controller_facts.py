@@ -74,14 +74,16 @@ class P1Facts:
     """Controller facts measured on the physical CRX.
 
     Each field carries the observation that produced it. ``confirmed`` is ``True``
-    because these values are transcribed from a hardware probe (2026-07-06) rather
-    than guessed. The UNVERIFIED facts (e-stop continuation path A, the RMI→stream J3
-    conversion) keep their safe defaults; code paths that would be unsafe under a wrong
-    guess still assert on the facts they depend on (e.g. the calibration loader
-    hard-rejects RMI joints while ``rmi_to_stream_j3_plus_j2_verified`` is False).
+    because these values are transcribed from a hardware probe rather than guessed.
+    Facts still UNVERIFIED (e-stop continuation path A) keep their safe defaults, and
+    facts that are measured but INSTALLATION-SPECIFIC (whether this controller serves
+    the J2/J3-coupled representation) stay off until the installation confirms them.
+    Code paths that would be unsafe under a wrong guess assert on the facts they
+    depend on — the calibration loader hard-rejects RMI joints while
+    ``rmi_to_stream_j3_plus_j2_verified`` is False.
     """
 
-    confirmed: bool = True  # values transcribed from the 2026-07-06 hardware probe output
+    confirmed: bool = True  # values transcribed from the hardware probe output
 
     # --- servo tracking lag (first-order) ---
     # Used by: FakeCRX plant τ and the examples' lag reporting. Gates nothing.
@@ -112,17 +114,22 @@ class P1Facts:
     sm_session_survives_estop: bool = False  # UNVERIFIED: not proven (stream never came up)
 
     # --- J2/J3 representation ---
-    # MEASURED 2026-07-30 (docs/controller-notes.md §1.5): the two planes do NOT agree.
-    # At the one pose read on both, RMI J3 = SM J3 − J2, matched to 0.0001 deg (the RMI wire
-    # quantization itself; every other joint agreed to 0.000), so the RMI→stream conversion
-    # is `q_stream[2] = q_rmi[2] + q_rmi[1]`.
-    # NOT MEASURED: the form of that offset. J2 was 2.595 deg at the one pose, where −J2 and a
-    # fixed −2.595 deg offset fit the data equally well; separating them needs a second pose at
-    # a materially different J2, with both planes read at one standstill.
-    # So the conversion stays DISABLED: RMI-sourced joints are tagged rmi_unconverted and
-    # calibration HARD-REJECTS them, because a wrong conversion is a silent J2-sized FK error.
-    rmi_to_stream_j3_plus_j2_measured: bool = True  # MEASURED at one J2 (RMI J3 = SM J3 − J2 there)
-    rmi_to_stream_j3_plus_j2_verified: bool = False  # NOT verified: one J2 only → conversion stays off
+    # MEASURED (docs/controller-notes.md §1.5): the two planes do NOT agree. RMI J3 =
+    # SM J3 − J2, so the RMI→stream conversion is `q_stream[2] = q_rmi[2] + q_rmi[1]`.
+    # The FORM is measured, not inferred from a single pose: both planes read at two
+    # standstill poses in one session, 25 deg apart in J2, gave an offset that tracked J2
+    # with a residual of 0.0000 deg, while a fixed offset mispredicted by the whole 25 deg.
+    # Stream-plane J3 held still to 0.004 deg across the move, so it is the RMI plane that
+    # carries the coupling. Every other joint agreed to 0.0000 at both poses.
+    # Whether a given controller SERVES that representation is a controller CONFIGURATION,
+    # not a property of the arm, so the conversion is OFF by default and the two failure
+    # modes are deliberately asymmetric: off, RMI joints stay tagged rmi_unconverted and
+    # calibration HARD-REJECTS them (loud); on where it does not apply, every derived pose
+    # is silently one J2 out. Settle it per cell with
+    # `examples/verify_j2j3_coupling.py --move`, then construct facts with
+    # `dataclasses.replace(INTERIM_FACTS, rmi_to_stream_j3_plus_j2_verified=True)`.
+    rmi_to_stream_j3_plus_j2_measured: bool = True  # MEASURED: the relation, and its form
+    rmi_to_stream_j3_plus_j2_verified: bool = False  # per-installation: off until confirmed
 
     # --- RMI angle read quantization ---
     # Calibration stillness gate is 0.1 deg/s; quantization budget ≤ 0.0067 deg/read.

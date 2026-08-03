@@ -14,16 +14,16 @@ that need not agree:
     get_state()["q_meas"]        Stream Motion status packet, 125 Hz, non-blocking
     rmi.read_joint_angles()      FRC_ReadJointAngles, one RMI round trip
 
-``docs/controller-notes.md`` §1.5 records one pose read on both, where
-``RMI J3 = SM J3 - J2``. That single reading cannot settle the SHAPE of the offset: it
-was taken at J2 = 2.595 deg, where "minus J2" and "a fixed -2.595 deg offset" fit the
-data identically. Until a second, materially different J2 separates them, the driver
-tags RMI joints ``rmi_unconverted`` and the calibration path hard-rejects them, because
-applying a conversion of the wrong form is a silent J2-sized error in every pose derived
-from it.
+``docs/controller-notes.md`` §1.5 records ``RMI J3 = SM J3 - J2`` on the controller this
+driver was developed against, measured at two poses far enough apart in J2 to establish
+that the offset tracks J2 rather than being a fixed calibration offset. That says nothing
+about YOUR controller: the coupling is a controller configuration, so the driver ships with
+the conversion OFF, tags RMI joints ``rmi_unconverted``, and has the calibration path
+hard-reject them. Being wrong in either direction is a silent J2-sized error in every pose
+derived from it, so the default is the one that fails loudly.
 
-This script closes that. It reads both planes at one standstill pose, then — with
-``--move`` — takes J2 somewhere materially different and reads both again:
+This script settles it for your cell. It reads both planes at one standstill pose, then —
+with ``--move`` — takes J2 somewhere materially different and reads both again:
 
     offset tracks J2       -> the coupled representation; the conversion is J3 += J2
     offset stays constant  -> a fixed calibration offset, NOT a J2 coupling
@@ -266,11 +266,12 @@ def main(argv: list[str] | None = None) -> int:
         if which == "tracks":
             print("    THE OFFSET TRACKS J2 — the coupled representation is in effect on the")
             print("    RMI plane. The conversion to the Stream Motion frame is q[2] += q[1].")
-            print("    To adopt it for THIS controller, set in your own configuration:")
-            print("        rmi_to_stream_j3_plus_j2_verified = True")
-            print("    and write the conversion in FanucReceiveInterface._apply_rmi_joint_policy,")
-            print("    which today only retags. Both in one change — the gate alone hands")
-            print("    calibration joints tagged converted that are still one J2 short.")
+            print("    The conversion is already written, in the driver's single per-model")
+            print("    point. To adopt it for THIS controller, enable it in your own")
+            print("    configuration:")
+            print("        from dataclasses import replace")
+            print("        from airo_fanuc.controller_facts import INTERIM_FACTS")
+            print("        facts = replace(INTERIM_FACTS, rmi_to_stream_j3_plus_j2_verified=True)")
         elif which == "fixed":
             print("    THE OFFSET IS FIXED, not a J2 coupling. Do NOT apply q[2] += q[1] —")
             print(f"    it is a constant {off_a:+.4f} deg, which is a calibration offset on this")

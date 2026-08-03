@@ -8,13 +8,13 @@
 >
 > Option **S636** (External Control Package = J519 Stream Motion + R912 RMI).
 >
-> **Everything below was measured on the physical controller (2026-07-06)** unless a
-> row says otherwise; rows dated **2026-07-30** are from the first bring-up of the
-> standalone driver. One question is still unsettled and keeps its safe default: the
-> **e-stop continuation path** (§1.3 — inconclusive, the status stream was down). The
-> **J2/J3 representation** (§1.5) is now measured, but its conversion stays disabled
-> pending confirmation at a second J2 value. Open items raised on 2026-07-30 and not
-> yet resolved: the **command-to-report offset** vs `tracking_lag_s` (§1.9a) and the
+> **Everything below was measured on the physical controller** unless a row says
+> otherwise. One question is still unsettled and keeps its safe default: the **e-stop
+> continuation path** (§1.3 — inconclusive, the status stream was down). The **J2/J3
+> representation** (§1.5) is measured including the form of the offset, and its
+> conversion is written but off by default, because whether a controller serves that
+> representation is a per-installation configuration. Open and not yet resolved: the
+> **command-to-report offset** vs `tracking_lag_s` (§1.9a) and the
 > **acceleration/jerk clamps** (see `examples/crx10ial.py`).
 
 ---
@@ -136,9 +136,10 @@ Mitigation: flock ownership + operator-facing "kill <PID>" hint + documented wor
 | Fact | Value |
 |------|-------|
 | RMI joint-read command name + reply schema | **`FRC_ReadJointAngles`** → `{ErrorID, TimeTag:<int>, JointAngle:{J1..J9 deg}}`, 0.001° precision (see §1.7) |
-| Verdict: identical / RMI applies `J3 += J2` / other | **MEASURED 2026-07-30 — not identical: RMI reports J3 one J2 BELOW the Stream Motion value.** `RMI J3 = SM J3 − J2` at the measured pose, so the RMI→stream conversion is `J3 += J2`. |
+| Verdict: identical / RMI applies `J3 += J2` / other | **MEASURED — not identical: RMI reports J3 one J2 BELOW the Stream Motion value.** `RMI J3 = SM J3 − J2`, so the RMI→stream conversion is `J3 += J2`. |
 | Conversion formula | `q_stream[2] = q_rmi[2] + q_rmi[1]` |
 | ε achieved (deg) | **0.0001** — the RMI wire quantization itself (§1.7). Every other joint agreed to 0.000. |
+| Form of the offset: tracks J2 / fixed | **MEASURED — tracks J2.** Two standstill poses in one session, 25° apart in J2: residual **0.0000°** against "tracks J2", **24.9970°** against "fixed offset". |
 
 The capture §1.5 originally called impractical is available from inside a `FanucDriver`
 session: the driver holds an initialized RMI session *and* the SM stream at once, so both
@@ -152,23 +153,33 @@ RMI     92.678     2.595    -3.975   -45.464   -27.230   -11.037
 Δ       -0.000     0.000    -2.595     0.000     0.000    -0.000     ← Δ J3 = −(J2), to 0.0001°
 ```
 
-**Still open, and why it is not yet enough to enable the conversion:**
+**The form of the offset, settled.** One pose could not distinguish "−J2" from "a fixed
+−2.595° offset", because at J2 = 2.595° they predict the same number. `examples/verify_j2j3_coupling.py`
+reads both planes at one standstill, moves J2, and reads both again. Two poses 25° apart:
 
-1. **One pose, one J2 value** (2.595°). At that J2, "−J2" and "a fixed −2.595° offset" fit the
-   data equally well, so only the offset's value at this pose is measured, not its form.
-   Settling it needs a second pose at a materially different J2, read the same way: BOTH planes
-   at one standstill pose inside a `FanucDriver` session, which no script in this repo does.
-   `examples/check_joint_limits.py` opens a connect-only RMI session and never reads the Stream
-   Motion plane, so it can only record the RMI J3/J2 pair at its J3 extremes.
-2. **Which plane matches the pendant** is unmeasured — this fixes the RMI↔stream
-   relationship, not which one is "true J3". It does not matter for converting RMI into the
-   stream frame (what the driver needs), but it does for anything trusting absolute J3.
+```
+              J2        J3 stream   J3 RMI     offset (RMI − stream)
+pose A     +11.6950      7.7610     -3.9340         -11.6950
+pose B     +36.6920      7.7570    -28.9350         -36.6920
+Δ          +24.9970     -0.0040    -25.0010         -24.9970
+```
 
-**Rule (unchanged until 1 is done):** RMI-sourced joints stay tagged `rmi_unconverted`;
-calibration **hard-rejects** them. The single conversion point is
-`FanucReceiveInterface._apply_rmi_joint_policy`, which only retags: the `q[2] += q[1]` line
-is not written there and has to be added together with the
-`rmi_to_stream_j3_plus_j2_verified` gate, not before.
+The offset moved by exactly −ΔJ2: residual **0.0000°** for "tracks J2", **24.9970°** for
+"fixed offset". Stream-plane J3 held still to 0.004° (gravity sag) while the RMI plane's J3
+moved a full 25°, so the coupling is on the RMI plane. Every other joint agreed to 0.0000 at
+both poses.
+
+**Still open:** **which plane matches the pendant.** This fixes the RMI↔stream relationship,
+not which one is "true J3". It does not matter for converting RMI into the stream frame (what
+the driver needs), but it does for anything trusting absolute J3.
+
+**Rule.** The conversion is written, in the single conversion point
+`FanucReceiveInterface._apply_rmi_joint_policy`, and stays **off by default**: whether a
+controller serves the coupled representation is a per-installation *configuration*, not a
+property of the arm. While `rmi_to_stream_j3_plus_j2_verified` is False, RMI-sourced joints
+stay tagged `rmi_unconverted` and calibration **hard-rejects** them. The asymmetry is
+deliberate — off fails loud, on-where-it-does-not-apply is a silent J2-sized error in every
+derived pose. Settle it for your own cell with `verify_j2j3_coupling.py --move`.
 
 ### 1.6 RMI reads during manual motion
 
