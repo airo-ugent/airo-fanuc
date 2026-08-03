@@ -174,8 +174,10 @@ class DriverConfig:
         tick engine clamps against ``cfg.tick.limits``, so a profile that never
         reached this struct would be a profile the RT core is not enforcing.
 
-        The remaining capture/settle knobs stay at their C++ defaults, which mirror
-        :mod:`airo_fanuc.controller_facts`.
+        The capture window, the SAFE_FOLLOW envelope and the mirrored watchdog windows are
+        all set from :mod:`airo_fanuc.controller_facts` below. The per-motion settle
+        overrides are not: ``submit_trajectory`` carries those, so they stay at the C++
+        defaults that mirror :class:`~airo_fanuc.controller_facts.SettlePolicy`.
         """
         rc = RtCoreConfig()
         rc.velocity_limits = [float(v) for v in self.profile.velocity_limits]

@@ -50,7 +50,7 @@ def generate_capture_path(
     ``would_reject`` (bool; the capture gate's verdict — the 5° endpoint window, and
     whether that window can absorb the first knot's velocity change at the brake-class
     clamps), ``tol_exceeded`` (bool; the endpoint-window term specifically),
-    ``reject_joints`` (list[int]; joints failing the velocity-shed term),
+    ``reject_joints`` (list[int]; joints failing the arrival-rate or velocity-shed term),
     ``shed_travel`` (length-6 radian list; the travel that shedding
     ``|qd0 − qd_cmd|`` costs per joint — 0 where the endpoint velocities match. These are
     the gate's OWN numbers, so a caller formatting an error message never has to
@@ -126,7 +126,7 @@ def decode_status_v3(data: bytes) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 class _CoreEnum:
-    """Base of the three core enums. NOT an :class:`enum.IntEnum`, and not an ``int``.
+    """Base of the four core enums. NOT an :class:`enum.IntEnum`, and not an ``int``.
 
     These are pybind11 enumerations, whose members do not derive from ``int``. That
     matters because :meth:`StreamCore.get_snapshot` publishes ``mode``, ``fault`` and
@@ -136,8 +136,10 @@ class _CoreEnum:
         Mode(int(snap["mode"])) == Mode.HOLD  # this is the comparison you want
 
     Declaring these as ``IntEnum`` here would make a type checker bless the first line.
-    ``int(member)``, ``member.value``, ``member.name`` and ``Mode(2)`` all work; ``<``,
-    arithmetic, and iterating the class do not. Compare with ``==``, not ``is``: converting
+    ``int(member)``, ``member.value``, ``member.name`` and ``Mode(2)`` all work; ``<`` and
+    iterating the class do not. Bitwise operators work on :class:`Condition` only, which is
+    bound with pybind11's ``arithmetic`` tag because it is a mask; they do not work on the
+    other three, which are ordinals. Compare with ``==``, not ``is``: converting
     from an int builds a new object rather than returning the class attribute.
     """
 

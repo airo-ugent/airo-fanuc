@@ -30,12 +30,18 @@ them as binding: code that regresses one of these is a bug, not a refactor.
   jerk-limited profile offline and submits the knots through `move_trajectory`, so it
   inherits the same validation, capture gate, collision hook and settle policy.
 - **`stop_j()` is the universal preempt.** Any thread, ≤1 tick, never raises,
-  reachable in every mode. Every watchdog / manual-STOP / fault path converges here.
+  reachable in every mode that has a motion to preempt — HOLD, CAPTURE, TRAJECTORY,
+  SERVO and BRAKE. In SAFE_FOLLOW, RX_SILENT, PREROLL and STREAM_DOWN the request is
+  accepted and dropped, which is safe only because each of those states has already
+  resolved the active motion and is already converging to rest; a state that could
+  still be moving under a caller's motion must never be added to that list.
+  The watchdog and fault paths do NOT route through it — they call the fault entry,
+  which brakes on its own ramp and does arm the gate.
   A `stop_j()` during a blocking `MotionHandle.wait()` resolves it as
   `MotionResult.STOPPED` — the brake+replan contract. `stop_j()` is a clean preempt,
-  **not** a fault: it does not bump the epoch and does not arm the ARM gate. A mode
-  in which the request is accepted and then dropped is a regression, because the
-  caller's handle would report success for a motion that never stopped.
+  **not** a fault: it does not bump the epoch and does not arm the ARM gate. Adding a
+  mode that can still be executing a caller's motion to the drop list is a regression,
+  because the caller's handle would report success for a motion that never stopped.
 - **Collision response is brake+replan.** A trajectory monitor on the caller's side
   calls `stop_j()`, waits for the handle to resolve `STOPPED`, then replans from rest
   and issues a new `move_trajectory`. There is deliberately no graded slowdown and no

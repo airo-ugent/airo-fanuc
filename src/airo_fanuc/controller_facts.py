@@ -100,7 +100,9 @@ class MeasuredFacts:
     #   49.9 deg/s -> overrun 4.63 deg, motion_possible drop 71 ms, decel onset 86.7 ms (10.8 ITPs).
     # No alarm, no runaway; stop within ~110-130 ms; overrun grows SUB-linearly with speed.
     # => in-process design may NOT rely on the controller as a FAST host-death backstop; an external
-    #    fallback (an RMI-abort watchdog and/or DCS zone tightening) is REQUIRED. Deadman ~120 ms coast.
+    #    fallback would be needed for a FAST one. This driver does not ship one: it implements
+    #    SUPERVISOR_LOST in the RT core instead, and documents the residual coast (~120 ms) as a
+    #    known limitation. See docs/invariants.md on the host-death envelope.
     tx_silence_backstop_ok: bool = False  # MEASURED: NO-GO (decel onset ~10 ITPs, not <=3)
     # Deviation-watchdog threshold the controller uses to fault a frozen (un-ramped) command
     # stream; also calibrates the FakeCRX deviation-watchdog emulation. deg.

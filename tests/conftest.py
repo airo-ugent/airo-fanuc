@@ -2,11 +2,13 @@
 """Pytest bootstrap for the airo_fanuc test suite.
 
 Puts the repository's ``src`` directory on ``sys.path`` so ``import airo_fanuc...``
-works WITHOUT installing the package. This matters because installing the
-package builds the C++ extension (pybind11 core), which is not available in
-the pure-Python test sandbox — the codec golden tests here import only
-``airo_fanuc.testing.wire`` + ``airo_fanuc.controller_facts``, both pure
-Python (stdlib + numpy).
+resolves to the working tree rather than to an installed copy.
+
+The suite is NOT hardware-free by being pure Python — it needs the built extension.
+``airo_fanuc/__init__.py`` imports ``._core``, and several test modules import it
+outright, so ``uv sync --extra dev`` (which compiles it) is a precondition for
+collection. What makes the suite hardware-free is ``airo_fanuc.testing``: an
+in-process controller emulation the real C++ core is driven against.
 
 Also defines :data:`TEST_PROFILE`, the arm the suite runs against. The package ships
 no arm profile, so every :class:`~airo_fanuc.config.DriverConfig` in the suite needs

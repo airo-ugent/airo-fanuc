@@ -20,7 +20,7 @@ from importlib.metadata import version as _metadata_version
 #: Re-exported from the extension because :meth:`FanucDriver.get_state` publishes
 #: ``mode``, ``fault``, ``active_motion_status`` and the ``conditions`` bitmask as plain
 #: integers, and :class:`LifecycleState` deliberately collapses
-#: STREAM_DOWN/PREROLL/HOLD/CAPTURE/TRAJECTORY/SERVO/BRAKE into ``STREAMING`` — so without
+#: HOLD/CAPTURE/TRAJECTORY/SERVO/BRAKE into ``STREAMING`` — so without
 #: these a caller cannot decode values the driver hands it, and the examples had to reach
 #: into ``airo_fanuc._core`` to do it. One decoder each: ``Mode`` for ``mode``,
 #: ``FaultReason`` for ``fault``, ``MotionStatus`` for ``active_motion_status``, and

@@ -341,8 +341,9 @@ def test_capture_gate_rejects_a_velocity_the_window_cannot_absorb() -> None:
 
 def test_capture_gate_is_vacuous_when_the_endpoint_velocities_match() -> None:
     # Every submission out of HOLD (both velocities zero) and every continuation replan
-    # (both equal and non-zero) has nothing to shed, so the gate is the endpoint window
-    # alone and behaves exactly as it always did.
+    # (both equal and non-zero) has nothing to SHED, so the shed term is vacuous for them.
+    # The endpoint window and the arrival rate still apply — the tail of this test covers
+    # the arrival rate, which refuses a matched pair that sheds nothing.
     inside = generate_capture_path([math.radians(4.5), 0, 0, 0, 0, 0], _ZERO6, _ZERO6, _ZERO6)
     beyond = generate_capture_path([math.radians(34.0), 0, 0, 0, 0, 0], _ZERO6, _ZERO6, _ZERO6)
     assert inside["would_reject"] is False

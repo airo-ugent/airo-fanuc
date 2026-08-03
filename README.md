@@ -72,7 +72,7 @@ Most of a profile does not have to be written by hand, because the controller al
 answer. It serves its own configuration over FTP, and `airo_fanuc.controller_probe` reads it:
 
 ```bash
-python -m airo_fanuc.controller_probe --ip 192.168.1.100 --emit-profile
+uv run python -m airo_fanuc.controller_probe --ip 192.168.1.100 --emit-profile
 ```
 
 That prints the controller's model, software P-level, ordered options (so **S636** presence is a
@@ -194,7 +194,9 @@ uv run mypy
 uv run python examples/move_joints.py --fake   # zero-hardware end-to-end smoke
 ```
 
-Those five are exactly what CI gates on, with the same arguments — `uv run ruff` rather
+The first four are what CI gates on; CI lints `examples/` but does not execute it, because
+these scripts assert the real-time loop held an 8 ms deadline and a shared runner cannot be
+relied on to do that — so the `--fake` run is yours to do locally. `uv run ruff` rather `uv run ruff` rather
 than `uvx ruff` on purpose, so the version is the one pinned in the `dev` extra and the
 config in `pyproject.toml` (which excludes `vendor/`) applies.
 
@@ -214,7 +216,7 @@ uv sync --extra dev --reinstall-package airo-fanuc
 Otherwise a passing suite means only that the *old* binary still passes.
 
 The whole Python suite is hardware-free because `airo_fanuc.testing` ships an in-process
-`FakeCRX` — a wall-paced 125 Hz controller emulation with an RMI server and a first-order-lag
+`FakeCRXController` — a wall-paced 125 Hz controller emulation with an RMI server and a first-order-lag
 plant — so the real C++ RT core is exercised against it, plus byte-exact wire goldens under
 `tests/goldens/`. `airo_fanuc.testing` ships in the wheel, so downstream code can be tested the
 same way.
@@ -282,8 +284,12 @@ geometry would make an otherwise arm-agnostic package newly arm-specific.
 The consumer supplies kinematics. The natural seam is `DriverPolicy.capture_check`, which
 receives the exact synthesized splice knots the RT core will execute (from
 `airo_fanuc._core.generate_capture_path` — the checked path is the executed path) and returns
-whether they are safe. If you find yourself wanting `get_tcp_pose()` in this package, you are
-writing the consumer layer in the wrong repo.
+whether they are safe.
+
+`get_tcp_pose()` and `get_flange_pose()` do exist, and are not an exception to this: they
+report a pose the **controller** computed, fetched over RMI or read off the status packet.
+Nothing here derives a pose from joint angles. If you find yourself wanting this package to do
+that — forward kinematics, an IK solve, a URDF — that is the consumer layer.
 
 ---
 
@@ -337,8 +343,14 @@ clamp. `driver.move_j(q, joint_speed=...)` is the real point-to-point path: it s
 jerk-limited profile from the current commanded state with `_core.plan_joint_move` (offline
 Ruckig, under this driver's own limits) and submits the knots through `move_trajectory`, so it
 inherits the capture gate, the collision hook and the settle policy unchanged. `joint_speed` is
-the **leading-axis** speed — it caps every joint and the profile is time-synchronised, so the
-joint travelling furthest runs at it and the rest scale down to land together.
+the **leading-axis** speed (rad/s) — it caps every joint and the profile is time-synchronised, so
+the joint travelling furthest runs at it and the rest scale down to land together.
+
+**`move_j` requires the arm to be at rest** and raises `TrajectoryValidationError` otherwise.
+Its plan is anchored at the commanded state read when you call it, and a *moving* anchor
+advances while the plan is in flight — so the executed motion would depend on how long the
+submission took, and the same call would not repeat. Call `stop_j()` then `wait_until_steady()`
+first, or use `servo_j` to steer an arm that is already moving.
 
 ```python
 import numpy as np

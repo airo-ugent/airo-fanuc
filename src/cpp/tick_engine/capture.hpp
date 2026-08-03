@@ -105,7 +105,7 @@ void generate_capture_path(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& q0
 // ---------------------------------------------------------------------------
 // THE CAPTURE ACCEPTANCE GATE
 //
-// Two things have to be true for a splice to be a bounded bridge rather than a motion of
+// Three things have to be true for a splice to be a bounded bridge rather than a motion of
 // its own, and the endpoint window is only the first:
 //
 //   (1) |q_cmd − q0|∞ ≤ capture_tol_rad — the endpoint gap.

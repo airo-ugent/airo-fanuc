@@ -61,7 +61,8 @@ struct RxSample {
 struct ConsumeResult {
   bool accepted{false};
   bool rejected_stale{false};     // tagged epoch < live epoch (structurally unexecutable)
-  bool rejected_capture{false};   // |q_cmd − q0| > capture_tol (REJECTED_START_MISMATCH)
+  bool rejected_capture{false};   // the capture gate refused it (REJECTED_START_MISMATCH): endpoint window,
+  // arrival rate, or shed travel — see capture.cpp for the three terms
   std::uint64_t motion_id{0};
 };
 

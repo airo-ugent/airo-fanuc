@@ -33,7 +33,7 @@ using tick_engine::Vec6;
 
 // ---------------------------------------------------------------------------
 // Motion mode. Orthogonal to health (FaultReason).
-//   STREAM_DOWN → PREROLL → HOLD ⇄ {CAPTURE → TRAJECTORY, SERVO, BRAKE} → HOLD
+//   STREAM_DOWN → HOLD (PREROLL is declared but never entered; begin_streaming goes straight to HOLD) ⇄ {CAPTURE → TRAJECTORY, SERVO, BRAKE} → HOLD
 //   + SAFE_FOLLOW (re-anchor commanded→measured ≤15°/s, 5° deadband; entered on
 //     fault/DEGRADED; exited only via recover()).
 //   + RX_SILENT (500 ms no RX → park TX).

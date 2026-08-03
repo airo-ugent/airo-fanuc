@@ -329,8 +329,9 @@ class FanucDriver:
         The first knot is taken LITERALLY: the core bridges the commanded pose to it with a
         bounded capture splice, or refuses the submission. It never advances into the plan
         to meet the arm, so a plan whose opening the arm has already passed must be
-        replanned rather than joined part-way — see :meth:`move_j`, which reads the
-        commanded state and plans from it immediately for exactly that reason.
+        replanned rather than joined part-way. :meth:`move_j` avoids the problem by
+        requiring the arm to be at rest, so its anchor cannot move between the read and
+        the submission; :meth:`servo_j` is the entry point for a moving arm.
 
         Validation — every violation raises its own typed error naming the offending
         joint/knot, never a generic reject: strictly-increasing int64 ns times, ≥2

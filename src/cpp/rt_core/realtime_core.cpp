@@ -595,7 +595,11 @@ void RealtimeCore::rt_main_() {
       const auto pkt = codec::encode_command_packet(tx_seq_, cmd.is_last, /*do_motn_ctrl=*/1, pos_deg);
       (void)::send(sockfd_, pkt.data(), pkt.size(), 0);
       tx_count_.fetch_add(1, std::memory_order_relaxed);
-      // Double-send guard: two sends must never fall inside one 8 ms window.
+      // Double-send guard: counts a second send landing within a QUARTER tick of the
+      // previous one. Deliberately not the whole window — the PLL can legitimately place
+      // two sends inside one 8 ms span while re-basing after a missed deadline, so a
+      // full-window test would count correct behaviour. This catches the pathology (two
+      // sends effectively back to back) and is a diagnostic counter, never a fault.
       if (last_send_mono != 0 && (send_mono - last_send_mono) < (tick_ns / 4)) {
         double_send_guard_.fetch_add(1, std::memory_order_relaxed);
       }

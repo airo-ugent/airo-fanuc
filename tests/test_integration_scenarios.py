@@ -37,7 +37,8 @@ What each scenario reproduces (row → status):
     Capture: a 3° splice executes; a > 5° splice is rejected → covered
     Capture: a splice long enough to span ≥ 200 ms executes  → covered
     Servo sine sweep with a direction reversal and no dwell  → covered
-    Servo target beyond the 5° window → typed REJECT         → covered
+    Servo target far from the commanded pose is TRACKED,
+      never refused (there is no distance guard)              → covered
     Rapid contact-stop flap (repeated stop/clear oscillation
       faster than the dwell) exercising the anti-flap dwell   → covered (constructed)
     Sustained-streaming conformance soak (CI-short)           → covered

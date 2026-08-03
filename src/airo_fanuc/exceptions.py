@@ -72,7 +72,8 @@ class RobotFaultedError(FanucError):
 
 
 class RejectedStartMismatch(FanucError):
-    """A trajectory was rejected because its first knot ≠ the commanded pose.
+    """A trajectory was rejected by the capture gate — the gap to its first knot, that knot's velocity, or the
+    travel needed to shed the velocity change.
 
     The CAPTURE-or-REJECT contract: a submitted trajectory whose ``q[0]`` is
     farther than the 5° capture window (``controller_facts.CAPTURE_TOL_DEG`` =

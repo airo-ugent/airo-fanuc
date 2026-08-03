@@ -43,7 +43,7 @@ Most of it was generated rather than typed. The controller reports its own activ
 velocity and position limits, and
 
 ```bash
-python -m airo_fanuc.controller_probe --ip 192.168.1.100 --emit-profile
+uv run python -m airo_fanuc.controller_probe --ip 192.168.1.100 --emit-profile
 ```
 
 prints that file's profile call ready to paste, along with the model, software P-level,

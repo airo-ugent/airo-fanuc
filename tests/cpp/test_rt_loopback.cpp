@@ -173,7 +173,7 @@ TEST(RtLoopback, StreamsValidCommandsPllInvariantsZeroAlloc) {
   EXPECT_EQ(snap.mode, Mode::HOLD) << "steady HOLD (no motion submitted)";
   EXPECT_GT(cmd_count.load(), 50u) << "core TXed commands";
   EXPECT_GT(st.tx_count, 50u);
-  EXPECT_EQ(st.double_send_guard, 0u) << "exactly one TX per 8 ms window";
+  EXPECT_EQ(st.double_send_guard, 0u) << "no two sends within a quarter tick of each other";
   EXPECT_EQ(st.tau_advance_count, st.tick_count) << "one τ-advance per tick";
   EXPECT_EQ(window_allocs, 0u) << "zero heap allocations on the hot path after warmup";
   // TX cadence sane (loopback, unprivileged: generous bound).

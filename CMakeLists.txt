@@ -134,7 +134,16 @@ if(DEFINED SKBUILD_PROJECT_VERSION_FULL)
 elseif(DEFINED SKBUILD_PROJECT_VERSION)
   set(AIRO_FANUC_VERSION "${SKBUILD_PROJECT_VERSION}")
 else()
-  set(AIRO_FANUC_VERSION "0.1.0.dev0")
+  # Standalone (non-scikit-build) configure — the documented ctest path. Read the version
+  # out of pyproject.toml rather than restating it: a literal here is a second source that
+  # silently disagrees with the manifest, and only this path would carry it.
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml" _pyproject)
+  string(REGEX MATCH "\nversion = \"([^\"]+)\"" _m "${_pyproject}")
+  if(CMAKE_MATCH_1)
+    set(AIRO_FANUC_VERSION "${CMAKE_MATCH_1}")
+  else()
+    message(FATAL_ERROR "could not read version from pyproject.toml")
+  endif()
 endif()
 
 pybind11_add_module(_core MODULE src/cpp/bindings.cpp)
