@@ -340,7 +340,7 @@ for a different FANUC it is the file to copy. What is left:
 |---|---|---|
 | Velocity / acceleration / jerk clamps, joint position limits | `crx10ial.py` | The whole arm envelope, in one profile. Passed to `DriverConfig(profile=...)`, which has no default — the package ships no arm's numbers. `_common.py`'s `LIMIT_LOWER_DEG` / `LIMIT_UPPER_DEG` read from it, so the pre-motion guard and the RT core's clamps cannot disagree. Regenerate the velocity and position halves for a new arm with `controller_probe --emit-profile`; only the acceleration and jerk derivation is a judgement call. |
 | 8 ms interpolation period | `--itp-ms` default | An R-30iB-class fact. Bring-up refuses a mismatch, so a wrong value fails loudly rather than silently mis-scaling every per-tick limit. |
-| Stream Motion v3 / type-202, no force block | the `bring-up` report, and `sm_version=3` under `--fake` | What our controller negotiates. A v4 controller streams a force block and `get_wrench()` starts returning values. |
+| Stream Motion v3 / type-202, no force block | the `bring-up` report, and `sm_version=3` under `--fake` | What our controller negotiates. The absence of a force block is not version-dependent, though: this driver sends no ForceSensorConfig packet at any version, so `get_wrench()` returns `None` on a v4 controller too. |
 | Six joints, `--joint 1..6`, "J6 = wrist roll" | `NDOF = 6` in `_common.py` | `kNumJoints = 6` is a C++ compile-time constant, not a config knob. 7-axis arms and positioner axes are out of scope. |
 
 ## What these scripts deliberately do not cover

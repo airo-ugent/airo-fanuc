@@ -20,8 +20,8 @@
 // — a servo target is a position plus a deadline plus a tracking law, and nothing
 // else.
 //
-// Demanding an arrival velocity is what the previous design did, and it is unstable
-// against clock drift. Targets arrive on the CALLER's clock while ticks run on the
+// Demanding an arrival velocity would be unstable against clock drift, which is why the
+// target velocity is always zero. Targets arrive on the CALLER's clock while ticks run on the
 // controller's PLL-locked one (~7.95 ms, not a round 8), so the ticks-per-target count
 // alternates between 2 and 3 and its phase walks. When the phase puts the target nearer
 // than the demanded arrival velocity has runway for,
@@ -56,11 +56,11 @@
 // 8 ms RT tick: stretching a profile to the TARGET SPACING is what removes the
 // sawtooth, stretching it to 8 ms would not.
 //
-// NO DISTANCE GUARD. A far target is tracked, not refused. Earlier revisions rejected
-// any target beyond a 5° window from the commanded pose, which sounds protective and
-// is not: the window is measured against the COMMANDED pose, which trails a streamed
-// plan by the tracker's own response time, so at speed ordinary tracking lag consumed
-// it and the guard began throwing away perfectly good setpoints — 295 rejects on a
+// NO DISTANCE GUARD. A far target is tracked, not refused. A window on the distance from
+// the commanded pose sounds protective and is not, and the numbers say so: the window would
+// be measured against the COMMANDED pose, which trails a streamed plan by the tracker's own
+// response time, so at speed ordinary tracking lag consumes it and the guard throws away
+// perfectly good setpoints — measured at a 5° window, 295 rejects on a
 // 20 °/s ramp, and at 60 °/s the arm stalled outright and never recovered. Lookahead
 // cannot buy headroom either, because it moves the target away from the commanded
 // pose by exactly what it removes from the lag. Rejecting also contradicts best

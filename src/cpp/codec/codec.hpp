@@ -85,14 +85,15 @@ struct RobotStatusView {
 // ║                                                                            ║
 // ║ The value is single-sourced as COMMAND_DATA_STYLE in                       ║
 // ║ `airo_fanuc.controller_facts`, mirrored by kCommandDataStyle in codec.cpp. ║
-// ║ Never hardcode it at a call site, and never drop the write on the          ║
-// ║ strength of the field's name: it is load-bearing whatever the struct       ║
-// ║ calls it.                                                                  ║
+// ║ Never hardcode it at a call site, and never drop the write because the     ║
+// ║ field is declared `unused` — this driver requires it written.              ║
 // ╚════════════════════════════════════════════════════════════════════════════╝
 //
-// version_no is pinned to stream_motion::kVersion (3). Version negotiation is not
-// implemented; a v4 session would also have to handle the force-sensor config
-// packet and the 416-byte type-204 status.
+// version_no in the COMMAND packet is pinned to stream_motion::kVersion (3), whatever
+// version the session negotiated. Status decoding is not pinned: the 388-byte type-202 and
+// the 416-byte type-204 both decode (see below), and RealtimeCore dispatches on the packet
+// it actually received. What no version does is stream a force block, because this driver
+// sends no ForceSensorConfig packet — that is the piece a force-capable session would need.
 std::array<std::uint8_t, kCommandPacketSize> encode_command_packet(std::uint32_t sequence_no, bool is_last_command,
                                                                    std::uint8_t do_motn_ctrl,
                                                                    const std::array<double, 9>& command_pos_deg);

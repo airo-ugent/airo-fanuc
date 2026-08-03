@@ -65,6 +65,8 @@ class FakeCRXConfig:
     # Plant. tau_s reads MEASURED_FACTS.tracking_lag_s (measured servo lag: 25 ms).
     tau_s: float = MEASURED_FACTS.tracking_lag_s
     # deviation_watchdog_deg reads MEASURED_FACTS.deviation_watchdog_deg (measured: 5.0°).
+    # 5.0 deg is a CHOSEN threshold well supported by measurement, not itself a measured
+    # value: the worst overrun observed was 4.63 deg at 49.9 deg/s.
     deviation_watchdog_deg: float = MEASURED_FACTS.deviation_watchdog_deg
     deviation_watchdog_enabled: bool = True
     silence_decel_ticks: int = 3

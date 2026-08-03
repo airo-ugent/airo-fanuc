@@ -640,8 +640,9 @@ class RmiClient:
         frame takes ``J3 += J2``. A caller feeding them to calibration must tag them
         :data:`~airo_fanuc.receive_interface.SOURCE_RMI_UNCONVERTED`
         (:class:`~airo_fanuc.receive_interface.RmiClientJointReader` does), which
-        the calibration path hard-rejects until that conversion is verified at a
-        second J2.
+        the calibration path hard-rejects unless the conversion is explicitly enabled —
+        because whether this controller's RMI plane serves the coupled representation is a
+        per-installation fact, and being wrong about it is a J2-sized silent error.
 
         Raises :class:`RmiError` on a non-zero ErrorID or a malformed reply
         (missing / empty ``JointAngle``), :class:`RmiSessionDown` on persistent

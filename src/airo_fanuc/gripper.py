@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Robotiq 2F-85 register protocol for the FANUC GRIP_DISP TP program.
+"""Robotiq 2F-85 register protocol for the FANUC GRIPDISP TP program.
 
 The register contract is fixed by the TP program running on the controller, not
 chosen here, so the constants below reproduce it exactly;
@@ -7,8 +7,7 @@ chosen here, so the constants below reproduce it exactly;
 registers via :class:`~airo_fanuc.rmi_client.RmiClient`.
 
 The gripper is wired to the FANUC controller's tool I/O.  A TP program
-(``GRIPDISP``, on-disk name — the docs call it ``GRIP_DISP`` for
-readability) runs in an infinite loop on the controller, polling numeric
+(``GRIPDISP``, its on-disk name) runs in an infinite loop on the controller, polling numeric
 register R[1]; when it sees R[1]=1 it reads R[2] for the action (1=open,
 2=close) and R[3] for an action-dependent modifier, then calls the
 corresponding Robotiq block and clears R[1] back to 0.
@@ -60,7 +59,7 @@ VALID_OPEN_STATES = (OPEN_FULL, OPEN_MID, OPEN_NARROW)
 
 # Close-force selector values written to R[3] *before* an ACTION_CLOSE
 # trigger. See the module docstring for the position/force pairs the
-# GRIP_DISP TP program applies for each value.
+# GRIPDISP TP program applies for each value.
 FORCE_LIGHT = 0
 FORCE_MEDIUM = 1
 FORCE_HARD = 2

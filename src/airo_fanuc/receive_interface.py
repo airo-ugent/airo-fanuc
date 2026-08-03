@@ -5,8 +5,9 @@
 nothing is driving it: it polls the
 :class:`~airo_fanuc.rmi_client.RmiClient` *commands-only* session (it NEVER
 calls :meth:`~airo_fanuc.rmi_client.RmiClient.initialize`, so it works in T1 and
-with no program running) and derives joint velocity by least squares. It is the
-structural fix for the T1-freeze calibration-corruption incident.
+with no program running) and derives joint velocity by least squares. Reading state without
+driving motion is what keeps a calibration sweep in T1 from depending on a Stream Motion
+session that is not there.
 
 Two guards make hand-eye calibration safe (both raise, never silently return a
 bad sample — "surface latent issues loudly"):
