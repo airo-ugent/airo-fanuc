@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Validation step 1b: point-to-point moves with ``move_j``, at a speed you name.
+"""Validation step 2b: point-to-point moves with ``move_j``, at a speed you name.
 
 WRITTEN FOR ONE SPECIFIC ROBOT: a FANUC CRX-10iA/L on an R-30iB-class controller
 negotiating Stream Motion v3 at an 8 ms interpolation period. Six joints and the
@@ -81,7 +81,7 @@ from _common import (
     wait_streaming,
     watch,
 )
-from airo_fanuc import FanucDriver, MotionResult
+from airo_fanuc import FanucDriver, FanucError, MotionResult
 from airo_fanuc import controller_facts as cf
 
 #: Joints the --multi move drives, and how far each travels (deg). Deliberately unequal:
@@ -309,7 +309,7 @@ def main() -> int:
         print("\naborted during bring-up")
         target.close()
         return 1
-    except Exception as exc:
+    except FanucError as exc:
         print(f"\nbring-up FAILED: {type(exc).__name__}: {exc}")
         target.close()
         return 2

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Validation step 2: continuous multi-joint tracking, and the protective stop.
+"""Validation steps 3 and 4: continuous multi-joint tracking, and the protective stop.
 
 WRITTEN FOR ONE SPECIFIC ROBOT: a FANUC CRX-10iA/L on an R-30iB-class controller
-negotiating Stream Motion v3 at an 8 ms interpolation period. The joint-limit guard
-below carries that arm's measured soft limits, and it is the only thing standing
-between an ``--amplitude-deg`` argument and a soft-limit hit — so on a different
-FANUC it must be replaced, not merely reviewed. See ``examples/README.md``.
+negotiating Stream Motion v3 at an 8 ms interpolation period. The pre-motion guard it
+calls — ``_common.guard_joint_limits`` — checks the swing against that arm's soft limits
+as recorded in ``examples/crx10ial.py``, and is the only thing standing between an
+``--amplitude-deg`` argument and a soft-limit hit, so on a different FANUC that profile
+must be replaced, not merely reviewed. See ``examples/README.md``.
 
 Where ``move_joints.py`` proves the stack connects and executes a move, this proves
 it *tracks*: every selected joint swings from its CURRENT pose out to
@@ -55,7 +56,7 @@ from _common import (
     wait_streaming,
     watch,
 )
-from airo_fanuc import FanucDriver, MotionResult
+from airo_fanuc import FanucDriver, FanucError, MotionResult
 
 
 def _build_sine(q_start_rad, joint_idx, amp_rad: float, period_s: float, cycles: float, knot_dt: float):
@@ -145,7 +146,7 @@ def main() -> int:
         print("\naborted during bring-up")
         target.close()
         return 1
-    except Exception as exc:
+    except FanucError as exc:
         print(f"\nbring-up FAILED: {type(exc).__name__}: {exc}")
         target.close()
         return 2

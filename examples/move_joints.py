@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Validation step 1: connect to the controller and move one joint.
+"""Validation steps 1 and 2: bring-up with no motion (``--no-move``), then one commanded joint.
 
 WRITTEN FOR ONE SPECIFIC ROBOT: a FANUC CRX-10iA/L on an R-30iB-class controller
 negotiating Stream Motion v3 at an 8 ms interpolation period. Six joints, the
@@ -67,7 +67,7 @@ from _common import (
     wait_streaming,
     watch,
 )
-from airo_fanuc import FanucDriver, MotionResult
+from airo_fanuc import FanucDriver, FanucError, MotionResult
 
 
 def _build_trajectory(q_start_rad, joint_idx: int, delta_rad: float, duration_s: float):
@@ -129,7 +129,7 @@ def main() -> int:
         print("\naborted during bring-up")
         target.close()
         return 1
-    except Exception as exc:
+    except FanucError as exc:
         print(f"\nbring-up FAILED: {type(exc).__name__}: {exc}")
         target.close()
         return 2

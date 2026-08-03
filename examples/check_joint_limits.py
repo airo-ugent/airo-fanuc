@@ -45,14 +45,19 @@ import time
 import numpy as np
 
 from _common import LIMIT_LOWER_DEG, LIMIT_MARGIN_DEG, LIMIT_UPPER_DEG, NDOF, rule
-from airo_fanuc.exceptions import FanucError
+from airo_fanuc.exceptions import FanucError, RmiError
 from airo_fanuc.ownership import OwnershipLock
 from airo_fanuc.rmi_client import RmiClient
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Confirm the recorded joint limits by hand-guiding. No motion.")
-    ap.add_argument("--ip", default="192.168.1.100", help="controller IP")
+    ap.add_argument(
+        "--ip",
+        default="192.168.1.100",
+        help="controller IP (default %(default)s — the address of the cell this driver was "
+        "developed against, not a FANUC-wide one)",
+    )
     ap.add_argument(
         "--tolerance-deg",
         type=float,
@@ -88,7 +93,11 @@ def main() -> int:
     try:
         # Connect-only. NEVER initialize() here — see the module docstring.
         rmi.start()
-    except Exception as exc:
+    except (FanucError, RmiError) as exc:
+        # Both, because start() is refused in two layers: a controller ErrorID arrives as
+        # RmiError, which is a RuntimeError outside the driver-owned FanucError tree on
+        # purpose (the RMI protocol layer sits below it), while a transport failure arrives
+        # as FanucConnectionError.
         print(f"\nRMI connect FAILED: {type(exc).__name__}: {exc}")
         lock.release()
         return 2
@@ -177,7 +186,7 @@ def main() -> int:
     print("  take that joint to its stop, or the recorded limit is too wide — and too wide is")
     print("  the direction that matters, because the guard would then pass a command the")
     print("  controller refuses. If the joint WAS at its stop, narrow the table in")
-    print(f"  examples/_common.py (the guard already keeps {LIMIT_MARGIN_DEG:g}° back from it).")
+    print(f"  examples/crx10ial.py (the guard already keeps {LIMIT_MARGIN_DEG:g}° back from it).")
     if wider:
         print("\n  These went BEYOND the recorded limit — the table is conservative there, which is")
         print("  safe but costs range:")
@@ -197,7 +206,14 @@ def main() -> int:
         )
     print("  Still open: WHICH plane matches the pendant's displayed J3. One glance settles it.")
 
-    return 2 if wider else 0
+    # 0: the run produced its comparison, so every check it makes passed. A BEYOND is a
+    # finding rather than a failed check — the recorded table is NARROWER than the arm, the
+    # conservative direction, where the guard refuses a move the controller would allow. The
+    # hazardous direction is a table too WIDE, and that surfaces as a `short` verdict, which
+    # is ambiguous: only the operator knows whether the joint really reached its stop. So
+    # the exit code cannot adjudicate this table and does not pretend to. 2 is reserved for
+    # the two things that are unambiguous — the session never came up, or no read landed.
+    return 0
 
 
 if __name__ == "__main__":

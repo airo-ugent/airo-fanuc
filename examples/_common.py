@@ -66,7 +66,13 @@ def rule(title: str = "") -> str:
 
 def add_connection_args(ap: argparse.ArgumentParser) -> None:
     """Add the connection + RT-hygiene arguments every example shares."""
-    ap.add_argument("--ip", default="192.168.1.100", help="controller IP (real robot)")
+    ap.add_argument(
+        "--ip",
+        default="192.168.1.100",
+        help="controller IP (default %(default)s). That is the address of the cell this driver was "
+        "developed against, not a FANUC-wide one — pass your own if it differs. Ignored under "
+        "--fake, which drives an in-process controller on 127.0.0.1.",
+    )
     ap.add_argument("--fake", action="store_true", help="offline in-process FakeCRX (no hardware)")
     ap.add_argument(
         "--itp-ms",
@@ -471,6 +477,13 @@ def report_motion(w: Watch, *, expect_result: MotionResult) -> bool:
     return w.result == expect_result
 
 
+#: Width of the tx-interval histogram's buckets, ms (``hist_tx_interval_.bucket_ns = 50'000``
+#: in ``src/cpp/rt_core/realtime_core.cpp``). The core reports a percentile as the UPPER EDGE
+#: of the bucket the sample fell in (``Histogram::percentile``, ``realtime_core.hpp``), so a
+#: reported p50 of X means the median interval was somewhere in ``[X - this, X)`` — never X.
+TX_INTERVAL_BUCKET_MS = 0.05
+
+
 def report_rt_health(driver: Any, config: DriverConfig) -> bool:
     """Print the RT loop's timing and decide whether it held its deadline.
 
@@ -516,13 +529,21 @@ def report_rt_health(driver: Any, config: DriverConfig) -> bool:
         f"count is fine; what matters is the tx interval above"
     )
 
+    # The reported p50 is a bucket's UPPER EDGE (see TX_INTERVAL_BUCKET_MS), so the median
+    # interval lies in [p50 - bucket, p50). Ask whether that bucket can hold a median within
+    # 1% of the ITP rather than testing the edge itself: a loop sitting exactly on the ITP
+    # reports one bucket above it, so comparing the edge spends 50 of the 80 µs a 1% window
+    # allows at 8 ms on quantization — and spends all of it on the late side, which is the
+    # side that matters. De-biased, the window on the median is ±100 µs at an 8 ms ITP, which
+    # is also the PLL's per-tick phase-correction cap: the band the cadence can sit in at all.
+    band_ms = 0.01 * itp_ms
+    p50_ms = ts["tx_interval_p50_ms"]
+    p50_ok = p50_ms - TX_INTERVAL_BUCKET_MS <= itp_ms + band_ms and p50_ms >= itp_ms - band_ms
+
     # One τ-advance per tick is the core's central invariant: the trajectory clock
     # must advance exactly once per tick, or playback runs fast or slow.
     checks = [
-        (
-            f"tx interval p50 within 1% of the {itp_ms:.1f} ms ITP",
-            abs(ts["tx_interval_p50_ms"] - itp_ms) <= 0.01 * itp_ms,
-        ),
+        (f"tx interval p50 within 1% of the {itp_ms:.1f} ms ITP", p50_ok),
         (f"tx interval max under 2 ITP ({2 * itp_ms:.1f} ms)", ts["tx_interval_max_ms"] < 2.0 * itp_ms),
         ("no two sends inside one ITP", int(ts["double_send_guard"]) == 0),
         ("exactly one tau-advance per tick", int(ts["tau_advance_count"]) == int(ts["tick_count"])),

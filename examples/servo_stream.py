@@ -3,10 +3,11 @@
 """Validation step 7: the same sine, streamed setpoint-by-setpoint from Python.
 
 WRITTEN FOR ONE SPECIFIC ROBOT: a FANUC CRX-10iA/L on an R-30iB-class controller
-negotiating Stream Motion v3 at an 8 ms interpolation period. It shares
-``sine_wave.py``'s joint-limit guard, which carries that arm's measured soft limits and
-is the only thing standing between an ``--amplitude-deg`` argument and a soft-limit
-hit — so on a different FANUC it must be replaced, not merely reviewed. See
+negotiating Stream Motion v3 at an 8 ms interpolation period. It applies the same
+pre-motion guard ``sine_wave.py`` does — ``_common.guard_joint_limits``, against that
+arm's soft limits as recorded in ``examples/crx10ial.py`` — and that guard is the only
+thing standing between an ``--amplitude-deg`` argument and a soft-limit hit, so on a
+different FANUC the profile must be replaced, not merely reviewed. See
 ``examples/README.md``.
 
 ``sine_wave.py`` hands the WHOLE path over in one ``move_trajectory`` and the C++ RT
@@ -75,8 +76,12 @@ from _common import (
     verdict,
     wait_streaming,
 )
-from airo_fanuc import FanucDriver, MotionResult, RobotFaultedError
+from airo_fanuc import FanucDriver, FanucError, MotionResult, RobotFaultedError
 from airo_fanuc import controller_facts as cf
+
+# Private, because the package publishes no spelling of the core's mode: get_state() carries
+# "mode" as a bare int, and LifecycleState collapses HOLD/PREROLL/CAPTURE/TRAJECTORY/SERVO/
+# BRAKE into one STREAMING. Telling SERVO apart is what this script's first check asserts.
 from airo_fanuc._core import Mode
 
 
@@ -492,7 +497,7 @@ def main() -> int:
         print("\naborted during bring-up")
         target.close()
         return 1
-    except Exception as exc:
+    except FanucError as exc:
         print(f"\nbring-up FAILED: {type(exc).__name__}: {exc}")
         target.close()
         return 2

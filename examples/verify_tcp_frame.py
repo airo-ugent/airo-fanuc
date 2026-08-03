@@ -73,7 +73,7 @@ from _common import (
     wait_streaming,
     watch,
 )
-from airo_fanuc import FanucDriver, MotionResult
+from airo_fanuc import FanucDriver, FanucError, MotionResult
 
 #: Names of the six Cartesian components, in wire order.
 _AXES = ("X", "Y", "Z", "W", "P", "R")
@@ -282,7 +282,7 @@ def main() -> int:
         print("\naborted during bring-up")
         target.close()
         return 1
-    except Exception as exc:
+    except FanucError as exc:
         print(f"\nbring-up FAILED: {type(exc).__name__}: {exc}")
         target.close()
         return 2
