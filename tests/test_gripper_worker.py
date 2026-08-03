@@ -22,6 +22,7 @@ from airo_fanuc.gripper import (
     REG_ACTION,
     REG_CMD,
     REG_R3,
+    RegisterGripperProtocol,
 )
 from airo_fanuc.gripper_worker import GripperWorker
 from airo_fanuc.rmi_client import RmiClient
@@ -36,26 +37,33 @@ class FakeGripperRmi:
     ``clears_after`` reads, clears ``R[1]`` to 0 (unless ``never_clears``).
     """
 
-    def __init__(self, *, clears_after: int = 1, never_clears: bool = False) -> None:
+    def __init__(
+        self, *, clears_after: int = 1, never_clears: bool = False, trigger_reg: int = REG_CMD
+    ) -> None:
         self.registers: dict[int, float] = {}
         self.write_log: list[tuple[int, float]] = []
         self.read_count = 0
         self._clears_after = clears_after
         self._never_clears = never_clears
+        self._trigger_reg = trigger_reg
         self._reads_since_trigger: int | None = None
 
     def write_register(self, register_number: int, value: float | int) -> None:
         self.write_log.append((register_number, float(value)))
         self.registers[register_number] = float(value)
-        if register_number == REG_CMD and int(value) == 1:
+        if register_number == self._trigger_reg and int(value) == 1:
             self._reads_since_trigger = 0
 
     def read_register(self, register_number: int) -> float:
         self.read_count += 1
-        if register_number == REG_CMD and self._reads_since_trigger is not None and not self._never_clears:
+        if (
+            register_number == self._trigger_reg
+            and self._reads_since_trigger is not None
+            and not self._never_clears
+        ):
             self._reads_since_trigger += 1
             if self._reads_since_trigger >= self._clears_after:
-                self.registers[REG_CMD] = 0.0
+                self.registers[self._trigger_reg] = 0.0
                 self._reads_since_trigger = None
         return float(self.registers.get(register_number, 0.0))
 
@@ -245,3 +253,60 @@ def test_commands_are_serialized() -> None:
     # Each command's begin must be followed by its own end before the next begin
     # — never begin/begin/end/end.
     assert events == ["begin", "end", "begin", "end"]
+
+
+# ---------------------------------------------------------------------------
+# A gripper that is not ours
+# ---------------------------------------------------------------------------
+
+#: Nothing in common with the shipped preset: different registers, different action
+#: codes, different modifier vocabulary, different program names. Every value is
+#: distinct from every Robotiq value, so a worker that fell back to the preset for any
+#: one of them writes a register this protocol never names.
+_FOREIGN = RegisterGripperProtocol(
+    name="two-state vacuum via VACDISP",
+    trigger_reg=40,
+    action_reg=41,
+    modifier_reg=42,
+    open_action=7,
+    close_action=8,
+    open_modifiers=(0,),
+    close_modifiers=(5, 9),
+    default_open_modifier=0,
+    default_close_modifier=9,
+    launcher_program="VACRUN",
+    dispatcher_program="VACDISP",
+)
+
+
+def test_a_foreign_protocol_drives_its_own_registers() -> None:
+    """The whole point of the split: the worker's behaviour is the protocol's, not ours."""
+    rmi = FakeGripperRmi(clears_after=1, trigger_reg=_FOREIGN.trigger_reg)
+    with GripperWorker(rmi, protocol=_FOREIGN, dispatch_timeout_s=1.0) as worker:
+        result = worker.close_gripper_and_wait(timeout=2.0)
+    assert result is not None and result["success"] is True
+    # Defaults come from the protocol, and the trigger is still written last.
+    assert rmi.write_log == [(42, 9.0), (41, 8.0), (40, 1.0)]
+    assert REG_CMD not in rmi.registers, "wrote a register the shipped preset owns"
+
+
+def test_a_foreign_protocol_validates_against_its_own_modifiers() -> None:
+    rmi = FakeGripperRmi(clears_after=1, trigger_reg=_FOREIGN.trigger_reg)
+    with GripperWorker(rmi, protocol=_FOREIGN, dispatch_timeout_s=1.0) as worker:
+        # FORCE_MEDIUM (1) is a Robotiq class this dispatcher does not implement, and a
+        # dispatcher has no way to report "I did not understand that" — it would actuate
+        # whatever its else-branch does. So the refusal has to happen here.
+        with pytest.raises(ValueError, match="two-state vacuum"):
+            worker.close_gripper(close_force=1)
+        assert rmi.write_log == [], "nothing reached the wire"
+
+
+def test_the_timeout_message_names_the_dispatcher_that_did_not_answer() -> None:
+    # The message is the operator's only clue, and "is GRIPDISP running?" is wrong
+    # advice on a cell whose dispatcher is called something else.
+    rmi = FakeGripperRmi(never_clears=True, trigger_reg=_FOREIGN.trigger_reg)
+    with GripperWorker(rmi, protocol=_FOREIGN, dispatch_timeout_s=0.3) as worker:
+        result = worker.open_gripper_and_wait(timeout=2.0)
+    assert result is not None and result["success"] is False
+    assert "VACDISP" in str(result["message"])
+    assert "R[40]" in str(result["message"])

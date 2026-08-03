@@ -42,6 +42,7 @@ from .controller_probe import (
     probe_controller,
 )
 from .exceptions import FanucPreflightError, RmiError, RmiSessionDown
+from .gripper import ROBOTIQ_2F85
 from .rmi_client import RmiClient
 
 if TYPE_CHECKING:
@@ -116,12 +117,22 @@ class PreflightReport:
         return "preflight[" + ", ".join(parts) + "]"
 
 
+#: The gripper path, for a caller that does not name its own pair. Checked only when
+#: the caller says it wants a gripper, since a dispatcher lives on controller flash and
+#: is a site-installation prerequisite that no wheel can supply — its absence is a real
+#: block for that caller and irrelevant noise for everyone else. The names come from
+#: :class:`~airo_fanuc.gripper.RegisterGripperProtocol`, so a site with its own
+#: dispatcher is checked against its own programs rather than ours.
+_DEFAULT_GRIPPER_PROGRAMS = ROBOTIQ_2F85.tp_programs
+
+
 def run_preflight(
     rmi: RmiClient,
     *,
     full: bool = False,
     profile: RobotProfile | None = None,
     expect_gripper: bool = False,
+    gripper_programs: tuple[str, ...] = _DEFAULT_GRIPPER_PROGRAMS,
     probe_timeout_s: float = 15.0,
 ) -> PreflightReport:
     """Run the per-connect preflight gate against an already-connected ``rmi``.
@@ -182,6 +193,7 @@ def run_preflight(
             rmi.controller_ip,
             profile=profile,
             expect_gripper=expect_gripper,
+            gripper_programs=gripper_programs,
             probe_timeout_s=probe_timeout_s,
         )
 
@@ -203,12 +215,6 @@ def run_preflight(
 #: are bundled into S636 rather than ordered separately.
 _EXTERNAL_CONTROL_PROGRAMS = ("stream_motn", "rmi_move")
 
-#: The gripper path. Checked only when the caller says it wants a gripper, since
-#: GRIPDISP lives on controller flash and is a site-installation prerequisite that no
-#: wheel can supply — its absence is a real block for that caller and irrelevant noise
-#: for everyone else.
-_GRIPPER_PROGRAMS = ("gripdisp", "grprun")
-
 #: How far a supplied profile may sit from the controller's own limits before the
 #: divergence is worth a line in the report.
 _LIMIT_TOL_DEG = 0.05
@@ -221,6 +227,7 @@ def _run_full_checks(
     *,
     profile: RobotProfile | None,
     expect_gripper: bool,
+    gripper_programs: tuple[str, ...],
     probe_timeout_s: float,
 ) -> None:
     try:
@@ -236,12 +243,12 @@ def _run_full_checks(
     _check_p_level(report, facts)
     _check_external_control(report, facts)
     if expect_gripper:
-        missing = [p for p in _GRIPPER_PROGRAMS if not facts.has_tp_program(p)]
+        missing = [p for p in gripper_programs if not facts.has_tp_program(p)]
         if missing and facts.tp_programs:
             report.hard_blocks.append(
                 f"gripper enabled but TP program(s) {missing} are not installed on the controller. "
-                f"GRIPDISP lives on controller flash and cannot be shipped in the wheel; install it "
-                f"or run with DriverPolicy(enable_gripper=False)."
+                f"A gripper dispatcher lives on controller flash and cannot be shipped in the wheel; "
+                f"install it or run with DriverPolicy(enable_gripper=False)."
             )
     if profile is not None:
         _cross_check_profile(report, facts, profile)

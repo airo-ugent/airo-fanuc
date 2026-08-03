@@ -27,6 +27,7 @@ import numpy as np
 from . import controller_facts as cf
 from ._core import RtCoreConfig
 from .controller_facts import SettlePolicy
+from .gripper import ROBOTIQ_2F85, RegisterGripperProtocol
 from .ownership import DEFAULT_LOCK_PATH
 from .republisher import Publisher
 from .robot_profile import RobotProfile
@@ -38,6 +39,7 @@ __all__ = [
     "DriverConfig",
     "DriverPolicy",
     "MotionResult",
+    "RegisterGripperProtocol",
     "RobotProfile",
     "SettlePolicy",
 ]
@@ -306,6 +308,15 @@ class DriverPolicy:
 
     # -- peripherals -----------------------------------------------------
     enable_gripper: bool = True
+    #: Which registers the gripper dispatcher on this controller watches, and which
+    #: values it understands. Defaults to the shipped
+    #: :data:`~airo_fanuc.gripper.ROBOTIQ_2F85` preset, which is the gripper this
+    #: package has been exercised against; a cell with any other gripper supplies its
+    #: own :class:`~airo_fanuc.gripper.RegisterGripperProtocol` here and needs no other
+    #: change. Unlike :attr:`DriverConfig.profile` this has a default, because a wrong
+    #: gripper protocol cannot drive the arm into anything — the dispatcher either
+    #: recognises the values or does not answer at all, and bring-up says so.
+    gripper_protocol: RegisterGripperProtocol = ROBOTIQ_2F85
     #: Injected publisher (zenoh, ROS, anything matching the ``Publisher`` protocol)
     #: for the republisher threads. ``None`` = no republish.
     publisher: Publisher | None = None

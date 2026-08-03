@@ -291,7 +291,7 @@ class FanucDriver:
             self._supervisor.start_watch()
 
             if self._policy.enable_gripper:
-                self.gripper = GripperWorker(self.rmi)
+                self.gripper = GripperWorker(self.rmi, protocol=self._policy.gripper_protocol)
                 # Let the supervisor fail-fast-gate the gripper during a recovery
                 # ladder — a gripper command must never actuate GRIPDISP
                 # mid-recovery (e.g. just after an e-stop release).

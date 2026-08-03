@@ -46,7 +46,6 @@ from typing import TYPE_CHECKING, Any, cast
 from ._core import FaultReason, Mode, StreamCore
 from .config import DriverPolicy
 from .exceptions import FanucConnectionError, FanucPreflightError, RmiError, RmiSessionDown
-from .gripper import ACTION_OPEN, OPEN_FULL, REG_ACTION, REG_CMD, REG_R3
 from .lifecycle import (
     FAULT_STATES,
     LifecycleState,
@@ -69,7 +68,6 @@ _SYST348_ERROR_IDS: frozenset[int] = frozenset({2556934, 2556936})
 _ERR_TP_NOT_PAUSED = 2556938  # FRC_Continue of an unpaused program — benign, tolerated.
 _ERR_ALREADY_CONNECTED = 2556954  # "Robot is Already Connected." — prior session not yet freed.
 
-_GRPRUN = "GRPRUN"
 _STREAM_MOTN = "STREAM_MOTN"
 
 # Times bring-up re-applies the STREAM_MOTN relaunch when motion_possible will not stay
@@ -203,6 +201,7 @@ class Supervisor:
             full=self._policy.preflight_full,
             profile=self._policy.config.profile,
             expect_gripper=self._policy.enable_gripper,
+            gripper_programs=self._policy.gripper_protocol.tp_programs,
         )
         self._rmi.initialize()
         self._maybe_continue()
@@ -255,20 +254,25 @@ class Supervisor:
             # that wedge is an operator at the teach pendant pressing FCTN → ABORT ALL.
             # So gate the fork on a liveness probe: if a dispatcher is already running,
             # skip the fork entirely.
+            proto = self._policy.gripper_protocol
             if self._gripdisp_alive():
                 logger.info(
-                    "airo_fanuc: GRIPDISP already running (probe: R[%d] auto-cleared) — "
-                    "skipping GRPRUN fork (cross-process anti-stacking)",
-                    REG_CMD,
+                    "airo_fanuc: %s already running (probe: R[%d] auto-cleared) — "
+                    "skipping %s fork (cross-process anti-stacking)",
+                    proto.dispatcher_program,
+                    proto.trigger_reg,
+                    proto.launcher_program,
                 )
                 self._grprun_forked = True  # known-present; no re-probe/fork on retries
             else:
                 logger.info(
-                    "airo_fanuc: no GRIPDISP detected (probe: R[%d] not cleared in %.1fs) — forking GRPRUN",
-                    REG_CMD,
+                    "airo_fanuc: no %s detected (probe: R[%d] not cleared in %.1fs) — forking %s",
+                    proto.dispatcher_program,
+                    proto.trigger_reg,
                     self._cfg.gripdisp_probe_timeout_s,
+                    proto.launcher_program,
                 )
-                self._rmi.program_call(_GRPRUN)
+                self._rmi.program_call(proto.launcher_program)
                 self._grprun_forked = True  # latch BEFORE the flush: the fork is now irrevocable
                 time.sleep(0.2)
                 self._rmi.reset()
@@ -318,10 +322,11 @@ class Supervisor:
         treated as "absent" — a probe error on the first (unlatched) attempt costs at
         most one extra fork, bounded by the per-process ``_grprun_forked`` latch.
         """
+        proto = self._policy.gripper_protocol
         try:
-            self._rmi.write_register(REG_R3, OPEN_FULL)
-            self._rmi.write_register(REG_ACTION, ACTION_OPEN)
-            self._rmi.write_register(REG_CMD, 1)
+            self._rmi.write_register(proto.modifier_reg, proto.default_open_modifier)
+            self._rmi.write_register(proto.action_reg, proto.open_action)
+            self._rmi.write_register(proto.trigger_reg, 1)
         except (RmiError, RmiSessionDown, OSError) as exc:
             logger.warning(
                 "airo_fanuc: GRIPDISP liveliness probe write failed (%s) — treating as absent", exc
@@ -331,7 +336,7 @@ class Supervisor:
         while time.monotonic() < deadline:
             time.sleep(0.05)
             try:
-                if self._rmi.read_register(REG_CMD) == 0:
+                if self._rmi.read_register(proto.trigger_reg) == 0:
                     return True
             except (RmiError, RmiSessionDown, OSError) as exc:
                 logger.warning(

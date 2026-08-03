@@ -12,6 +12,11 @@ The arm's motion envelope is not built in: a :class:`RobotProfile` carrying its
 velocity, acceleration and jerk clamps and its joint position limits is injected
 through :class:`DriverConfig`. ``examples/crx10ial.py`` builds one for the FANUC
 CRX-10iA/L this driver has been run against.
+
+The gripper is injected the same way, for the same reason: a
+:class:`RegisterGripperProtocol` says which registers a dispatcher TP program on the
+controller watches and which values it understands. :data:`ROBOTIQ_2F85` is the
+shipped preset and the default; ``docs/gripper.md`` is how to drive a different one.
 """
 
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
@@ -46,6 +51,7 @@ from .exceptions import (
     RobotFaultedError,
     TrajectoryValidationError,
 )
+from .gripper import ROBOTIQ_2F85, RegisterGripperProtocol
 from .lifecycle import LifecycleState
 from .robot_profile import ProfileError, RobotProfile
 
@@ -77,6 +83,8 @@ __all__ = [
     "MotionStatus",
     "OwnershipError",
     "ProfileError",
+    "ROBOTIQ_2F85",
+    "RegisterGripperProtocol",
     "RejectedStartMismatch",
     "RmiError",
     "RmiSessionDown",

@@ -1,25 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Serialized Robotiq 2F-85 gripper worker over the driver's ``RmiClient``.
+"""Serialized register-dispatcher gripper worker over the driver's ``RmiClient``.
 
-Drives the controller's ``GRIPDISP`` TP program by writing its trigger registers
-and polling for completion. The register contract itself — and the fact that the
-R[3] modifier means a *width bucket* on open and a *force class* on close — is in
-:mod:`airo_fanuc.gripper`.
+Executes a :class:`~airo_fanuc.gripper.RegisterGripperProtocol` against a dispatcher
+TP program running on the controller: write the command into registers, then poll the
+trigger for completion. Which registers and which values is the protocol's business,
+not this module's — everything here is true of any dispatcher of that shape.
 
 Sequence (one physical command):
 
-1. ``rmi.write_register(REG_R3, modifier)`` — action-dependent modifier
-   (open → open-state selector; close → close-force selector).
-2. ``rmi.write_register(REG_ACTION, ACTION_OPEN | ACTION_CLOSE)``.
-3. ``rmi.write_register(REG_CMD, 1)`` — trigger the dispatcher.
-4. Sleep ``trigger_settle_s`` (0.1 s) so the controller sees the trigger
-   before we start polling.
-5. Poll ``rmi.read_register(REG_CMD)`` at ``poll_hz`` (20 Hz) until it clears
-   to 0 (success) or ``dispatch_timeout_s`` (5 s) elapses (timeout).
+1. ``write_register(modifier_reg, modifier)`` — the verb's argument, first.
+2. ``write_register(action_reg, open_action | close_action)`` — the verb.
+3. ``write_register(trigger_reg, 1)`` — LAST, so the dispatcher cannot read a
+   half-written command: it may act the moment it sees this.
+4. Sleep ``trigger_settle_s`` (0.1 s) so the dispatcher has seen the trigger before
+   the first poll, which would otherwise read the pre-trigger 0 and report done.
+5. Poll ``read_register(trigger_reg)`` at ``poll_hz`` (20 Hz) until it clears to 0
+   (success) or ``dispatch_timeout_s`` (5 s) elapses (timeout).
 
-Polling R[1] is the only completion signal available: the protocol exposes no
-width feedback, so "done" means the TP program cleared the trigger, not that a
-measured width was reached.
+Polling the trigger is the only completion signal available: the mechanism carries no
+feedback, so "done" means the dispatcher cleared the trigger, not that any physical
+quantity was measured.
 
 Design invariants:
 
@@ -52,17 +52,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol
 
-from airo_fanuc.gripper import (
-    ACTION_CLOSE,
-    ACTION_OPEN,
-    DEFAULT_CLOSE_FORCE,
-    OPEN_FULL,
-    REG_ACTION,
-    REG_CMD,
-    REG_R3,
-    VALID_CLOSE_FORCES,
-    VALID_OPEN_STATES,
-)
+from airo_fanuc.gripper import ROBOTIQ_2F85, RegisterGripperProtocol
 
 logger = logging.getLogger("airo_fanuc.gripper")
 
@@ -98,17 +88,23 @@ class GripperWorker:
     / :meth:`close_gripper` (non-blocking submit) followed by
     :meth:`wait_gripper_done`, or the blocking :meth:`open_gripper_and_wait` /
     :meth:`close_gripper_and_wait`. :meth:`close` shuts the worker down.
+
+    ``protocol`` defaults to :data:`~airo_fanuc.gripper.ROBOTIQ_2F85`, the shipped
+    preset. A different gripper passes its own — the worker's behaviour, timing and
+    guarantees are unchanged by which one.
     """
 
     def __init__(
         self,
         rmi: GripperRmi,
         *,
+        protocol: RegisterGripperProtocol = ROBOTIQ_2F85,
         trigger_settle_s: float = GRIPPER_TRIGGER_SETTLE_S,
         poll_hz: float = GRIPPER_POLL_HZ,
         dispatch_timeout_s: float = GRIPPER_DISPATCH_TIMEOUT_S,
     ) -> None:
         self._rmi = rmi
+        self._proto = protocol
         self._trigger_settle_s = float(trigger_settle_s)
         self._poll_period_s = 1.0 / float(poll_hz)
         self._dispatch_timeout_s = float(dispatch_timeout_s)
@@ -151,34 +147,38 @@ class GripperWorker:
     # Non-blocking submit API
     # ------------------------------------------------------------------
 
-    def open_gripper(self, open_state: int = OPEN_FULL) -> None:
+    def open_gripper(self, open_state: int | None = None) -> None:
         """Open the gripper (non-blocking). Result via :meth:`wait_gripper_done`.
 
-        ``open_state`` selects the open width via R[3] — one of three discrete
-        buckets, never a width in millimetres: ``OPEN_FULL`` (0, POSITION 0,
-        ~85 mm), ``OPEN_MID`` (1, POSITION 75, ~60 mm), or ``OPEN_NARROW``
-        (2, POSITION 150, ~35 mm).
+        ``open_state`` is the modifier the dispatcher reads for its open verb — a
+        bucket index it defines, never a width in millimetres. ``None`` uses the
+        protocol's default. For the shipped Robotiq preset the buckets are
+        ``OPEN_FULL`` (~85 mm), ``OPEN_MID`` (~60 mm) and ``OPEN_NARROW`` (~35 mm).
 
-        Raises :class:`ValueError` for an out-of-range value or a ``bool``:
-        ``open_state=True`` would otherwise silently mean ``OPEN_MID`` (1),
+        Raises :class:`ValueError` for a value the protocol does not list, or a
+        ``bool``: ``open_state=True`` would otherwise silently select bucket 1,
         opening to a width the caller never asked for.
         """
-        self._validate_selector(open_state, VALID_OPEN_STATES, "open_state")
-        self._submit("open", ACTION_OPEN, int(open_state))
+        if open_state is None:
+            open_state = self._proto.default_open_modifier
+        self._validate_selector(open_state, self._proto.open_modifiers, "open_state")
+        self._submit("open", self._proto.open_action, int(open_state))
 
-    def close_gripper(self, close_force: int = DEFAULT_CLOSE_FORCE) -> None:
+    def close_gripper(self, close_force: int | None = None) -> None:
         """Close the gripper (non-blocking). Result via :meth:`wait_gripper_done`.
 
-        ``close_force`` selects the close target/force pair via R[3] — one of
-        three discrete force classes, never a force in newtons: ``FORCE_LIGHT``
-        (0, POSITION 220 / FORCE 100; rigid or easily-crushed objects),
-        ``FORCE_MEDIUM`` (1, POSITION 220 / FORCE 150; default), ``FORCE_HARD``
-        (2, POSITION 255 / FORCE 255; compressible objects).
+        ``close_force`` is the modifier the dispatcher reads for its close verb — a
+        class index it defines, never a force in newtons. ``None`` uses the protocol's
+        default. For the shipped Robotiq preset the classes are ``FORCE_LIGHT``
+        (rigid or easily-crushed objects), ``FORCE_MEDIUM`` (the default) and
+        ``FORCE_HARD`` (compressible objects that only hold once squeezed).
 
-        Raises :class:`ValueError` for an out-of-range value or a ``bool``.
+        Raises :class:`ValueError` for a value the protocol does not list, or a ``bool``.
         """
-        self._validate_selector(close_force, VALID_CLOSE_FORCES, "close_force")
-        self._submit("close", ACTION_CLOSE, int(close_force))
+        if close_force is None:
+            close_force = self._proto.default_close_modifier
+        self._validate_selector(close_force, self._proto.close_modifiers, "close_force")
+        self._submit("close", self._proto.close_action, int(close_force))
 
     def wait_gripper_done(self, timeout: float | None = None) -> GripperResult | None:
         """Block until the latest command completes; return its dict-or-None result.
@@ -202,7 +202,7 @@ class GripperWorker:
     # ------------------------------------------------------------------
 
     def open_gripper_and_wait(
-        self, open_state: int = OPEN_FULL, timeout: float | None = None
+        self, open_state: int | None = None, timeout: float | None = None
     ) -> GripperResult | None:
         """:meth:`open_gripper` then :meth:`wait_gripper_done`.
 
@@ -215,7 +215,7 @@ class GripperWorker:
         return self.wait_gripper_done(timeout=self._default_wait_timeout(timeout))
 
     def close_gripper_and_wait(
-        self, close_force: int = DEFAULT_CLOSE_FORCE, timeout: float | None = None
+        self, close_force: int | None = None, timeout: float | None = None
     ) -> GripperResult | None:
         """:meth:`close_gripper` then :meth:`wait_gripper_done` (see timeout note)."""
         self.close_gripper(close_force=close_force)
@@ -245,14 +245,13 @@ class GripperWorker:
             return timeout
         return self._dispatch_timeout_s + self._trigger_settle_s + 1.0
 
-    @staticmethod
-    def _validate_selector(value: object, valid: tuple[int, ...], field: str) -> None:
+    def _validate_selector(self, value: object, valid: tuple[int, ...], field: str) -> None:
         # bool is an int subclass — reject explicitly so True/False can't sneak
         # in as 1/0 and select a bucket the caller never named.
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"{field} must be an int in {valid}, got {type(value).__name__} {value!r}")
         if value not in valid:
-            raise ValueError(f"{field} must be one of {valid}, got {value!r}")
+            raise ValueError(f"{field} must be one of {valid} for {self._proto.name}, got {value!r}")
 
     def _submit(self, action: str, action_reg: int, modifier: int) -> None:
         """Reset the done-latch and hand the sequence to the single worker.
@@ -287,11 +286,11 @@ class GripperWorker:
         if self._is_recovering():
             self._finish(False, "RMI recovery in progress — refusing gripper command")
             return
-        logger.info("gripper: command %s (R[%d]=%d)", action, REG_R3, modifier)
+        logger.info("gripper: command %s (R[%d]=%d)", action, self._proto.modifier_reg, modifier)
         try:
-            self._rmi.write_register(REG_R3, modifier)
-            self._rmi.write_register(REG_ACTION, action_reg)
-            self._rmi.write_register(REG_CMD, 1)
+            self._rmi.write_register(self._proto.modifier_reg, modifier)
+            self._rmi.write_register(self._proto.action_reg, action_reg)
+            self._rmi.write_register(self._proto.trigger_reg, 1)
         except Exception as exc:  # noqa: BLE001 - any RMI failure → dict-fail, never crash the worker
             logger.error("gripper: register write failed: %s", exc)
             self._finish(False, f"failed to write trigger registers: {exc}")
@@ -302,16 +301,17 @@ class GripperWorker:
             self._finish(False, "gripper worker stopped during settle")
             return
 
+        trigger = self._proto.trigger_reg
         deadline = time.monotonic() + self._dispatch_timeout_s
         while time.monotonic() < deadline:
             if self._stop_evt.is_set():
                 self._finish(False, "gripper worker stopped during poll")
                 return
             try:
-                cmd = self._rmi.read_register(REG_CMD)
+                cmd = self._rmi.read_register(trigger)
             except Exception as exc:  # noqa: BLE001 - any RMI failure → dict-fail
-                logger.error("gripper: poll read of R[%d] failed: %s", REG_CMD, exc)
-                self._finish(False, f"failed to read R[{REG_CMD}]: {exc}")
+                logger.error("gripper: poll read of R[%d] failed: %s", trigger, exc)
+                self._finish(False, f"failed to read R[{trigger}]: {exc}")
                 return
             if cmd == 0.0:
                 logger.info("gripper: %s complete", action)
@@ -321,11 +321,11 @@ class GripperWorker:
                 self._finish(False, "gripper worker stopped during poll")
                 return
 
-        logger.error("gripper: %s timed out (R[%d] not cleared)", action, REG_CMD)
+        logger.error("gripper: %s timed out (R[%d] not cleared)", action, trigger)
         self._finish(
             False,
-            f"gripper {action} timed out (R[{REG_CMD}] not cleared after "
-            f"{self._dispatch_timeout_s:.1f}s — is GRIPDISP running?)",
+            f"gripper {action} timed out (R[{trigger}] not cleared after "
+            f"{self._dispatch_timeout_s:.1f}s — is {self._proto.dispatcher_program} running?)",
         )
 
     def _finish(self, success: bool, message: str) -> None:

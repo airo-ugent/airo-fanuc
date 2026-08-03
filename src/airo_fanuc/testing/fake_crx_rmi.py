@@ -56,7 +56,11 @@ ERR_ALREADY_CONNECTED = 2556954  # "Robot is Already Connected." (multi-session)
 PUSH_COMMS = ("FRC_SystemFault", "FRC_Terminate", "FRC_AsbnReady")
 _ECHO_KEYS = ("Command", "Communication", "Instruction")
 
-# GRIPDISP register map (gripper.py): R[1]=trigger, R[2]=action, R[3]=modifier.
+# The GRIPDISP register map, written out rather than imported from
+# ``airo_fanuc.gripper``. This half of the handshake belongs to the CONTROLLER: the fake
+# stands in for the TP program, so importing the driver's own numbers would make the two
+# sides unable to disagree — and a driver poking the wrong register is exactly what the
+# fake exists to catch. Same reason ``wire.py`` re-derives the packet layout.
 REG_CMD = 1
 REG_ACTION = 2
 REG_R3 = 3
