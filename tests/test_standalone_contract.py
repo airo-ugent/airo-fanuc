@@ -85,3 +85,48 @@ def test_only_numpy_is_imported_from_outside_the_stdlib() -> None:
         + f". Allowed: {sorted(_ALLOWED_THIRD_PARTY)}. Either vendor the behaviour, "
         "inject it, or add the dependency to pyproject.toml AND update this test."
     )
+
+
+def test_declared_dependencies_match_the_allowed_set() -> None:
+    """``pyproject.toml`` and this test's allow-list must not drift apart.
+
+    Without this, adding a dependency to the manifest and forgetting to widen
+    ``_ALLOWED_THIRD_PARTY`` leaves the check above silently passing on a package that
+    no longer installs with numpy alone.
+    """
+    import re
+
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    manifest = tomllib.loads((root / "pyproject.toml").read_text())
+    declared = manifest["project"]["dependencies"]
+    # Strip version specifiers / extras: "numpy>=1.26" -> "numpy".
+    names = {re.split(r"[<>=!~\[; ]", spec, maxsplit=1)[0].strip().lower() for spec in declared}
+    assert names == _ALLOWED_THIRD_PARTY, (
+        f"pyproject declares {sorted(names)} but this test allows {sorted(_ALLOWED_THIRD_PARTY)}. "
+        "The numpy-only contract is the package's most important distribution property — "
+        "widening it is a deliberate decision, not a drive-by."
+    )
+
+
+def test_version_is_read_from_the_distribution_metadata() -> None:
+    """``__version__`` must not be a second, drifting source of truth.
+
+    A literal in ``__init__.py`` can disagree with ``[project] version`` indefinitely
+    without anything failing: the wheel is published under the manifest's version while
+    ``airo_fanuc.__version__`` reports the literal, and a user comparing the two has no
+    way to tell which is authoritative. Deriving it from the installed metadata makes
+    the manifest the only source; this pins that it stays so.
+    """
+    import tomllib
+
+    import airo_fanuc
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    declared = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    assert airo_fanuc.__version__ == declared, (
+        f"__version__ is {airo_fanuc.__version__!r} but pyproject declares {declared!r}. "
+        "Reinstall the package if this is a stale editable install; otherwise the literal "
+        "has come back."
+    )

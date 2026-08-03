@@ -14,6 +14,9 @@ through :class:`DriverConfig`. ``examples/crx10ial.py`` builds one for the FANUC
 CRX-10iA/L this driver has been run against.
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _metadata_version
+
 from .config import DriverConfig, DriverPolicy, MotionResult, SettlePolicy
 from .driver import FanucDriver, MotionHandle
 from .exceptions import (
@@ -33,7 +36,14 @@ from .exceptions import (
 from .lifecycle import LifecycleState
 from .robot_profile import ProfileError, RobotProfile
 
-__version__ = "0.1.0.dev0"
+#: Read from the installed distribution metadata so ``pyproject.toml`` stays the
+#: single source of truth — a hardcoded literal here silently disagrees with the
+#: version the wheel is published under. The fallback covers an uninstalled source
+#: tree, where there is no metadata to read.
+try:
+    __version__ = _metadata_version("airo-fanuc")
+except PackageNotFoundError:  # pragma: no cover - only when not installed at all
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "CalibrationError",

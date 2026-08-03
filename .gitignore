@@ -8,3 +8,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 dist/
+# Transient agent worktrees. Scoped rather than ignoring all of .claude/, so
+# project-level configuration under it stays committable.
+.claude/worktrees/
