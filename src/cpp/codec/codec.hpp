@@ -80,7 +80,7 @@ struct RobotStatusView {
 // ║ instead of joint angles. Joint values interpreted as millimetres and       ║
 // ║ Euler degrees describe a pose nowhere near the current one, so the arm     ║
 // ║ takes a full-speed slew toward it and the controller E-stops. This has     ║
-// ║ happened (2026-05-06). It is a hardware-damage-level mistake, not a        ║
+// ║ happened on real hardware. It is a hardware-damage-level mistake, not a    ║
 // ║ protocol nicety.                                                           ║
 // ║                                                                            ║
 // ║ The value is single-sourced as COMMAND_DATA_STYLE in                       ║

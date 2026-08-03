@@ -173,8 +173,8 @@ keeps flowing, no fault is raised — so the run asserts a non-zero measured spe
 
 Then work the speed up. Peak speed is `amplitude × 2π / period`, and peak accel and
 jerk go as `ω²` and `ω³` — so raise speed by *amplitude* at a long period rather than
-by shortening the period, which escalates both far faster. Validated to 63°/s on
-2026-07-30 (`--joints 6 --amplitude-deg 30 --period 3 --cycles 3 --knot-dt 0.02`). The
+by shortening the period, which escalates both far faster. Validated on hardware to
+63°/s (`--joints 6 --amplitude-deg 30 --period 3 --cycles 3 --knot-dt 0.02`). The
 joint-limit guard aborts before any motion if a swing would leave the soft limits.
 
 ### Step 4 — the protective stop
@@ -361,7 +361,7 @@ Passing all seven steps validates the motion path end to end. It does not valida
 - **The acceleration and jerk clamps.** The values in `crx10ial.py` are derived from
   the velocity limits; FANUC's own `joint_limits.yaml` in the vendored driver
   publishes accelerations 6–16× lower. Nothing in these runs distinguishes
-  the two: both are permissive enough that 63°/s ran clean on 2026-07-30. Decide it by
+  the two: both are permissive enough that 63°/s ran clean on hardware. Decide it by
   working the speed up further in step 3 and watching for vibration or a servo alarm.
 - **Recovery from a collision-induced `SystemFault`**, which is a different path from
   the E-stop drill (it can leave RMI unresponsive and forces the cold-reconnect

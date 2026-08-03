@@ -6,7 +6,7 @@ nothing is driving it: it polls the
 :class:`~airo_fanuc.rmi_client.RmiClient` *commands-only* session (it NEVER
 calls :meth:`~airo_fanuc.rmi_client.RmiClient.initialize`, so it works in T1 and
 with no program running) and derives joint velocity by least squares. It is the
-structural fix for the 2026-05-17 T1-freeze calibration-corruption incident.
+structural fix for the T1-freeze calibration-corruption incident.
 
 Two guards make hand-eye calibration safe (both raise, never silently return a
 bad sample — "surface latent issues loudly"):
@@ -93,7 +93,7 @@ _DEFAULT_MIN_SPAN_FRACTION = 0.8  # window must be ~covered (discrete sampling s
 # Minimum position change (deg) between two accepted calibration samples. Well
 # above RMI angle quantization (~0.001 deg, INTERIM_FACTS.rmi_angle_resolution_deg)
 # so a genuinely new jogged pose passes, but a byte-identical frozen feed (0.0
-# change — the 2026-05-17 signature) is caught.
+# change — the frozen-feed signature) is caught.
 _DEFAULT_MIN_CHANGE_DEG = 0.05
 
 
@@ -460,7 +460,7 @@ class FanucReceiveInterface:
             raise CalibrationVelocityUnavailable(
                 f"joint velocity unavailable (samples={result.sample_count}, "
                 f"age={result.age_s:.3f}s): refusing to capture — publishing zeros "
-                "for an unknown velocity is the 2026-05-17 corruption"
+                "for an unknown velocity is exactly the corruption this guards against"
             )
         if not result.settled:
             raise CalibrationError(
@@ -477,7 +477,7 @@ class FanucReceiveInterface:
                 raise CalibrationError(
                     f"measured joints unchanged vs the previous accepted sample "
                     f"(max change {change:.4f} deg < {self._min_change_deg} deg) — "
-                    "frozen feed? (the 2026-05-17 corruption). Jog to a new pose."
+                    "frozen feed? (the calibration corruption). Jog to a new pose."
                 )
 
         self._last_accepted_q = np.asarray(accepted.q_deg, dtype=np.float64).copy()

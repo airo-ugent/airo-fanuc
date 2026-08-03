@@ -141,10 +141,10 @@ Mitigation: flock ownership + operator-facing "kill <PID>" hint + documented wor
 | ε achieved (deg) | **0.0001** — the RMI wire quantization itself (§1.7). Every other joint agreed to 0.000. |
 | Form of the offset: tracks J2 / fixed | **MEASURED — tracks J2.** Two standstill poses in one session, 25° apart in J2: residual **0.0000°** against "tracks J2", **24.9970°** against "fixed offset". |
 
-The capture §1.5 originally called impractical is available from inside a `FanucDriver`
-session: the driver holds an initialized RMI session *and* the SM stream at once, so both
-planes can be read back to back at a standstill pose with nothing commanded. Four
-consecutive read pairs at one pose:
+A two-plane read at one pose is available from inside a `FanucDriver` session: the driver
+holds an initialized RMI session *and* the SM stream at once, so both planes can be read
+back to back at a standstill pose with nothing commanded. Four consecutive read pairs at
+one pose:
 
 ```
         J1        J2        J3        J4        J5        J6
@@ -303,7 +303,7 @@ optimistic. **To settle it:** log `q_cmd` and `q_meas` through a swept-speed mov
 cross-correlate, which separates the servo lag from the status pipeline instead of lumping them as
 this ratio does, and would also show whether the between-session difference is real.
 
-### 1.10 The streamed Cartesian pose is NOT the TCP (measured 2026-07-30)
+### 1.10 The streamed Cartesian pose is NOT the TCP (measured)
 
 The Stream Motion status packet carries a Cartesian pose (`position[9]`, XYZWPR + 3 ext, float32,
 in the shared header ahead of the force fields — so it is present at v3/type-202, unlike the
@@ -325,7 +325,7 @@ different UFRAME would rotate or translate the orientation too; it is bit-identi
 *tool* difference, not a frame difference: the streamed pose sits 175 mm short of the pose RMI
 reports, i.e. **Stream Motion does not apply the tool offset that RMI applies.**
 
-**The 175 mm is the cell's Robotiq gripper** (operator-confirmed, 2026-07-30). So the RMI read is
+**The 175 mm is the cell's Robotiq gripper** (operator-confirmed). So the RMI read is
 the gripper TCP and the Stream Motion stream is the faceplate. The driver exposes both, named for
 what they are, and neither derives the other:
 
@@ -347,7 +347,7 @@ control loop; a caller who needs a TCP at tick rate applies its own tool transfo
 the intrinsic `Rx·Ry·Rz` reading it is 4.92° off. A 175 mm lever arm resolves the convention to
 better than a tenth of a degree, so this is settled, not assumed.
 
-#### 1.10a OPEN: does the streamed pose track the *active* UTOOL? (2026-07-30)
+#### 1.10a OPEN: does the streamed pose track the *active* UTOOL?
 
 Unresolved, and it decides how dangerous the field is. `FRC_GetStatus` reported UFRAME 9 / UTOOL 10
 while `FRC_ReadCartesianPosition` reported UFRAME 0 / UTOOL 1 **in the same session** — so "the
@@ -396,7 +396,7 @@ run also re-measures the offset, so it is the check to repeat after any end-effe
 ### 2.4 MOTN-607
 - Raised on Stream Motion reconnect **without** a preceding StopPacket. The
   defensive StopPacket + drain in `StreamMotionClient.start()` mitigates it.
-  `[ TBD — not specifically re-exercised; no MOTN-607 observed on the measurement day ]`
+  `[ TBD — not specifically re-exercised; no MOTN-607 observed during the measurements ]`
 
 ### 2.5 Stream Motion daemon wedge → controller power-cycle
 - Symptom: RMI healthy (servos ready, drives powered, No Error) but **UDP 60015 silent** — no
@@ -477,7 +477,7 @@ from outside — status keeps flowing, no fault is raised — while the robot ha
 following. Exercise starvation-resume with real trajectory motion: a per-tick hold target is not a
 substitute, because holding a pose produces no motion to observe in the first place.
 
-### 4.2 Post-bring-up `motion_possible` transient (measured 2026-07-30)
+### 4.2 Post-bring-up `motion_possible` transient (measured)
 
 On a bring-up over a controller that has recently had `STREAM_MOTN` launched, `motion_possible`
 asserts, then **drops roughly 1 s after bring-up reports complete**, and the recovery ladder
@@ -498,24 +498,24 @@ Streaming was then stable for the rest of the run (12 s observed, `fault=none`, 
 - **Reproducible on re-bring-up, absent on the first**: 5 consecutive re-connects showed it; the
   first bring-up after the robot had been powered on and left idle did not.
 - **Cause — this is the re-`FRC_Call` transient already documented in `_bringup_once`**, not a new
-  phenomenon. `STREAM_MOTN` cannot be un-launched over RMI (§ the 2026-07-07 observation:
-  `FRC_Abort` and `FRC_Reset` both leave `program_status=2`), and a pure SM handshake to an
-  already-running instance does not re-arm `motion_possible` — so every bring-up re-Calls it, and
-  the re-Call is what drops `motion_possible` briefly. Corroborated here: a read-only RMI probe
-  taken between runs reported `program_status=2`, i.e. `STREAM_MOTN` still running from the
-  previous session. This is why the first post-power-on bring-up is clean and every later one is not.
+  phenomenon. `STREAM_MOTN` cannot be un-launched over RMI (§2.7: `FRC_Abort` and `FRC_Reset` both
+  leave `program_status=2`), and a pure SM handshake to an already-running instance does not re-arm
+  `motion_possible` — so every bring-up re-Calls it, and the re-Call is what drops
+  `motion_possible` briefly. Corroborated here: a read-only RMI probe taken between runs reported
+  `program_status=2`, i.e. `STREAM_MOTN` still running from the previous session. This is why the
+  first post-power-on bring-up is clean and every later one is not.
 - **Consequence for callers:** wait for streaming to *hold* before commanding rather than trusting
   the first post-bring-up sample. Both example scripts do this (`_wait_streaming`, 2 s of stable
   streaming), and any consumer should. A validation check that reads the first sample will report
   this as a fault.
-- **RESOLVED — bring-up now absorbs it** (`Supervisor._settle_stream_motn`, `bringup_settle_s`,
-  default 2 s). It had been left to the fault path, which meant `recovery_count` was already 1 before
-  the caller did anything and a policy with `auto_recover=False` was left FAULTED by an ordinary
-  startup. Bring-up now requires `motion_possible` to *hold* for `bringup_settle_s` and re-applies
-  the same relaunch step if it drops, so the constructor keeps its contract: it returns a robot that
-  is commandable, not one about to fault.
+- **RESOLVED — bring-up absorbs it** (`Supervisor._settle_stream_motn`, `bringup_settle_s`,
+  default 2 s). The fault path is the wrong place for it: `recovery_count` would be 1 before the
+  caller did anything, and a policy with `auto_recover=False` would be left FAULTED by an ordinary
+  startup. Bring-up therefore requires `motion_possible` to *hold* for `bringup_settle_s` and
+  re-applies the same relaunch step if it drops, so the constructor keeps its contract: it returns
+  a robot that is commandable, not one about to fault.
 
-  Verified on hardware 2026-07-30. One re-apply was enough, which is what the handover explanation
+  Verified on hardware. One re-apply was enough, which is what the handover explanation
   predicts — the first `FRC_Call` lands while the previous instance is still live, the second sticks:
 
   ```
@@ -526,7 +526,8 @@ Streaming was then stable for the rest of the run (12 s observed, `fault=none`, 
   ```
 
   No `faulted` transition, `recovery_count` 0. Also verified with `auto_recover=False`: 6 s of stable
-  streaming, `recovery_count` 0, where before the fix that configuration could not start at all.
+  streaming, `recovery_count` 0 — a configuration with no fault path to fall back on, so the settle
+  is what makes it startable at all.
 
 - **Why the settle cannot be replaced by doing something up front.** The natural question is which
   step of the second application ends the previous instance, so it can be done first instead. There
@@ -535,7 +536,7 @@ Streaming was then stable for the rest of the run (12 s observed, `fault=none`, 
   terminates STREAM_MOTN at all — only an operator at the pendant (FCTN → ABORT ALL) does
   (§2.7).
 
-  What the 2026-07-30 runs add: the **second Call never drops `motion_possible`** (every run needed
+  What the hardware runs add: the **second Call never drops `motion_possible`** (every run needed
   exactly one settle attempt) even though it too is issued while an instance is running — ours. So
   re-Calling per se is not what drops it; the drop is the *previous session's* instance being torn
   down, asynchronously, about a second after our first Call triggers it. That is a delay to outlast,
@@ -556,7 +557,7 @@ Streaming was then stable for the rest of the run (12 s observed, `fault=none`, 
 Software is V9.40/P82 (WARN band). A P82 → ≥P84 update would clear the vibration WARN and *may* also
 enable SM v4 (type-204 native force — currently unavailable, see §1.8). It is a FANUC-channel operation
 (FANUC BeneLux; software image + controlled-start version-up + full image backup + possible re-master),
-not doable remotely. **Deferred** (operator decision 2026-07-06): the measured TX-silence backstop
+not doable remotely. **Deferred** (operator decision): the measured TX-silence backstop
 (§1.2) and servo lag (§1.9) are both workable as they stand, so P84 buys only the vibration-WARN
 clearance and possible v4 force; order the P84 media **and release notes** through FANUC BeneLux
 (same channel as the J519 manual) if that changes.

@@ -27,7 +27,7 @@
 // than the demanded arrival velocity has runway for,
 // the only way to reach that position AT that velocity is to back up first — so the
 // command decelerated, REVERSED against a still-advancing target, lost ~0.75° and
-// recovered at ~1.8× the streamed speed, once every ~1.3 s. Measured 2026-07-30;
+// recovered at ~1.8× the streamed speed, once every ~1.3 s. Measured on hardware;
 // invisible whenever the two clocks are commensurate, which is why every unit test
 // below (integer ticks per target) missed it. Dropping the arrival velocity removed
 // it outright and cut peak overspeed from 1.75× to 1.01× and tracking error from

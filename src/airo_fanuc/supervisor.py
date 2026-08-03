@@ -216,7 +216,7 @@ class Supervisor:
         # seq reseed (FINAL before FRC_Call) → FRC_Call(STREAM_MOTN).
         #
         # STREAM_MOTN cannot be un-launched via RMI (FRC_Abort AND FRC_Reset both leave
-        # program_status=2 — observed on hardware 2026-07-07), and a pure SM handshake to a
+        # program_status=2 — observed on hardware), and a pure SM handshake to a
         # running instance does NOT re-arm motion_possible — so the FRC_Call is REQUIRED on
         # every bring-up, even over a running instance. Re-Calling causes a brief
         # motion_possible transient the supervisor auto-recovers from; it WEDGES
@@ -585,7 +585,7 @@ class Supervisor:
         # motion_possible on a SHORT timeout (recovery_motion_probe_s, ~5 s) — NOT the
         # 60 s ready_wait — so a fault that a plain reset+FRC_Call cannot clear (a
         # FRC_SystemFault de-initialises the controller's RMI motion interface, which
-        # only a re-`initialize()` fixes — HW-observed 2026-07-17) FAILS THIS TIER
+        # only a re-`initialize()` fixes — HW-observed) FAILS THIS TIER
         # FAST and returns False. FanucDriver.recover() then escalates to the cold
         # reconnect (full re-bring-up: initialize + GRIPDISP re-fork), rather than
         # stalling the whole ready_wait here and looking like a HOLD timeout.

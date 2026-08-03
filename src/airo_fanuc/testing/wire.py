@@ -384,8 +384,8 @@ def encode_command_packet(
     SAFETY: the uint16 dataStyle selector is written ``COMMAND_DATA_STYLE``
     (= 0xFFFF), imported from :mod:`airo_fanuc.controller_facts`. Writing 0
     makes the controller interpret the 6 joint-angle values as Cartesian
-    XYZWPR and slew toward the implied absolute pose (E-stop save,
-    2026-05-06). This value is NEVER hardcoded here.
+    XYZWPR and slew toward the implied absolute pose (a real E-stop
+    save). This value is NEVER hardcoded here.
     """
     if len(command_pos_deg) != MAX_AXES:
         raise ValueError(f"command_pos_deg must have length {MAX_AXES} (got {len(command_pos_deg)})")

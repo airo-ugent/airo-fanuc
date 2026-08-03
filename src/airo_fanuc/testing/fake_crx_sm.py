@@ -18,8 +18,8 @@ A strict-conformance emulator of the controller's Stream Motion side:
 * Consumes **type-201 CommandPackets**, feeds the commanded joints to the plant,
   and — in strict mode — asserts every per-packet invariant that the real
   controller (or our own driver) must satisfy, most importantly
-  ``dataStyle == 0xFFFF`` (the 0-dataStyle Cartesian-slew bug, incident
-  2026-05-06) and the **same-instant double-send** guard. That check reads the
+  ``dataStyle == 0xFFFF`` (the 0-dataStyle Cartesian-slew bug, a real
+  incident) and the **same-instant double-send** guard. That check reads the
   **kernel RX timestamp** of every command (``SO_TIMESTAMPNS`` + ``recvmsg``/CMSG)
   and flags two CommandPackets emitted in a single host iteration, which arrive
   ~simultaneously (measured ≤ 12 µs on loopback).
@@ -333,7 +333,7 @@ class FakeStreamMotionServer:
                 self._record_violation(
                     f"CommandPacket dataStyle=0x{data_style:04X} != 0xFFFF — a "
                     "0 dataStyle makes the controller slew the joints as a "
-                    "Cartesian XYZWPR pose (E-stop incident 2026-05-06)"
+                    "Cartesian XYZWPR pose (a real E-stop incident)"
                 )
             if do_motn_ctrl != 1:
                 self._record_violation(

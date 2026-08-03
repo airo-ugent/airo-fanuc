@@ -3,7 +3,7 @@
 
 The light supervisor ladder cannot re-arm ``motion_possible`` after a collision
 ``FRC_SystemFault`` (it de-initialises the controller's RMI motion interface —
-HW-observed 2026-07-17). ``FanucDriver.recover()`` therefore escalates to a cold
+HW-observed). ``FanucDriver.recover()`` therefore escalates to a cold
 ``reconnect()`` (= full re-bring-up: re-``initialize`` + GRIPDISP re-fork) — but ONLY
 for faults a re-bring-up can clear (not a held e-stop / teach / operator-required).
 ``reconnect()`` holds the gripper fail-fast gate across the rebuild so no gripper

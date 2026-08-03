@@ -236,8 +236,8 @@ def test_first_knot_velocity_beyond_the_capture_envelope_is_a_typed_error(rig: D
 
     The splice bridging the commanded pose to knot 0 is bounded by
     CAPTURE_RATE_DEG_S, and that bound is on its endpoint velocities — a first knot
-    above it is unreachable no matter what the arm is currently doing (measured
-    2026-07-30: accepted at 15.0°/s, refused at 15.1). Left to the core it surfaces
+    above it is unreachable no matter what the arm is currently doing (measured on
+    hardware: accepted at 15.0°/s, refused at 15.1). Left to the core it surfaces
     as MotionStatus.REJECTED carrying FaultReason.INTERNAL, which reads like a driver
     bug rather than a trajectory that cannot be started.
     """

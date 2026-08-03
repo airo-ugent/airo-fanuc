@@ -642,7 +642,7 @@ class FanucDriver:
     def recover(self, timeout_s: float | None = None, *, escalate_reconnect: bool = True) -> bool:
         """Run the recovery ladder now (immediate — bypasses cooldown/settle delay).
 
-        Two tiers (2026-07-17): the light supervisor ladder (reset → FRC_Continue →
+        Two tiers: the light supervisor ladder (reset → FRC_Continue →
         reseed → FRC_Call → short ``motion_possible`` probe) first; if it cannot
         re-arm motion and ``escalate_reconnect`` is set, escalate to a **cold
         reconnect** = the full bring-up ladder. A ``FRC_SystemFault`` (a collision
@@ -1154,7 +1154,7 @@ class FanucDriver:
         # FIRST-KNOT velocity vs the capture envelope. The core bridges the commanded
         # pose to knot 0 with a capture splice bounded by CAPTURE_RATE_DEG_S, and that
         # bound applies to the splice's ENDPOINT velocities, not to the gap it closes:
-        # measured 2026-07-30, a first knot at 15.1°/s is unreachable even when the arm
+        # measured on hardware, a first knot at 15.1°/s is unreachable even when the arm
         # is already travelling at exactly that speed. Left to the core this surfaces as
         # MotionStatus.REJECTED carrying FaultReason.INTERNAL, which tells the caller
         # nothing and reads like a driver bug rather than a trajectory the driver cannot

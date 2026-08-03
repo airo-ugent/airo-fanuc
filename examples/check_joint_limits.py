@@ -186,7 +186,7 @@ def main() -> int:
 
     # J2/J3: the RMI→stream J3 offset is measured at one J2 only (§1.5).
     print(rule("J2/J3 representation (docs/controller-notes.md §1.5, one J2 measured)"))
-    print("  MEASURED 2026-07-30 (§1.5): RMI reports J3 one J2 BELOW the Stream Motion value,")
+    print("  MEASURED (§1.5): RMI reports J3 one J2 BELOW the Stream Motion value,")
     print("  so the RMI→stream conversion is J3 += J2. This plane is the only one read here,")
     print("  so this run cannot confirm it; it records the pair for a run that reads BOTH")
     print("  planes at one pose, at a materially different J2:")

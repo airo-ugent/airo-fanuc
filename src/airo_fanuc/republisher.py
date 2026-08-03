@@ -267,7 +267,7 @@ class Republisher:
         }
         qd = snap.get("qd_meas_deg")
         if qd is None:
-            # NEVER publish zeros for an unknown velocity (2026-05-17). Annotate.
+            # NEVER publish zeros for an unknown velocity. Annotate.
             payload["velocities_deg_s"] = None
             payload["velocity_valid"] = False
         else:

@@ -132,7 +132,7 @@ def test_command_datastyle_is_ffff_at_offset() -> None:
     """The uint16 dataStyle MUST serialize as 0xFFFF (big-endian) at offset 14.
 
     Writing 0 makes the controller read joint values as Cartesian XYZWPR and
-    slew to the implied pose (E-stop save, 2026-05-06). This asserts both the
+    slew to the implied pose (a real E-stop save). This asserts both the
     value and its exact wire position.
     """
     assert COMMAND_DATA_STYLE == 0xFFFF  # sourced from controller_facts

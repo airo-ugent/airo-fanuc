@@ -69,7 +69,7 @@ def _build_sine(q_start_rad, joint_idx, amp_rad: float, period_s: float, cycles:
     splice whose velocity envelope is ``controller_facts.CAPTURE_RATE_DEG_S`` (15 °/s),
     so a plain sine is rejected outright the moment its peak exceeds 15 °/s — which is
     12% of this arm's velocity limit and would make this script useless for anything but
-    slow motion. Measured 2026-07-30: rejected at 15.1 °/s, accepted at 15.0.
+    slow motion. Measured on hardware: rejected at 15.1 °/s, accepted at 15.0.
 
     The raised cosine has the SAME peak velocity (A·ω), acceleration (A·ω²) and jerk
     (A·ω³) for the same amplitude and period, but starts and ends at rest, so nothing

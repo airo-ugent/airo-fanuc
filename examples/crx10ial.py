@@ -114,7 +114,7 @@ CRX10IAL: RobotProfile = RobotProfile.from_degrees(
     max_payload_kg=10.0,
     source=(
         "velocity + position limits read from the controller's $PARAM_GROUP "
-        "(controller_probe --emit-profile, 2026-07-30); acceleration = 2x velocity and "
+        "(controller_probe --emit-profile); acceleration = 2x velocity and "
         "jerk = 8x acceleration derived, not measured"
     ),
 )

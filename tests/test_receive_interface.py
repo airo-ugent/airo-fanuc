@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for :class:`airo_fanuc.receive_interface.FanucReceiveInterface`.
 
-The velocity gate is the structural fix for the 2026-05-17 T1-freeze calibration
+The velocity gate is the structural fix for the T1-freeze calibration
 corruption: a still-vs-moving predicate over an LSQ window, a None-velocity hard
 reject, a frozen-feed changed-position guard, and the J2/J3 ``rmi_unconverted``
 source hard reject. A frozen feed must never read as "settled" — fabricating

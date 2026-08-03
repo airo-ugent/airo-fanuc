@@ -335,7 +335,7 @@ struct LoopbackRig {
           have_addr = true;
           // GetCapability (type 7, 28 B): reply with a type-7 result advertising
           // v3 / 8 ms so the driver's handshake proceeds to Start (the real
-          // controller requires this exchange; HIL 2026-07-07).
+          // controller requires this exchange; HIL-measured).
           if (r >= 28 && be_load_u32(rxbuf) == 7u) {
             std::uint8_t cap[28] = {};
             be_store_u32(cap + 0, 7u);   // packet_type

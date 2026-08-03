@@ -266,8 +266,8 @@ class DriverPolicy:
     #: ``ready_wait_s`` so a fault a plain ``reset + FRC_Call`` cannot clear (e.g. a
     #: ``FRC_SystemFault`` that de-initialised the RMI motion interface) fails the
     #: tier FAST — the driver then escalates to the cold reconnect (full re-bring-up:
-    #: re-``initialize`` + GRIPDISP re-fork) instead of stalling ~60 s. HW-observed
-    #: 2026-07-17: reset+reseed+FRC_Call alone does NOT re-arm motion after a collision
+    #: re-``initialize`` + GRIPDISP re-fork) instead of stalling ~60 s. HW-observed:
+    #: reset+reseed+FRC_Call alone does NOT re-arm motion after a collision
     #: SystemFault, so a fast escalation is the difference between hands-off recovery
     #: and a wedged idle loop.
     recovery_motion_probe_s: float = 5.0

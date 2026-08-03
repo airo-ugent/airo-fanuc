@@ -5,7 +5,7 @@ Two kinds of constant live here, and neither is a property of the *arm*:
 
 * **Measured controller facts** — values whose true value was read off the physical
   controller, each carrying a ``MEASURED`` marker and the observation that produced
-  it. They were transcribed from a hardware-in-the-loop probe run on 2026-07-06
+  it. They were transcribed from a hardware-in-the-loop probe run
   (``confirmed=True``). Two keep a safe default for want of a measurement: e-stop
   continuation path A, unprovable during the probe because the Stream Motion status
   feed never came up, and the RMI→stream J3 conversion, read at a single J2 value.
@@ -47,7 +47,7 @@ STREAM_RATE_HZ: float = 1.0 / ITP_S
 
 #: Safety-critical: CommandPacket dataStyle field. FANUC's vendored struct calls this
 #: field ``uint16_t unused``; we MUST write 0xFFFF (joint angles) — writing 0 makes the
-#: controller read the payload as Cartesian XYZWPR → slew → E-stop (incident 2026-05-06).
+#: controller read the payload as Cartesian XYZWPR → slew → E-stop. This has happened.
 COMMAND_DATA_STYLE: int = 0xFFFF
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ COMMAND_DATA_STYLE: int = 0xFFFF
 
 # Brake / stop envelope scale factors. Split v/a vs jerk: the CRX collaborative-stop
 # monitor estimates contact force from motor disturbance torque, so a high jerk ramp reads
-# as a contact and trips a phantom stop (observed 2026-05-16). Jerk is therefore scaled
+# as a contact and trips a phantom stop (observed on hardware). Jerk is therefore scaled
 # harder than v/a.
 STOP_LIMIT_SCALE_VA: float = 0.4
 STOP_LIMIT_SCALE_J: float = 0.15
@@ -153,7 +153,7 @@ class P1Facts:
 
 #: The measured fact set used throughout the codebase (single-sourced from here).
 #: Despite the ``INTERIM_FACTS`` name — stable because every call site imports it —
-#: these values are the hardware-measured ones (2026-07-06), not placeholders.
+#: these values are the hardware-measured ones, not placeholders.
 INTERIM_FACTS = P1Facts()
 
 

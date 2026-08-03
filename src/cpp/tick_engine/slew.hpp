@@ -20,7 +20,7 @@
 // │ clipping, the output no longer tracks the input — it keeps generating     │
 // │ motion of its own and the error accumulates every tick. That is a         │
 // │ runaway, and it happened: a Δv/dt cap on derived velocity drove a 22°     │
-// │ drift off the commanded path and into the DCS envelope (2026-05-16).      │
+// │ drift off the commanded path and into the DCS envelope.                   │
 // │                                                                           │
 // │ A stateless position clip cannot do this: the output is at most one       │
 // │ max-step away from the last command, so the error is bounded by           │

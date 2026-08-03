@@ -405,7 +405,7 @@ def test_ownership_conflict_raises(tmp_path: Any) -> None:
 
 # --------------------------------------------------------------------------- #
 # GRPRUN anti-stacking: the GRIPDISP RUN-fork fires at most once per bringup()
-# across all retries (measured on hardware 2026-07-07 — a RUN-forked task cannot be
+# across all retries (measured on hardware — a RUN-forked task cannot be
 # killed by FRC_Reset/FRC_Abort, and _teardown_partial does not abort it, so a
 # per-attempt re-fork stacks un-killable GRIPDISP tasks that wedge STREAM_MOTN at
 # program_status=2 until a power-cycle).

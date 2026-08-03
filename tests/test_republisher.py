@@ -204,7 +204,7 @@ def test_ext_status_silent_when_read_unavailable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# None-velocity is NEVER published as zeros (2026-05-17)
+# None-velocity is NEVER published as zeros
 # ---------------------------------------------------------------------------
 
 

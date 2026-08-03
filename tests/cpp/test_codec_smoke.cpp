@@ -91,7 +91,7 @@ TEST(CodecEncode, CommandPacketFields) {
 
   // SAFETY-CRITICAL: dataStyle (offset 14-15) MUST be 0xFFFF (joint angles).
   // Mirror of airo_fanuc.controller_facts.COMMAND_DATA_STYLE. Writing 0 here
-  // makes the controller read command_pos as Cartesian XYZWPR (E-stop, 2026-05-06).
+  // makes the controller read command_pos as Cartesian XYZWPR (a real E-stop).
   EXPECT_EQ(buf[14], 0xFF);
   EXPECT_EQ(buf[15], 0xFF);
 
