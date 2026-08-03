@@ -1,0 +1,9 @@
+{
+  "provenance": "FRC_ReadCartesianPosition (RMI \u00a72.3.14, GetCartesianPositionPacket) \u2014 the controller's own FK, tagged with the active UFRAME/UTOOL numbers that the Stream Motion pose block carries no equivalent of.",
+  "builder": "rmi_read_cartesian_position_request",
+  "args": {},
+  "request": {
+    "Command": "FRC_ReadCartesianPosition"
+  },
+  "wire": "{\"Command\": \"FRC_ReadCartesianPosition\"}\r\n"
+}

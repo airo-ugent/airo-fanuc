@@ -244,50 +244,6 @@ TEST(Epoch, SupervisorHeartbeatPreventsTrip) {
   EXPECT_NE(tc.fault(), FaultReason::SUPERVISOR_LOST);
 }
 
-// DRIFT: sustained commanded↔measured divergence beyond
-// drift_fault_deg for drift_fault_ticks → FAULTED(DRIFT) → SAFE_FOLLOW. In HOLD
-// the command stays at q0, so a measured pose far from q0 is pure divergence.
-TEST(Epoch, DriftFaultBumps) {
-  RtCoreConfig cfg;
-  Vec6 q0{};
-  TickCore tc(cfg);
-  init_holding(tc, q0);
-  // Build a few ticks of clean history (measured tracks commanded).
-  for (int i = 0; i < 6; ++i) {
-    RxSample rx = clean_rx(q0);
-    tc.tick(&rx, nullptr);
-  }
-  const std::uint64_t e0 = tc.epoch();
-  // Feed measured far from the (held) command: 0.3 rad ≈ 17° >> 10° threshold.
-  Vec6 q_far = q0;
-  q_far[0] = 0.3;
-  for (int i = 0; i < cfg.drift_fault_ticks + 3; ++i) {
-    RxSample rx = clean_rx(q_far);
-    tc.tick(&rx, nullptr);
-  }
-  EXPECT_EQ(tc.fault(), FaultReason::DRIFT);
-  EXPECT_EQ(tc.bump_count(BumpReason::kDriftFault), 1u);
-  EXPECT_EQ(tc.epoch(), e0 + 1);
-  EXPECT_EQ(tc.mode(), Mode::SAFE_FOLLOW);
-}
-
-// A small, in-tolerance measured offset (below the threshold) never trips DRIFT.
-TEST(Epoch, DriftWithinToleranceNeverBumps) {
-  RtCoreConfig cfg;
-  Vec6 q0{};
-  TickCore tc(cfg);
-  init_holding(tc, q0);
-  // ~2° offset (well under the 10° threshold), sustained.
-  Vec6 q_near = q0;
-  q_near[0] = 0.035;
-  for (int i = 0; i < 50; ++i) {
-    RxSample rx = clean_rx(q_near);
-    tc.tick(&rx, nullptr);
-  }
-  EXPECT_EQ(tc.bump_count(BumpReason::kDriftFault), 0u);
-  EXPECT_NE(tc.fault(), FaultReason::DRIFT);
-}
-
 TEST(Epoch, RecoveryCompleteBumpsAfterDwell) {
   RtCoreConfig cfg;
   Vec6 q0{};

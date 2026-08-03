@@ -30,18 +30,17 @@ import numpy as np
 
 from airo_fanuc import DriverConfig, DriverPolicy, FanucError, MotionResult
 from airo_fanuc import controller_facts as cf
+from crx10ial import CRX10IAL
 
 #: Joint count. Six is baked into the C++ core (the online trajectory generator's
 #: DOF is a compile-time template parameter), so this is a constant, not a knob.
 NDOF = 6
 
-#: CRX-10iA/L active joint position limits (deg), measured on OUR controller and
-#: recorded in docs/controller-notes.md §1.1 — not read from the robot, so they are
-#: only true for that arm. §1.1 also records that the vendored URDF's J6 (±190) is
-#: narrower than the controller's own (±225); the controller's values are the
-#: authoritative ones and are what is used here.
-LIMIT_LOWER_DEG = np.array([-180.0, -180.0, -270.0, -190.0, -180.0, -225.0])
-LIMIT_UPPER_DEG = np.array([180.0, 180.0, 270.0, 190.0, 180.0, 225.0])
+#: The arm's active joint position limits (deg), from the profile in ``crx10ial.py``.
+#: Read through the profile rather than restated here, so the envelope these scripts
+#: guard against is the same one the driver was constructed with.
+LIMIT_LOWER_DEG = CRX10IAL.position_limits_lower_deg
+LIMIT_UPPER_DEG = CRX10IAL.position_limits_upper_deg
 
 #: Kept back from the soft limit by the pre-motion guard. A validation script should
 #: refuse a move *before* the controller does: a Python abort with no motion is a
@@ -159,6 +158,7 @@ def open_target(args: argparse.Namespace) -> Target:
         controller.start()
         controller.start_realtime(speed=1.0)
         config = DriverConfig(
+            profile=CRX10IAL,
             sm_port=controller.sm_port,
             rmi_port=controller.rmi_port,
             sm_version=3,
@@ -168,7 +168,8 @@ def open_target(args: argparse.Namespace) -> Target:
         ip = "127.0.0.1"
     else:
         controller = None
-        config = DriverConfig(**hygiene)  # default Stream Motion (60015) + RMI (16001)
+        # Default Stream Motion (60015) + RMI (16001).
+        config = DriverConfig(profile=CRX10IAL, **hygiene)
         lock_path = None
         ip = args.ip
 
@@ -204,6 +205,30 @@ def confirm(lines: Sequence[str], *, delay_s: float = 3.0) -> bool:
         print("aborted before connect")
         return False
     return True
+
+
+def wait_streaming(driver: Any, hold_s: float = 2.0, timeout_s: float = 10.0) -> bool:
+    """Wait until the driver is STABLY streaming (mode=streaming, fault=none held for
+    ``hold_s``). A bring-up over a controller that has recently run STREAM_MOTN must
+    re-``FRC_Call`` it, and that drops ``motion_possible`` about a second later, which
+    the recovery ladder then clears (measured, docs/controller-notes.md §4.2). So the
+    first sample after bring-up is not the one to judge: what matters is that the
+    driver settles and STAYS settled, which is what every example checks before it
+    commands anything."""
+    deadline = time.monotonic() + timeout_s
+    stable_since = None
+    while time.monotonic() < deadline:
+        st = driver.get_state()
+        streaming = st.get("lifecycle_state") == "streaming"
+        no_fault = str(st.get("fault_reason") or "none").lower() == "none"
+        if streaming and no_fault:
+            stable_since = stable_since or time.monotonic()
+            if time.monotonic() - stable_since >= hold_s:
+                return True
+        else:
+            stable_since = None
+        time.sleep(0.1)
+    return False
 
 
 # --------------------------------------------------------------------------- #

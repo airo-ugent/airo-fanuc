@@ -19,6 +19,7 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
+from conftest import TEST_PROFILE
 from test_driver import _READY_TIMEOUT_S, DriverRig, _traj_from
 
 from airo_fanuc import (
@@ -290,6 +291,7 @@ def test_preflight_hard_block_raises(tmp_path: Any) -> None:
     controller.start_realtime(speed=1.0)
     controller.arm_syst_348(on="FRC_Initialize")  # also raises the SYST-348 alarm text
     cfg = DriverConfig(
+        profile=TEST_PROFILE,
         sm_port=controller.sm_port, rmi_port=controller.rmi_port, preroll_timeout_s=_READY_TIMEOUT_S
     )
     policy = DriverPolicy(config=cfg, connect_retries=2, lock_path=str(tmp_path / "owner.lock"))
@@ -314,6 +316,7 @@ def test_ownership_conflict_raises(tmp_path: Any) -> None:
     controller2.start()
     controller2.start_realtime(speed=1.0)
     cfg = DriverConfig(
+        profile=TEST_PROFILE,
         sm_port=controller2.sm_port, rmi_port=controller2.rmi_port, preroll_timeout_s=_READY_TIMEOUT_S
     )
     policy = DriverPolicy(config=cfg, connect_retries=1, lock_path=lock_path)
@@ -354,6 +357,7 @@ def test_grprun_fork_at_most_once_across_failed_retries(tmp_path: Any) -> None:
     controller = FakeCRXController(FakeCRXConfig(strict=True))
     controller.start()  # RMI + SM sockets bound; NOTE: start_realtime() intentionally NOT called
     cfg = DriverConfig(
+        profile=TEST_PROFILE,
         sm_port=controller.sm_port, rmi_port=controller.rmi_port,
         preroll_timeout_s=0.3, gripdisp_probe_timeout_s=0.3,
     )
@@ -424,6 +428,7 @@ def test_gripper_bringup_skips_fork_when_gripdisp_already_running(tmp_path: Any)
     # BEFORE this driver connects (Connect/Initialize/Reset don't clear it).
     controller.rmi._gripdisp_running = True  # noqa: SLF001 - test-only state injection
     cfg = DriverConfig(
+        profile=TEST_PROFILE,
         sm_port=controller.sm_port, rmi_port=controller.rmi_port,
         preroll_timeout_s=0.3, gripdisp_probe_timeout_s=0.3,
     )

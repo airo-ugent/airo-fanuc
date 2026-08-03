@@ -2,11 +2,13 @@
 //
 // Unit test — Ruckig-online servo. Asserts the minimum_duration behaviour (no
 // reach-early freeze), no zero-velocity dwell on a streamed ramp, bounded qdd on
-// a sine + a direction reversal, the 5° distance guard, and starvation rest via
-// re-issue. Parameters are deliberately gentle: an aggressive velocity
-// feedforward toward a nearby target from rest is infeasible without runway, so
-// Ruckig reverses to gain that runway ("overshoot-reverse") — correct Ruckig
-// behaviour, not a servo bug, but not what these property tests are probing.
+// a sine + a direction reversal, best-effort tracking of a far target, no reversal
+// against a forward-moving stream under clock drift, the joint position clamp, and
+// starvation rest via re-issue.
+//
+// Several of these step a whole number of ticks per target for readability. That
+// pairing is the benign one — StreamedRampNoReversalUnderClockDrift deliberately
+// does not, because the incommensurate case is where the interesting failures live.
 
 #include <array>
 #include <cmath>
@@ -19,7 +21,6 @@
 
 using airo_fanuc::tick_engine::kNumJoints;
 using airo_fanuc::tick_engine::Servo;
-using airo_fanuc::tick_engine::ServoAccept;
 using airo_fanuc::tick_engine::ServoStep;
 using airo_fanuc::tick_engine::TickEngineConfig;
 using airo_fanuc::tick_engine::Vec6;
@@ -40,7 +41,7 @@ TEST(Servo, MinimumDurationNoEarlyArrival) {
 
   const double target = 0.002;  // rad — tiny; time-optimal ≪ duration
   const double duration = 0.05;
-  ASSERT_EQ(servo.set_target(axis0(target), duration), ServoAccept::kOk);
+  servo.set_target(axis0(target), duration);
 
   int arrival_tick = -1;
   for (int i = 1; i <= 20; ++i) {
@@ -69,11 +70,11 @@ TEST(Servo, ConstantVelocityStreamNoDwell) {
   const double V = 0.15;         // rad/s (gentle → feasible feedforward)
   const double duration = 0.04;  // 5 ticks
   const int ticks_per = 5;
-  const double delta = V * duration;  // within the 5° window
+  const double delta = V * duration;  // a small step per target
 
   int global_tick = 0;
   for (int m = 1; m <= 40; ++m) {
-    ASSERT_EQ(servo.set_target(axis0(static_cast<double>(m) * delta), duration), ServoAccept::kOk);
+    servo.set_target(axis0(static_cast<double>(m) * delta), duration);
     for (int k = 0; k < ticks_per; ++k) {
       const ServoStep s = servo.step();
       ASSERT_FALSE(s.error);
@@ -102,7 +103,7 @@ TEST(Servo, SineTrackingBounded) {
   int gt = 0;
   for (int m = 1; m <= 120; ++m) {
     const double q_target = amp * std::sin(kTwoPi * freq * static_cast<double>(m) * duration);
-    ASSERT_EQ(servo.set_target(axis0(q_target), duration), ServoAccept::kOk);
+    servo.set_target(axis0(q_target), duration);
     for (int k = 0; k < ticks_per; ++k) {
       const ServoStep s = servo.step();
       ASSERT_FALSE(s.error);
@@ -138,7 +139,7 @@ TEST(Servo, DirectionReversalBounded) {
   double q_min = 0.0;
   double q_max = 0.0;
   for (double q_target : targets) {
-    ASSERT_EQ(servo.set_target(axis0(q_target), duration), ServoAccept::kOk);
+    servo.set_target(axis0(q_target), duration);
     for (int k = 0; k < ticks_per; ++k) {
       const ServoStep s = servo.step();
       ASSERT_FALSE(s.error);
@@ -154,31 +155,114 @@ TEST(Servo, DirectionReversalBounded) {
   EXPECT_GE(q_min, 0.0 - 0.02) << "no large overshoot below the bottom target";
 }
 
-// Distance guard: reject a target farther than the servo window (5°)
-// from the current commanded position; no state change on reject; the accepted
-// target still executes (forward progress).
-TEST(Servo, DistanceGuardRejectsFarTarget) {
+// Best effort: a FAR target is tracked, not refused. There is no distance guard —
+// what bounds the motion is the servo velocity limit, so the command heads toward the
+// target monotonically and no single tick moves more than v_lim*itp.
+TEST(Servo, FarTargetIsTrackedNotRefused) {
   TickEngineConfig cfg;
   Servo servo(cfg);
   servo.start(Vec6{}, Vec6{}, Vec6{});
 
-  // Gentle accepted target (long duration → feasible feedforward, forward motion).
-  EXPECT_EQ(servo.set_target(axis0(0.03), 0.2), ServoAccept::kOk);  // ~1.7°
-  const Vec6 cmd_before = servo.commanded();
-  EXPECT_EQ(servo.set_target(axis0(0.20), 0.2), ServoAccept::kRejectedDistance);  // ~11.5°
-  for (int j = 0; j < kNumJoints; ++j) {
-    EXPECT_EQ(servo.commanded()[static_cast<std::size_t>(j)], cmd_before[static_cast<std::size_t>(j)])
-        << "rejected target must not mutate commanded state, joint " << j;
-  }
-  // The accepted target (0.03) still executes: monotone forward progress.
+  const double far = 0.9;  // rad, ~51° — far outside the window earlier revisions enforced
+  servo.set_target(axis0(far), 0.05);
+
   double prev = servo.commanded()[0];
-  for (int i = 0; i < 6; ++i) {
+  const double max_step = cfg.servo_limit_scale * cfg.limits.v[0] * cfg.itp_s;
+  for (int i = 0; i < 200; ++i) {
     const ServoStep s = servo.step();
     ASSERT_FALSE(s.error);
-    EXPECT_GT(s.q[0], prev - 1e-12) << "moving toward the accepted target, tick " << i;
-    EXPECT_GT(s.q[0], 0.0) << "moving in the +direction of the accepted target 0.03";
+    EXPECT_GE(s.q[0], prev - 1e-12) << "moves toward the far target, tick " << i;
+    EXPECT_LE(s.q[0] - prev, max_step * 1.001) << "no jump: bounded by v_lim*itp, tick " << i;
+    for (int j = 0; j < kNumJoints; ++j) {
+      const auto jj = static_cast<std::size_t>(j);
+      EXPECT_LE(std::abs(s.qd[jj]), cfg.servo_limit_scale * cfg.limits.v[jj] * 1.001);
+      EXPECT_LE(std::abs(s.qdd[jj]), cfg.servo_limit_scale * cfg.limits.a[jj] * 1.001);
+    }
     prev = s.q[0];
   }
+  EXPECT_GT(prev, 0.1) << "made real progress toward the far target rather than refusing it";
+}
+
+// A streamed ramp with the caller's clock and the tick clock DRIFTING against each
+// other — the case every other test here misses, and the one that caught the arrival-
+// velocity bug (see BEST EFFORT in servo.hpp).
+//
+// The caller streams on its own clock (20 ms) while the tick runs on the controller's,
+// PLL-locked to ~7.95 ms rather than a round 8, so the ticks between targets alternate
+// 2 and 3 and the phase walks through a whole-tick boundary periodically. Against a
+// target stream that only ever moves forward, the command must only ever move forward.
+TEST(Servo, StreamedRampNoReversalUnderClockDrift) {
+  TickEngineConfig cfg;
+  Servo servo(cfg);
+  servo.start(Vec6{}, Vec6{}, Vec6{});
+
+  const double V = 0.0873;      // rad/s (~5 °/s) — gentle, far under every limit
+  const double dt = 0.020;      // caller's target spacing
+  const double tick = 0.00795;  // controller's tick, deliberately not dt/2.5
+  double next_target_t = 0.0;
+  double worst_neg = 0.0;
+  double peak = 0.0;
+
+  for (int n = 1; n <= 1000; ++n) {
+    const double t = static_cast<double>(n) * tick;
+    while (next_target_t <= t) {  // a caller slot came due since the last tick
+      servo.set_target(axis0(V * (next_target_t + dt)), dt);
+      next_target_t += dt;
+    }
+    const ServoStep s = servo.step();
+    ASSERT_FALSE(s.error);
+    if (t > 0.4) {  // past the standing-start transient
+      worst_neg = std::min(worst_neg, s.qd[0]);
+      peak = std::max(peak, s.qd[0]);
+    }
+  }
+  EXPECT_GE(worst_neg, 0.0) << "commanded velocity must never reverse against a "
+                               "monotonically advancing target stream";
+  EXPECT_LT(peak, 1.25 * V) << "and must not overshoot the streamed speed to catch up";
+}
+
+// Joint position clamp: a target past the soft limit is followed AS FAR AS the limit
+// and no further — clamped, not refused, and never overshot past the stop.
+TEST(Servo, TargetBeyondPositionLimitIsClampedToTheLimit) {
+  TickEngineConfig cfg;
+  cfg.limits.pos_lo = Vec6{-0.5, -0.5, -0.5, -0.5, -0.5, -0.5};
+  cfg.limits.pos_hi = Vec6{0.5, 0.5, 0.5, 0.5, 0.5, 0.5};
+  Servo servo(cfg);
+  servo.start(Vec6{}, Vec6{}, Vec6{});
+
+  servo.set_target(axis0(2.0), 0.05);  // well past the 0.5 rad stop
+  double q_max = 0.0;
+  for (int i = 0; i < 400; ++i) {
+    const ServoStep s = servo.step();
+    ASSERT_FALSE(s.error);
+    q_max = std::max(q_max, s.q[0]);
+    EXPECT_LE(s.q[0], cfg.limits.pos_hi[0] + 1e-9) << "never commands past the stop, tick " << i;
+  }
+  EXPECT_NEAR(q_max, cfg.limits.pos_hi[0], 1e-3) << "goes all the way to the stop, not short of it";
+
+  // And the same on the way back down.
+  servo.set_target(axis0(-2.0), 0.05);
+  for (int i = 0; i < 600; ++i) {
+    const ServoStep s = servo.step();
+    ASSERT_FALSE(s.error);
+    EXPECT_GE(s.q[0], cfg.limits.pos_lo[0] - 1e-9) << "never commands past the lower stop, tick " << i;
+  }
+}
+
+// Unset position limits are inert: the shipped default is ±inf, so a core that was
+// never handed a profile must not silently clamp motion to a made-up envelope.
+TEST(Servo, DefaultPositionLimitsDoNotClamp) {
+  TickEngineConfig cfg;  // defaults
+  Servo servo(cfg);
+  servo.start(Vec6{}, Vec6{}, Vec6{});
+  servo.set_target(axis0(1.5), 0.05);  // ~86°, far outside any plausible synthetic box
+  double q = 0.0;
+  for (int i = 0; i < 600; ++i) {
+    const ServoStep s = servo.step();
+    ASSERT_FALSE(s.error);
+    q = s.q[0];
+  }
+  EXPECT_NEAR(q, 1.5, 1e-3) << "reaches the target when no position limits are configured";
 }
 
 // Starvation-safety via re-issue. The servo holds its last target instead of

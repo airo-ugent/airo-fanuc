@@ -63,6 +63,7 @@ import time
 from collections.abc import Callable, Iterator
 
 import pytest
+from conftest import TEST_PROFILE
 
 from airo_fanuc._core import FaultReason, Mode, MotionStatus, RtCoreConfig, StreamCore
 from airo_fanuc.rmi_client import RmiClient
@@ -115,7 +116,13 @@ class Rig:
         self.rmi.program_call("STREAM_MOTN")
         self.rmi.get_status()
         self.controller.start_realtime(speed=1.0)
+        # The arm is stated explicitly rather than left on the C++ fallback envelope:
+        # these scenarios assert on brake distances and velocity ceilings, which are
+        # only meaningful against a known set of limits.
         cfg = RtCoreConfig()
+        cfg.velocity_limits = [float(v) for v in TEST_PROFILE.velocity_limits]
+        cfg.acceleration_limits = [float(v) for v in TEST_PROFILE.acceleration_limits]
+        cfg.jerk_limits = [float(v) for v in TEST_PROFILE.jerk_limits]
         cfg.sm_version = core_sm_version if core_sm_version is not None else available_version
         self.core = StreamCore("127.0.0.1", self.controller.sm_port, cfg)
         self.core.start()
@@ -463,7 +470,7 @@ def test_servo_sine_tracks_and_reverses_without_dwell(rig: Rig) -> None:
     # dwells at zero velocity through the sweep. A dwell would mean the online
     # profiler reached each target early and froze until the next one arrived,
     # producing a visible per-step stutter instead of a smooth sweep.
-    amp = 0.08  # rad (~4.6°, each 20 ms step ≪ 5° servo window)
+    amp = 0.08  # rad (~4.6°) — a gentle sweep, small steps per 20 ms target
     period = 0.6
     hz = 50.0
     qd_hist: list[float] = []
@@ -486,16 +493,25 @@ def test_servo_sine_tracks_and_reverses_without_dwell(rig: Rig) -> None:
         zero_run = zero_run + 1 if abs(v) < 5e-4 else 0
         max_zero_run = max(max_zero_run, zero_run)
     assert max_zero_run < len(qd_hist) // 2, f"velocity dwelled at zero for {max_zero_run} samples"
-    # Velocity stays within the joint limit.
-    assert max(abs(v) for v in qd_hist) < 2.094
+    # Velocity stays within the joint limit the core was configured with.
+    assert max(abs(v) for v in qd_hist) < TEST_PROFILE.velocity_limits[0]
 
 
-def test_servo_distance_guard_rejects_far_target(rig: Rig) -> None:
-    # |q_target − q_cmd| > 5° servo window → typed REJECT, never a silent jump to
-    # the far target.
-    mid = rig.core.submit_servo([0.9, 0, 0, 0, 0, 0], 0.5)  # ~51° from ~0
-    assert rig.wait_status(mid, MotionStatus.REJECTED, 1.5)
-    assert rig.mode() in (Mode.HOLD, Mode.SERVO)
+def test_servo_far_target_is_tracked_not_rejected(rig: Rig) -> None:
+    # No distance guard: a far target is tracked under the servo limits, never refused
+    # and never jumped to. What bounds it is v_lim, so after a moment the command has
+    # made real progress toward the target without exceeding the limit.
+    q0 = rig.core.get_snapshot()["q_cmd"][0]
+    mid = rig.core.submit_servo([q0 + 0.9, 0, 0, 0, 0, 0], 0.5)  # ~51° away
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and rig.mode() != Mode.SERVO:
+        time.sleep(0.004)
+    assert rig.mode() == Mode.SERVO
+    assert MotionStatus(rig.core.motion_status(mid)) != MotionStatus.REJECTED
+    time.sleep(0.3)
+    snap = rig.core.get_snapshot()
+    assert snap["q_cmd"][0] > q0 + 0.01, "tracked toward the far target"
+    assert abs(snap["qd_cmd"][0]) <= TEST_PROFILE.velocity_limits[0] * 1.001
 
 
 # ---------------------------------------------------------------------------

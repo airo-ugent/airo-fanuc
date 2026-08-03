@@ -5,13 +5,11 @@
 // the RxSample, with NO Python and NO callback: TickCore has no callback surface
 // at all, and RealtimeCore (the only caller) never invokes Python from the RT
 // thread. This test is the regression wall against "simplifying" any gate back
-// into a Python watchdog — the drift/e-stop/TEACH/contact/safety_scale/
-// motion_possible reactions must stay GIL-free in the C++ tick.
+// into a Python watchdog — the e-stop/TEACH/contact/safety_scale/motion_possible
+// reactions must stay GIL-free in the C++ tick.
 //
 // It also covers the gates that test_epoch/test_modes do not reach at the
-// TickCore level: TEACH_MODE, SAFETY_CLAMP and MOTION_NOT_POSSIBLE. (DRIFT is a bound FaultReason enum value but is NOT wired as a C++ gate
-// in the frozen core — it is derived host-side, plan@now−lag — so it is not part
-// of the C++ autonomy table and is deliberately not asserted here.)
+// TickCore level: TEACH_MODE, SAFETY_CLAMP and MOTION_NOT_POSSIBLE.
 
 #include <array>
 #include <cstdint>

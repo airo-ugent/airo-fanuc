@@ -201,7 +201,12 @@ class Supervisor:
         # RMI_CONNECTING: Connect_STMO + redirect, preflight, Init ladder + reseed.
         self._set_state(LifecycleState.RMI_CONNECTING, FaultReason.NONE)
         self._rmi.start()  # raises FanucConnectionError if unreachable
-        report = run_preflight(self._rmi, full=self._policy.preflight_full)
+        report = run_preflight(
+            self._rmi,
+            full=self._policy.preflight_full,
+            profile=self._policy.config.profile,
+            expect_gripper=self._policy.enable_gripper,
+        )
         self._rmi.initialize()
         self._maybe_continue()
 

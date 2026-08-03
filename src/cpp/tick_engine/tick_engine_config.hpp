@@ -2,27 +2,31 @@
 //
 // airo_fanuc — RT tick-engine configuration.
 //
-// Limits are single-sourced in `airo_fanuc.controller_facts`; this struct MIRRORS
-// those constants and each field carries a comment naming the symbol it mirrors.
-// The DEFAULTS below are authoritative for the tick engine:
-// `DriverConfig.to_rt_core_config` deliberately leaves these fields alone (it sets
-// only the protocol + RT-hygiene knobs Python owns), so the numbers the RT loop
-// executes are the same numbers the Python pre-flight capture synthesis sees
-// through the binding. Keeping them here also makes the pure tick-engine math
-// testable stand-alone. If you change a value in `controller_facts.py` that a C++ test
-// hardcodes, grep `controller_facts` in the C++ tree and update the mirror
-// comment + test.
+// Two kinds of knob live here, and the difference matters:
 //
-// UNIT CONVENTION (binding): the engine works entirely in RADIANS — the same
-// unit as the limits in `controller_facts` (rad, rad/s, rad/s², rad/s³) and the
-// unit of curobo trajectories. The Stream Motion wire is DEGREES; that
-// conversion happens ONLY at the wire, in the codec. Every C++ unit test states
-// rad.
+//   * The kinematic `Limits` belong to the ARM. Their defaults are synthetic (see
+//     the note on the struct) and `DriverConfig.to_rt_core_config` overwrites them
+//     from the caller's `airo_fanuc.robot_profile.RobotProfile`, along with the brake
+//     scales and slew factor that multiply them.
+//   * Everything else is this driver's tuning, single-sourced in
+//     `airo_fanuc.controller_facts`; each such field carries a comment naming the
+//     symbol it mirrors. If you change a value there that a C++ test hardcodes, grep
+//     `controller_facts` in the C++ tree and update the mirror comment + test.
+//
+// The Python pre-flight capture synthesis is handed the same RtCoreConfig the core
+// was constructed with, so the path it checks is bounded by the same numbers the RT
+// loop executes.
+//
+// UNIT CONVENTION (binding): the engine works entirely in RADIANS — the same unit a
+// `RobotProfile` stores (rad, rad/s, rad/s², rad/s³) and the unit of curobo
+// trajectories. The Stream Motion wire is DEGREES; that conversion happens ONLY at
+// the wire, in the codec. Every C++ unit test states rad.
 
 #pragma once
 
 #include <array>
 #include <cstdint>
+#include <limits>
 
 namespace airo_fanuc::tick_engine {
 
@@ -46,17 +50,37 @@ inline constexpr double kPi = 3.141592653589793238462643383279502884;
 constexpr double deg2rad(double deg) { return deg * (kPi / 180.0); }
 
 // ---------------------------------------------------------------------------
-// Kinematic limits (radians). Default = CRX-10iA/L datasheet-derived values,
-// single-sourced in controller_facts. Provenance: FANUC Europe MDS-04018
-// (velocity); accel = 2×vel, jerk = 8×accel (engineering-practice derivations).
-//   v : controller_facts.CRX10IAL_VELOCITY_LIMITS
-//   a : controller_facts.CRX10IAL_ACCELERATION_LIMITS (= 2·v)
-//   j : controller_facts.CRX10IAL_JERK_LIMITS         (= 8·a)
+// Kinematic limits (radians) — the ceiling every stage clamps against.
+//
+// These belong to the ARM, and no arm's numbers are compiled in: the values below
+// are a SYNTHETIC envelope, round and deliberately not any real robot's, so that the
+// tick-engine math is exercisable by the stand-alone gtest suite without a Python
+// layer. In a driver they are always overwritten —
+// `DriverConfig.to_rt_core_config()` sets all three from the caller's
+// `airo_fanuc.robot_profile.RobotProfile` before the core is constructed.
+//
+// The 2×/8× shape (a = 2·v, j = 8·a) matches the ratio a cobot profile tends to
+// have, which keeps the Ruckig profiles here as well-conditioned as they are in
+// production. C++ tests must derive their expectations from `cfg.limits` rather than
+// restating numbers, so that changing this envelope cannot quietly invalidate them.
 // ---------------------------------------------------------------------------
+inline constexpr double kInf = std::numeric_limits<double>::infinity();
+
 struct Limits {
-  Vec6 v{{2.094, 2.094, 3.142, 3.142, 3.142, 3.142}};
-  Vec6 a{{4.188, 4.188, 6.284, 6.284, 6.284, 6.284}};        // 2·v
-  Vec6 j{{33.504, 33.504, 50.272, 50.272, 50.272, 50.272}};  // 8·a
+  Vec6 v{{2.0, 2.0, 2.0, 2.0, 2.0, 2.0}};
+  Vec6 a{{4.0, 4.0, 4.0, 4.0, 4.0, 4.0}};        // 2·v
+  Vec6 j{{32.0, 32.0, 32.0, 32.0, 32.0, 32.0}};  // 8·a
+
+  // Joint position limits (the arm's soft stops). Unlike v/a/j these default to
+  // ±infinity — INERT — rather than to a synthetic envelope: a wrong position limit
+  // is not a conservative error the way a wrong velocity limit is. Too narrow and the
+  // arm silently refuses to reach poses it can reach; too wide and the clamp is a
+  // no-op. There is no defensible stand-in for the real values, so an unconfigured
+  // core does not pretend to have them. A driver sets them from its RobotProfile,
+  // whose values are read from the controller's $PARAM_GROUP and cross-checked at
+  // preflight, so in practice they are always the arm's own.
+  Vec6 pos_lo{{-kInf, -kInf, -kInf, -kInf, -kInf, -kInf}};
+  Vec6 pos_hi{{kInf, kInf, kInf, kInf, kInf, kInf}};
 };
 
 // ---------------------------------------------------------------------------
@@ -66,7 +90,7 @@ struct Limits {
 struct TickEngineConfig {
   double itp_s{kItpSeconds};  // controller_facts.ITP_S (8 ms tick)
 
-  Limits limits{};  // CRX-10iA/L defaults (mirror of controller_facts).
+  Limits limits{};  // synthetic default; set from the caller's RobotProfile in a driver.
 
   // Brake / stop envelope scales. v/a and jerk are scaled SEPARATELY, and jerk is
   // scaled much harder (0.15 vs 0.4), because the CRX collaborative-stop monitor
@@ -98,7 +122,6 @@ struct TickEngineConfig {
 
   // Servo. Ruckig online-position; limits × servo_limit_scale.
   double servo_limit_scale{1.0};           // controller_facts.SERVO_LIMIT_SCALE
-  double servo_window_rad{deg2rad(5.0)};   // controller_facts.SERVO_WINDOW_DEG (distance guard)
 
   // qd_end blend: on trajectory exhaustion with |qd_end|>0, ramp
   // (q_end,qd_end)→rest over at least this long.

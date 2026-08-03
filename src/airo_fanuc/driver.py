@@ -4,7 +4,7 @@
 The API takes the shape industrial-arm drivers usually take: a *receive* half (state
 getters that never block) and a *control* half (motion submission, usable blocking or
 non-blocking), both reachable through one object rather than two session handles. Over
-the FANUC CRX-10iA/L that means: the constructor brings the robot up to *commandable*
+a FANUC arm that means: the constructor brings the robot up to *commandable*
 (or raises with a real reason), :meth:`move_trajectory` / :meth:`servo_j` are the only
 motion surfaces, :meth:`stop_j` is the universal preempt, and the getters never raise
 and never lie (value + age). The C++ ``StreamCore`` owns the 125 Hz timeline; the
@@ -147,11 +147,18 @@ class MotionHandle:
 
 
 class FanucDriver:
-    """Construct-and-go FANUC CRX-10iA/L driver: receive + control in one object."""
+    """Construct-and-go FANUC driver: receive + control in one object.
 
-    def __init__(self, ip: str, policy: DriverPolicy | None = None) -> None:
+    ``policy`` is required, because the :class:`~airo_fanuc.config.DriverConfig`
+    inside it carries the arm's :class:`~airo_fanuc.robot_profile.RobotProfile` — the
+    limits the RT core clamps against. There is no default arm: this driver has no way
+    to ask the controller which robot is attached, so the caller states it.
+    ``examples/crx10ial.py`` builds a profile for the CRX-10iA/L the examples run on.
+    """
+
+    def __init__(self, ip: str, policy: DriverPolicy) -> None:
         self._ip = ip
-        self._policy = policy if policy is not None else DriverPolicy()
+        self._policy = policy
         self._cfg = self._policy.config
         self._closed = False
         self._close_lock = threading.Lock()
@@ -276,16 +283,31 @@ class FanucDriver:
         qd: Sequence[float] | np.ndarray | None = None,
         qdd: Sequence[float] | np.ndarray | None = None,
     ) -> MotionHandle:
-        """Replace-not-queue servo target (rad). The core rejects a target > 5° from
-        the commanded pose (:class:`MotionResult.REJECTED`). Starvation-safe.
+        """Replace-not-queue servo target (rad): head for ``q``, with ``duration``
+        seconds to get there. Best-effort and starvation-safe.
 
-        Feed-forward: pass ``qd`` (and optionally ``qdd``, rad/s and rad/s²) to use them
-        as Ruckig's target velocity/acceleration instead of the secant reconstruction the
-        position-only path derives from consecutive targets. Supplying an externally
-        planned knot's own derivatives (e.g. an MPC action-sequence point) renders that
-        smooth trajectory faithfully — no secant lag, no accel=0 forcing at each knot
-        (the servoing twitch). ``qd``/``qdd`` are clamped to the servo limits in the core.
-        With no ``qd`` the behaviour is unchanged (secant + zero target acceleration).
+        "Best-effort" is the contract, in the sense UR's ``servoj`` means it: the core
+        tracks toward the target under the servo velocity/acceleration/jerk limits and
+        does not promise to arrive on time, at rest, or at any particular velocity. It
+        never refuses a target for being far away either — a distant or stale setpoint
+        produces bounded, jerk-shaped motion toward it, not a rejection, so a stream
+        that falls behind keeps going instead of stopping. ``duration`` is the spacing
+        between successive calls (``1/f`` in the ``servo_j(q, 1/f)`` pattern), not the
+        8 ms tick; it stretches the profile so the command glides between targets
+        rather than arriving early and dwelling.
+
+        Note what is NOT checked: no collision check runs anywhere on the servo path
+        (unlike :meth:`move_trajectory`, whose capture splice goes through
+        ``policy.capture_check``), and the only bound on a wrong setpoint is the servo
+        limits. Streaming setpoints into an occupied workspace is the caller's risk.
+
+        ``qd`` / ``qdd`` (rad/s, rad/s²) are accepted and CURRENTLY IGNORED. They were
+        previously used as Ruckig's target velocity/acceleration; demanding an arrival
+        velocity is what made the command reverse against a forward-moving stream when
+        the caller's clock and the tick clock drifted (see BEST EFFORT in
+        ``src/cpp/tick_engine/servo.hpp``). The arguments are kept because a future
+        tracking law can use them as a lookahead — the way UR's ``servoj`` uses velocity
+        — rather than as an arrival state.
         """
         self._require_commandable()
         assert self.core is not None
@@ -506,6 +528,100 @@ class FanucDriver:
             dtype=np.float64,
         )
 
+    def get_tcp_pose(self) -> np.ndarray | None:
+        """The controller's own **tool-tip** pose ``[X, Y, Z, W, P, R]`` (mm, deg), or
+        ``None`` if the controller could not be asked.
+
+        This is the TCP of whatever tool the control box has configured — the number
+        the controller computes itself, with its active UTOOL applied, not a pose this
+        driver derived. Nothing about the tool is hardcoded here or in
+        :class:`~airo_fanuc.config.DriverConfig`: change the UTOOL entry on the
+        pendant and this follows, because the controller is the one doing the
+        arithmetic.
+
+        **It costs an RMI round trip (tens of ms) and is not on the 125 Hz timeline.**
+        That makes it the one getter on this class that blocks, so it does not belong
+        in a control loop — see :meth:`get_flange_pose` for the streamed pose, which
+        is a lock-free snapshot read sampled on the same packet as ``q_meas``. The
+        difference between them is the tool offset: 175.000 mm on this cell's Robotiq
+        gripper (``docs/controller-notes.md`` §1.10).
+
+        Sourced from ``FRC_ReadCartesianPosition`` (RMI §2.3.14), which also names the
+        UFRAME/UTOOL the pose is expressed in; call
+        :meth:`airo_fanuc.rmi_client.RmiClient.read_cartesian_position` directly when
+        you need those numbers or the arm's configuration branch alongside the pose.
+
+        Honest failure: ``None`` when there is no RMI session or the read fails, never
+        a stale or substituted value. In particular it does **not** fall back to the
+        streamed faceplate pose — silently returning a point 175 mm from the tool tip
+        under the same method name is exactly the lie the getters must not tell.
+
+        Extended axes are dropped (6-DOF arm; the controller zero-pads them).
+        """
+        rmi = self.rmi
+        if rmi is None:
+            return None
+        try:
+            pose = rmi.read_cartesian_position()
+        except Exception as exc:  # noqa: BLE001 - getters never raise
+            logger.debug("airo_fanuc: read_cartesian_position failed: %s", exc)
+            return None
+        return np.asarray(pose.xyzwpr[:_NDOF], dtype=np.float64)
+
+    def get_flange_pose(self) -> np.ndarray | None:
+        """Streamed **faceplate** pose ``[X, Y, Z, W, P, R]`` (mm, deg), or ``None``
+        before the first status packet has landed.
+
+        Read straight out of the Stream Motion status packet's ``position`` block —
+        the controller's own FK, computed on the same packet as ``q_meas``, so the
+        pose and the joints are the same instant with no interpolation skew between
+        them. Lock-free, never blocks; age comes from ``get_state()["rx_age_ms"]``
+        like every other snapshot value. Present at both v3/type-202 and v4/type-204:
+        the block sits in the shared header ahead of the force fields, so unlike
+        :meth:`get_wrench` this is available on *this* controller.
+
+        **This is the faceplate, NOT the tool tip** — measured, ``controller-notes.md``
+        §1.10: against ``FRC_ReadCartesianPosition`` at one standstill pose the
+        orientation was bit-identical but the position sat exactly 175.000 mm short
+        along tool +Z, which is this cell's Robotiq gripper. Use :meth:`get_tcp_pose`
+        for the tool tip. If you need a TCP at tick rate rather than per RMI round
+        trip, apply your own tool transform to this pose — the driver ships no pose
+        algebra, because the controller already does the conversion for the one caller
+        that just wants the answer.
+
+        **Wire units, not SI**: millimetres and degrees, exactly what the pendant's
+        POSITION screen shows, which is what makes the two comparable by eye. W/P/R
+        compose as fixed-axis XYZ, ``R = Rz(R)·Ry(P)·Rx(W)`` — resolved on hardware by
+        that 175 mm lever arm to better than 0.1° (§1.10), not assumed. That is the
+        convention to use if you do interpret these angles yourself.
+
+        ``None`` before the first RX is deliberate. The snapshot's pose field starts
+        zero-initialised, and all-zero XYZWPR is not a pose this arm can hold — it
+        would put the flange at the world origin, inside the robot base — so returning
+        it would be a getter lying. The gate is on ``rx_mono_ns``, not on the value,
+        so a real pose is never mistaken for no-data.
+
+        Extended axes (``cart[6:9]``) are dropped: this arm is 6-DOF and the
+        controller zero-pads them. Reach into ``get_state()["cart"]`` if you need the
+        raw length-9 block.
+
+        **Open (§1.10a):** whether this field tracks the *active* UTOOL. The packet
+        carries no frame tag, and ``FRC_GetStatus`` and ``FRC_ReadCartesianPosition``
+        report *different* active UFRAME/UTOOL numbers on this controller. If the
+        streamed pose follows the active tool, the flange/TCP gap changes silently
+        when someone switches UTOOL at the pendant.
+        """
+        core = self.core
+        if core is None:
+            return None
+        snap = _snap(core)
+        if int(snap.get("rx_mono_ns", 0)) <= 0:
+            return None  # no status packet yet — the pose field is still zeros
+        cart = snap.get("cart")
+        if not isinstance(cart, list) or len(cart) < _NDOF:
+            return None
+        return np.array(cart[:_NDOF], dtype=np.float64)
+
     def joints_at_wall(self, t_wall_ns: int) -> np.ndarray | None:
         """Joint state (rad) nearest a wall-clock stamp (camera FK-at-shutter)."""
         core = self.core
@@ -619,7 +735,7 @@ class FanucDriver:
 
         The controller states its interpolation period in the GetCapability reply, in
         whole milliseconds. Every per-tick quantity in the core is scaled by
-        ``config.itp_s`` — the slew clip, the drift guard's lag window, each mode's
+        ``config.itp_s`` — the slew clip, the brake and settle windows, each mode's
         Ruckig period — so a driver configured for one period against a controller
         running another produces limits that are silently wrong by that ratio, in the
         permissive direction if the real period is shorter. Bring-up refuses instead.
@@ -711,7 +827,7 @@ class FanucDriver:
         if any(times_ns[i] <= times_ns[i - 1] for i in range(1, n)):
             raise TrajectoryValidationError("times must be strictly increasing (ns, relative)")
 
-        vlim = self._cfg.velocity_limits
+        vlim = self._cfg.profile.velocity_limits
         peak = np.max(np.abs(qd_arr), axis=0)
         if np.any(peak > vlim + 1e-9):
             over = np.where(peak > vlim + 1e-9)[0].tolist()

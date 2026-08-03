@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Unit test — epoch bump-event table COMPLETENESS. test_epoch.cpp triggers each
-// of the nine bump reasons in isolation; this file locks down the table as a
-// whole: (1) the enum has exactly the nine reasons (a new reason without a test
+// of the eight bump reasons in isolation; this file locks down the table as a
+// whole: (1) the enum has exactly the eight reasons (a new reason without a test
 // breaks the static_assert), (2) the happy path (HOLD / trajectory-to-DONE /
 // stop_j preempt) bumps ZERO times — no spurious epoch churn, and (3) every
 // epoch increment is ATTRIBUTED to a table entry: Σ bump_counts == epoch (no
-// untracked bump can slip in). kSupervisorLost and kDriftFault are exercised by
-// test_epoch.cpp's SupervisorLost / DriftFault cases.
+// untracked bump can slip in). kSupervisorLost is exercised by test_epoch.cpp's
+// SupervisorLost case.
 
 #include <array>
 #include <cstdint>
@@ -47,9 +47,9 @@ std::uint64_t sum_bumps(const TickCore& tc) {
 
 }  // namespace
 
-// The table is exactly {kNone, + 9 bump reasons}. Adding a BumpReason without a
+// The table is exactly {kNone, + 8 bump reasons}. Adding a BumpReason without a
 // test (and without updating this count) fails to compile.
-static_assert(static_cast<int>(BumpReason::kCount) == 10, "epoch bump-event table must have 9 reasons");
+static_assert(static_cast<int>(BumpReason::kCount) == 9, "epoch bump-event table must have 8 reasons");
 
 // Happy path: HOLD steady state, a full trajectory to DONE, and a stop_j clean
 // preempt all bump the epoch ZERO times.

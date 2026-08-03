@@ -469,6 +469,7 @@ class FakeStreamMotionServer:
             fx, fy, fz = self._state.force
             mx, my, mz = self._state.moment
             fs_type = self._state.effective_fs_type(self._fsconfig_received)
+            cartesian = list(self._state.cartesian)
 
         q_meas, qd_meas = self._plant.snapshot_deg()
         moving = bool(np.max(np.abs(qd_meas)) > _MOTION_IN_PROGRESS_EPS_DEG_S)
@@ -489,7 +490,9 @@ class FakeStreamMotionServer:
                 robot_status=robot_status,
                 contact_stop_status=contact_stop,
                 time_stamp=ts_ms,
-                position_deg=[0.0] * N_AXES,  # fake does no FK; joints are authoritative
+                # Whatever set_cartesian injected (zeros by default): the fake does
+                # no FK, so this does not follow `joint_angle_deg`.
+                position_deg=cartesian,
                 joint_angle_deg=list(q_meas),
                 current=[0.0] * N_AXES,
                 safety_scale=safety_scale,
@@ -512,7 +515,7 @@ class FakeStreamMotionServer:
                 robot_status=robot_status,
                 contact_stop_status=contact_stop,
                 time_stamp=ts_ms,
-                position_deg=[0.0] * N_AXES,  # fake does no FK; joints are authoritative
+                position_deg=cartesian,  # injected, not FK — see the v4 branch above
                 joint_angle_deg=list(q_meas),
                 current=[0.0] * N_AXES,
                 safety_scale=safety_scale,

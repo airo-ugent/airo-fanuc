@@ -58,29 +58,10 @@ from _common import (
     report_rt_health,
     rule,
     verdict,
+    wait_streaming,
     watch,
 )
 from airo_fanuc import FanucDriver, MotionResult
-
-
-def _wait_streaming(driver, hold_s: float = 2.0, timeout_s: float = 10.0) -> bool:
-    """Wait until the driver is STABLY streaming (mode=streaming, fault=none held for
-    ``hold_s``). A re-bring-up over a running STREAM_MOTN can show a brief
-    motion_possible transient that auto-recovers; ride it out before commanding."""
-    deadline = time.monotonic() + timeout_s
-    stable_since = None
-    while time.monotonic() < deadline:
-        st = driver.get_state()
-        streaming = st.get("lifecycle_state") == "streaming"
-        no_fault = str(st.get("fault_reason") or "none").lower() == "none"
-        if streaming and no_fault:
-            stable_since = stable_since or time.monotonic()
-            if time.monotonic() - stable_since >= hold_s:
-                return True
-        else:
-            stable_since = None
-        time.sleep(0.1)
-    return False
 
 
 def _build_trajectory(q_start_rad, joint_idx: int, delta_rad: float, duration_s: float):
@@ -160,7 +141,7 @@ def main() -> int:
             # §4.2), so judging faults from the first sample would report the driver's
             # designed behaviour as a failure. What must hold is that it settles and
             # then STAYS settled.
-            settled = _wait_streaming(driver)
+            settled = wait_streaming(driver)
             checks.append(("settled into stable streaming", settled))
             if not settled:
                 print("  never reached stable streaming — see the fault above.")
@@ -187,7 +168,7 @@ def main() -> int:
             return verdict("bring-up validation", checks, driver)
 
         # Ride out any post-bring-up motion_possible transient before commanding.
-        if not _wait_streaming(driver):
+        if not wait_streaming(driver):
             print("  driver did not reach stable streaming — aborting the move (no motion issued).")
             checks.append(("driver reached stable streaming", False))
             return verdict("move_joints", checks, driver)

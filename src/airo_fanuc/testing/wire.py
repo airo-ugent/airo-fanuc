@@ -720,6 +720,21 @@ def rmi_read_joint_angles_request() -> dict[str, Any]:
     return {"Command": "FRC_ReadJointAngles"}
 
 
+def rmi_read_cartesian_position_request() -> dict[str, Any]:
+    """``FRC_ReadCartesianPosition`` (RMI §2.3.14): ``Command`` only, no payload.
+
+    Matches the vendored ``rmi/packets.hpp``
+    ``GetCartesianPositionPacket::Request``: ``Command`` plus an *optional*
+    ``Group`` that a single-group arm omits (the C++ default).
+
+    The reply pairs a ``Position`` block (X/Y/Z mm, W/P/R deg, + 3 ext axes) with a
+    ``Configuration`` block naming ``UFrameNumber`` / ``UToolNumber``. That pairing
+    is the point: the Stream Motion status packet carries a Cartesian pose with no
+    frame tag, so this is the only read that says which frame a pose is in.
+    """
+    return {"Command": "FRC_ReadCartesianPosition"}
+
+
 def rmi_continue_request() -> dict[str, Any]:
     """``FRC_Continue`` (RMI §2.3.4): ``Command`` only, no payload fields.
 

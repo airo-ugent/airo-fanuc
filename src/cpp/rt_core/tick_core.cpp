@@ -106,14 +106,11 @@ void TickCore::begin_streaming(const Vec6& q_meas) {
   conditions_ = 0;
   streaming_ = true;
   ticks_since_rx_ = 0;
-  // Supervisor-liveness + drift-guard state (fresh streaming session). Do NOT
-  // clear supervisor_hb_armed_: once the supervisor has beaten it stays armed
-  // across re-handshakes; we only reset the elapsed counter so a re-stream never
-  // trips on a stale count.
+  // Supervisor-liveness state (fresh streaming session). Do NOT clear
+  // supervisor_hb_armed_: once the supervisor has beaten it stays armed across
+  // re-handshakes; we only reset the elapsed counter so a re-stream never trips
+  // on a stale count.
   ticks_since_heartbeat_ = 0;
-  drift_ring_head_ = 0;
-  drift_ring_count_ = 0;
-  drift_ticks_ = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -315,41 +312,6 @@ void TickCore::handle_supervisor_liveness() {
 }
 
 // ---------------------------------------------------------------------------
-// drift guard (DRIFT). Lag-aligned commanded↔measured divergence: compares the
-// fresh q_meas against the commanded pose from ~tracking_lag ago (drift_lag_ticks
-// back in the ring). Sustained divergence > drift_fault_rad for drift_fault_ticks →
-// FAULTED(DRIFT). This is the runaway guard — if the arm silently stops following
-// the commanded stream, no gate reports it, and the commanded pose keeps advancing
-// until it is tens of degrees from where the arm actually is. Only meaningful while
-// actively commanding a tracked pose (skip SAFE_FOLLOW/BRAKE/RX_SILENT, which
-// deliberately diverge).
-// ---------------------------------------------------------------------------
-void TickCore::handle_drift(const RxSample& rx) {
-  if (!streaming_) {
-    return;
-  }
-  if (mode_ != Mode::TRAJECTORY && mode_ != Mode::SERVO && mode_ != Mode::CAPTURE && mode_ != Mode::HOLD) {
-    return;
-  }
-  const int lag = std::min(cfg_.drift_lag_ticks, drift_ring_count_ - 1);
-  if (lag < 0) {
-    return;  // no commanded history yet
-  }
-  const int idx = ((drift_ring_head_ - 1 - lag) % kDriftRingCap + kDriftRingCap) % kDriftRingCap;
-  const double dev = max_abs_diff(drift_ring_[static_cast<std::size_t>(idx)], rx.q_meas);
-  if (dev > cfg_.drift_fault_rad) {
-    ++drift_ticks_;
-    if (drift_ticks_ >= cfg_.drift_fault_ticks) {
-      enter_fault(FaultReason::DRIFT, BumpReason::kDriftFault, MotionStatus::FAULTED);
-      emit(EventType::kDrift, FaultReason::DRIFT);
-      drift_ticks_ = 0;
-    }
-  } else {
-    drift_ticks_ = 0;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // force-guard (armed per-motion) — deterministic: trips on the tick that sees the
 // over-threshold wrench, never later
 // ---------------------------------------------------------------------------
@@ -451,26 +413,17 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
         emit(EventType::kMotionRejected, fault_, 0, t.motion_id);
         return r;
       }
-      // Distance guard vs current commanded: a servo target further away than the
-      // servo window is a jump, not a servo step, so reject rather than chase it.
-      if (max_abs_diff(t.servo_q, q_cmd_) > cfg_.tick.servo_window_rad) {
-        r.rejected_servo = true;
-        active_motion_id_ = t.motion_id;
-        active_status_ = MotionStatus::REJECTED;
-        emit(EventType::kMotionRejected, FaultReason::NONE, 0, t.motion_id);
-        return r;
-      }
+      // No distance guard: a servo target is tracked however far away it is, bounded
+      // by the servo limits rather than refused (servo.hpp, NO DISTANCE GUARD). The
+      // only servo rejection left is the faulted/following/parked case above.
       if (mode_ != Mode::SERVO) {
         servo_.start(q_cmd_, qd_cmd_, qdd_cmd_);
         mode_ = Mode::SERVO;
       }
-      // guard already passed. Feed-forward path uses the caller's qd/qdd; the
-      // position-only path reconstructs a secant velocity + zero acceleration.
-      if (t.servo_has_ff) {
-        servo_.set_target(t.servo_q, t.servo_qd, t.servo_qdd, t.servo_duration_s);
-      } else {
-        servo_.set_target(t.servo_q, t.servo_duration_s);
-      }
+      // Position + deadline is the whole command. Any qd/qdd the caller supplied is
+      // advisory and deliberately unused — demanding an arrival velocity is what made
+      // the command reverse against a forward-moving stream (servo.hpp, BEST EFFORT).
+      servo_.set_target(t.servo_q, t.servo_duration_s);
       servo_last_q_ = t.servo_q;
       servo_last_dur_ = t.servo_duration_s;
       ticks_since_servo_set_ = 0;
@@ -625,11 +578,15 @@ Vec6 TickCore::dispatch_trajectory() {
 
 Vec6 TickCore::dispatch_servo() {
   ++ticks_since_servo_set_;
-  // Staleness: once the caller stops refreshing the servo target, re-issue the SAME
-  // target to zero the velocity feedforward — otherwise the feedforward keeps
-  // extrapolating past the last target and overshoots it.
+  // Staleness re-issue. INERT as of the best-effort servo, and kept only until it is
+  // deliberately removed: it re-sends a target identical to the one already set, which
+  // leaves the Ruckig input unchanged and so changes nothing. It existed to zero the
+  // velocity feedforward when the caller stopped refreshing, because the feedforward
+  // would otherwise extrapolate past the last target and overshoot. There is no
+  // feedforward now — a starved stream converges to its last target and rests on its
+  // own, since the target velocity is always zero (Servo.RestsWhenLastTargetReissued).
   if (!servo_held_ && ticks_since_servo_set_ > servo_stale_ticks()) {
-    servo_.set_target(servo_last_q_, servo_last_dur_);  // prev_target == q → ff = 0 → holds
+    servo_.set_target(servo_last_q_, servo_last_dur_);
     servo_held_ = true;
   }
   const tick_engine::ServoStep s = servo_.step();
@@ -784,10 +741,9 @@ Command TickCore::tick(const RxSample* rx, const Target* pending, bool consume_s
   // 4b) supervisor liveness (any streaming mode; armed after the first beat).
   handle_supervisor_liveness();
 
-  // 5) force-guard + drift guard (both need a fresh RX sample).
+  // 5) force-guard (needs a fresh RX sample).
   if (rx != nullptr) {
     handle_force_guard(*rx);
-    handle_drift(*rx);
   }
 
   // 6) recovery anti-flap dwell.
@@ -822,8 +778,25 @@ Command TickCore::tick(const RxSample* rx, const Target* pending, bool consume_s
     last_consume_ = ConsumeResult{};
   }
 
-  // 8) mode dispatch → desired (pre-slew) command.
-  const Vec6 q_desired = dispatch_mode();
+  // 8) mode dispatch → desired (pre-clamp, pre-slew) command.
+  Vec6 q_desired = dispatch_mode();
+
+  // 8b) Joint position clamp — the last thing between any mode and a soft-limit
+  // overrun. Applied to EVERY mode rather than at submission, because a target
+  // inside the limits can still be approached by a profile that overshoots, and
+  // because the servo path takes setpoints straight from a caller with no
+  // validation between. Clamp, never fault: the arm stops at its own stop and keeps
+  // streaming, which the controller tolerates, whereas commanding past it is a servo
+  // alarm needing a reset at the pendant. Defaults are ±inf, so this is inert until a
+  // driver supplies the arm's real limits from its RobotProfile.
+  //
+  // Ordered BEFORE the slew clip on purpose: clamping can produce a step (if the
+  // commanded pose is already outside, e.g. limits narrowed under a running core),
+  // and the slew clip is what turns that step into a ramp.
+  for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
+    q_desired[j] =
+        std::clamp(q_desired[j], cfg_.tick.limits.pos_lo[j], cfg_.tick.limits.pos_hi[j]);
+  }
 
   // 9) slew clip (never faults; count; sustained-clip diagnostic bit).
   const tick_engine::SlewResult sr = slew_.apply(q_desired);
@@ -843,14 +816,6 @@ Command TickCore::tick(const RxSample* rx, const Target* pending, bool consume_s
   cmd.tx = streaming_ && (mode_ != Mode::RX_SILENT);
   cmd.is_last = false;
   q_cmd_ = sr.q;  // post-slew position anchor (qd_cmd_/qdd_cmd_ stay analytic for the brake seed)
-
-  // Record the commanded pose for the lag-aligned drift guard (compared against a
-  // future fresh q_meas). Pushed every tick so the ring is 8 ms-spaced history.
-  drift_ring_[static_cast<std::size_t>(drift_ring_head_)] = q_cmd_;
-  drift_ring_head_ = (drift_ring_head_ + 1) % kDriftRingCap;
-  if (drift_ring_count_ < kDriftRingCap) {
-    ++drift_ring_count_;
-  }
   return cmd;
 }
 

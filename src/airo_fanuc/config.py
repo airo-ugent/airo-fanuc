@@ -3,11 +3,11 @@
 
 Two dataclasses:
 
-* :class:`DriverConfig` — the *facts*: controller endpoints, kinematic limits and
-  RT-hygiene knobs. Its limit defaults are single-sourced from
-  :mod:`airo_fanuc.controller_facts` (a unit test asserts they stay equal), and it
-  produces the C++ :class:`airo_fanuc._core.RtCoreConfig` via
-  :meth:`DriverConfig.to_rt_core_config`.
+* :class:`DriverConfig` — the *facts*: controller endpoints, the arm's
+  :class:`~airo_fanuc.robot_profile.RobotProfile` and RT-hygiene knobs. It produces
+  the C++ :class:`airo_fanuc._core.RtCoreConfig` via
+  :meth:`DriverConfig.to_rt_core_config`, which is what carries the profile's limits
+  to the tick engine that enforces them.
 * :class:`DriverPolicy` — the *behaviour*: bring-up retries, auto-recovery, the
   ARM gate, the CAPTURE collision-check hook, ownership, the optional republisher.
 
@@ -29,6 +29,7 @@ from ._core import RtCoreConfig
 from .controller_facts import SettlePolicy
 from .ownership import DEFAULT_LOCK_PATH
 from .republisher import Publisher
+from .robot_profile import RobotProfile
 
 __all__ = [
     "DEFAULT_RMI_PORT",
@@ -37,6 +38,7 @@ __all__ = [
     "DriverConfig",
     "DriverPolicy",
     "MotionResult",
+    "RobotProfile",
     "SettlePolicy",
 ]
 
@@ -70,16 +72,22 @@ class MotionResult(Enum):
 
 @dataclass
 class DriverConfig:
-    """Controller endpoints, kinematic limits and RT-hygiene knobs.
+    """Controller endpoints, the arm's motion envelope and RT-hygiene knobs.
 
-    Limit defaults are single-sourced from :mod:`airo_fanuc.controller_facts`
-    (``tests/test_lifecycle.py`` asserts they stay equal, so a limit can only ever be
-    changed in one place). The C++ tick engine carries a mirror copy of the same
-    numbers in ``TickEngineConfig``; :meth:`to_rt_core_config` only sets the
-    :class:`airo_fanuc._core.RtCoreConfig` fields that are actually exposed to
-    Python (the tick-engine limits/capture knobs stay at their C++ defaults,
-    which equal these).
+    :attr:`profile` is required and has no default: the limits it carries are the
+    ceiling the RT core clamps against, this driver cannot verify them, and a default
+    would silently apply limits measured on somebody else's arm.
+    ``examples/crx10ial.py`` builds one for a CRX-10iA/L.
+
+    :meth:`to_rt_core_config` carries the profile's limits into the C++ tick engine,
+    which is what enforces them; the same struct is handed to
+    :func:`airo_fanuc._core.generate_capture_path`, so the pre-flight capture check
+    and the executed splice are computed from one set of numbers.
     """
+
+    # -- the arm ---------------------------------------------------------
+    #: The arm's motion envelope. Keyword-only and required — see the class docstring.
+    profile: RobotProfile = field(kw_only=True)
 
     # -- endpoints -------------------------------------------------------
     sm_port: int = DEFAULT_SM_PORT
@@ -87,24 +95,18 @@ class DriverConfig:
     rmi_connect_timeout: float = 5.0
     rmi_request_timeout: float = 2.0
 
-    # -- kinematic limits (rad, rad/s, rad/s², rad/s³) — controller_facts ------
-    velocity_limits: np.ndarray = field(default_factory=lambda: cf.CRX10IAL_VELOCITY_LIMITS.copy())
-    acceleration_limits: np.ndarray = field(default_factory=lambda: cf.CRX10IAL_ACCELERATION_LIMITS.copy())
-    jerk_limits: np.ndarray = field(default_factory=lambda: cf.CRX10IAL_JERK_LIMITS.copy())
-
-    # -- brake / slew envelope (mirror of controller_facts) --------------------
+    # -- brake / slew envelope -------------------------------------------------
+    #: Fractions of the profile's limits, not limits themselves, so they carry across
+    #: arms unchanged and stay in :mod:`airo_fanuc.controller_facts` with the rest of
+    #: this driver's tuning. The brake runs at ``stop_scale_va × (v, a)`` and
+    #: ``stop_scale_j × j``; the per-tick slew clip is ``slew_factor × v × itp_s``.
     stop_scale_va: float = cf.STOP_LIMIT_SCALE_VA
     stop_scale_j: float = cf.STOP_LIMIT_SCALE_J
     slew_factor: float = cf.SLEW_FACTOR
-    tracking_lag_s: float = cf.INTERIM_FACTS.tracking_lag_s
 
     # -- in-process safety watchdogs (mirror of controller_facts) --------------
     #: SUPERVISOR_LOST hold if the supervisor heartbeat lapses this long (s).
     supervisor_lost_s: float = cf.SUPERVISOR_LOST_S
-    #: DRIFT fault: sustained commanded↔measured divergence > this many degrees...
-    drift_fault_deg: float = cf.DRIFT_FAULT_DEG
-    #: ...for this many consecutive fresh-RX ticks (the 22°-runaway guard).
-    drift_fault_ticks: int = cf.DRIFT_FAULT_TICKS
 
     # -- Stream Motion protocol / RT hygiene -----------------------------
     #: Negotiated Stream Motion version (3 = no force config, 4 = FSConfig/force).
@@ -113,8 +115,8 @@ class DriverConfig:
     #: (125 Hz), which is the default; a controller with a different period is
     #: configured here rather than by editing the package. Every per-tick quantity is
     #: expressed against it — the slew clip is ``slew_factor · v_lim · itp_s``, and the
-    #: drift guard's lag window is ``tracking_lag_s / itp_s`` ticks — so this value and
-    #: the controller's real period must agree. The controller reports its own period in
+    #: brake / settle / RX-silence windows are tick counts — so this value and the
+    #: controller's real period must agree. The controller reports its own period in
     #: the GetCapability reply, and bring-up rejects a mismatch (see
     #: :meth:`airo_fanuc.driver.FanucDriver._verify_controller_itp`) rather than running
     #: with per-tick limits scaled to a period the hardware is not using.
@@ -151,22 +153,31 @@ class DriverConfig:
     def to_rt_core_config(self) -> RtCoreConfig:
         """Build the C++ :class:`airo_fanuc._core.RtCoreConfig`.
 
-        Starts from the shipped C++ defaults (which mirror
-        :mod:`airo_fanuc.controller_facts`) and overrides only the protocol +
-        RT-hygiene knobs Python owns. The capture/brake/settle/limit knobs live
-        inside the (Python-opaque) embedded ``TickEngineConfig`` and are left at
-        their C++ defaults so the executed capture path equals the one
-        :func:`airo_fanuc._core.generate_capture_path` synthesizes.
+        Starts from the shipped C++ defaults — a synthetic envelope that exists only
+        so the tick-engine math is testable stand-alone — and overwrites the arm's
+        limits from :attr:`profile` along with the protocol, brake-scale and
+        RT-hygiene knobs Python owns. The limits are the reason this must run: the
+        tick engine clamps against ``cfg.tick.limits``, so a profile that never
+        reached this struct would be a profile the RT core is not enforcing.
+
+        The remaining capture/settle knobs stay at their C++ defaults, which mirror
+        :mod:`airo_fanuc.controller_facts`.
         """
         rc = RtCoreConfig()
+        rc.velocity_limits = [float(v) for v in self.profile.velocity_limits]
+        rc.acceleration_limits = [float(v) for v in self.profile.acceleration_limits]
+        rc.jerk_limits = [float(v) for v in self.profile.jerk_limits]
+        # Position limits too: the core clamps every mode's command against these, and
+        # its own defaults are ±inf, so a profile that stopped here would leave the
+        # soft-limit clamp switched off.
+        rc.position_limits_lower = [float(v) for v in self.profile.position_limits_lower]
+        rc.position_limits_upper = [float(v) for v in self.profile.position_limits_upper]
+        rc.stop_scale_va = float(self.stop_scale_va)
+        rc.stop_scale_j = float(self.stop_scale_j)
+        rc.slew_factor = float(self.slew_factor)
         rc.sm_version = int(self.sm_version)
-        # In-process safety watchdogs. drift_lag_ticks is derived from the measured
-        # servo lag (25 ms ≈ 3 ticks) so the drift guard compares like with like.
         rc.supervisor_lost_s = float(self.supervisor_lost_s)
         rc.itp_s = float(self.itp_s)
-        rc.drift_lag_ticks = int(round(self.tracking_lag_s / self.itp_s))
-        rc.drift_fault_rad = float(np.deg2rad(self.drift_fault_deg))
-        rc.drift_fault_ticks = int(self.drift_fault_ticks)
         rc.preroll_timeout_s = float(self.preroll_timeout_s)
         rc.rt_priority = int(self.rt_priority)
         rc.sched_fifo = bool(self.sched_fifo)
@@ -179,10 +190,12 @@ class DriverPolicy:
     """Behavioural policy for the driver + lifecycle supervisor.
 
     The defaults are tuned for an unattended cell: auto-recovery ON, the ARM gate
-    armed on operator/e-stop faults, single-owner flock acquired.
+    armed on operator/e-stop faults, single-owner flock acquired. :attr:`config` is
+    required, because the :class:`DriverConfig` it holds needs an arm profile that only
+    the caller can supply.
     """
 
-    config: DriverConfig = field(default_factory=DriverConfig)
+    config: DriverConfig
 
     # -- bring-up --------------------------------------------------------
     connect_retries: int = 3

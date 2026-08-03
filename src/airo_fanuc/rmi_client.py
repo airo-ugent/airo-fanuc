@@ -222,6 +222,40 @@ class ControllerStatus:
 
 
 @dataclass(frozen=True)
+class CartesianPosition:
+    """Decoded ``FRC_ReadCartesianPosition`` reply (FANUC RMI §2.3.14).
+
+    Mirrors ``rmi/include/rmi/packets.hpp`` ``GetCartesianPositionPacket::Response``.
+    :attr:`xyzwpr` is the controller's own FK result — X, Y, Z in mm, W, P, R in
+    degrees — and :attr:`uframe_number` / :attr:`utool_number` name the frame it is
+    expressed in and the tool whose TCP it reports.
+
+    Those two numbers are why this read exists. The Stream Motion status packet
+    carries a Cartesian pose with **no frame tag at all**, so RMI is the only
+    surface that states which frame a pose belongs to.
+
+    :attr:`front` / :attr:`up` / :attr:`left` / :attr:`flip` / :attr:`turn` are the
+    arm's configuration branch — the same pose is reachable in several of them, so
+    they matter to anyone converting a pose back into joints.
+
+    Unlike :meth:`RmiClient.read_joint_angles`, this read carries **no
+    representation caveat**: the controller runs the FK internally, so the ``J3 +=
+    J2`` question (``controller_facts.INTERIM_FACTS.rmi_j3_plus_j2_conversion``)
+    cannot reach the result.
+    """
+
+    xyzwpr: tuple[float, ...]  # X, Y, Z (mm), W, P, R (deg), then any ext axes
+    utool_number: int
+    uframe_number: int
+    front: int
+    up: int
+    left: int
+    flip: int
+    turn: tuple[int, int, int]
+    time_tag: int
+
+
+@dataclass(frozen=True)
 class ControllerError:
     """One ``FRC_ReadError`` row (FANUC RMI §2.3.5).
 
@@ -290,6 +324,7 @@ class RmiClient:
     ) -> None:
         self._controller_ip = controller_ip
         self._bootstrap_port = bootstrap_port
+
         self._connect_timeout = connect_timeout
         self._request_timeout = request_timeout
 
@@ -328,6 +363,12 @@ class RmiClient:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    @property
+    def controller_ip(self) -> str:
+        """The controller this session addresses. Read by the preflight gate, which
+        reaches the same controller over FTP for its one-time version/option checks."""
+        return self._controller_ip
 
     def start(self) -> None:
         """Establish the commands-only session: Connect_STMO + redirect hop.
@@ -614,6 +655,60 @@ class RmiClient:
                 response=resp,
             )
         return joints
+
+    def read_cartesian_position(self) -> CartesianPosition:
+        """Send ``FRC_ReadCartesianPosition`` (RMI §2.3.14), return the decoded pose.
+
+        Worker-safe, like :meth:`read_joint_angles`: runs on the commands-only
+        session and auto-reopens the transport WITHOUT Initialize/Abort.
+
+        The returned pose is the controller's own FK, tagged with the active
+        UFRAME/UTOOL numbers — see :class:`CartesianPosition`. This is a
+        request/reply read at RMI cadence (tens of ms, not deterministic), so it is
+        a **verification and setup instrument, not a telemetry source**: for a pose
+        on the 125 Hz timeline, sampled on the same packet as the joints, use
+        :meth:`airo_fanuc.driver.FanucDriver.get_tcp_pose`.
+
+        Raises :class:`RmiError` on a non-zero ErrorID or a malformed reply (missing
+        / empty ``Position``), :class:`RmiSessionDown` on persistent session death.
+        """
+        resp = self._exchange_with_retry(wire.rmi_read_cartesian_position_request())
+        position = resp.get("Position")
+        if not isinstance(position, dict):
+            raise RmiError(
+                f"FRC_ReadCartesianPosition reply missing Position block, response={resp}",
+                response=resp,
+            )
+        pose: list[float] = []
+        for key in ("X", "Y", "Z", "W", "P", "R", "Ext1", "Ext2", "Ext3"):
+            value = position.get(key)
+            if value is None:
+                break  # first gap ends the contiguous run
+            pose.append(float(value))
+        if len(pose) < 6:
+            raise RmiError(
+                f"FRC_ReadCartesianPosition Position carried {len(pose)} of the 6 required "
+                f"X/Y/Z/W/P/R fields, response={resp}",
+                response=resp,
+            )
+        config = resp.get("Configuration")
+        if not isinstance(config, dict):
+            config = {}
+        return CartesianPosition(
+            xyzwpr=tuple(pose),
+            utool_number=int(config.get("UToolNumber", 0)),
+            uframe_number=int(config.get("UFrameNumber", 0)),
+            front=int(config.get("Front", 0)),
+            up=int(config.get("Up", 0)),
+            left=int(config.get("Left", 0)),
+            flip=int(config.get("Flip", 0)),
+            turn=(
+                int(config.get("Turn4", 0)),
+                int(config.get("Turn5", 0)),
+                int(config.get("Turn6", 0)),
+            ),
+            time_tag=int(resp.get("TimeTag", 0)),
+        )
 
     def reseed_sequence_id_from_controller(self) -> int:
         """Re-anchor ``_instruction_seq_id`` to the controller's ``NextSequenceID``.

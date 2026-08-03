@@ -5,10 +5,11 @@
 // `RtCoreConfig` MIRRORS the single-sourced Python constants in
 // `airo_fanuc.controller_facts`. Every RX-silence / dwell / re-anchor field carries
 // a comment naming its `controller_facts` symbol. The Python
-// `DriverConfig.to_rt_core_config()` POPULATES the protocol + watchdog
-// fields from `controller_facts` and `FanucDriver` passes the struct into the C++
-// `StreamCore` at construction; the C++ defaults still mirror the rest so the pure
-// `TickCore` logic is testable stand-alone. If you change a value in
+// `DriverConfig.to_rt_core_config()` POPULATES the protocol + watchdog fields from
+// `controller_facts` and the embedded `tick.limits` from the caller's
+// `airo_fanuc.robot_profile.RobotProfile`, and `FanucDriver` passes the struct into
+// the C++ `StreamCore` at construction; the C++ defaults still cover the rest so the
+// pure `TickCore` logic is testable stand-alone. If you change a value in
 // `controller_facts.py` that a C++ test hardcodes, grep `controller_facts` in the
 // C++ tree and update the mirror comment + test.
 //
@@ -60,7 +61,6 @@ enum class FaultReason : std::uint8_t {
   SAFETY_CLAMP,
   RX_SILENT,
   RX_DEGRADED,
-  DRIFT,
   WATCHDOG_EXPIRED,
   FORCE_GUARD,
   REJECTED_START_MISMATCH,
@@ -97,7 +97,7 @@ enum Condition : std::uint32_t {
 };
 
 // ---------------------------------------------------------------------------
-// Epoch bump-event table. Exactly these nine scenarios bump the core epoch; each
+// Epoch bump-event table. Exactly these eight scenarios bump the core epoch; each
 // is covered in isolation by a C++ unit test (test_epoch.cpp). A stale target
 // (tagged with a pre-bump epoch) is structurally unexecutable — rejected at
 // CONSUME — which is how a target that raced one of these events is prevented from
@@ -113,8 +113,7 @@ enum class BumpReason : std::uint8_t {
   kRxSilentEntry = 6,       // 500 ms RX silence → RX_SILENT park
   kDeadmanTrip = 7,         // caller-fed deadman expired
   kSupervisorLost = 8,      // supervisor heartbeat lapsed → FAULTED(SUPERVISOR_LOST), core holds
-  kDriftFault = 9,          // commanded↔measured divergence > threshold, sustained
-  kCount = 10,
+  kCount = 9,
 };
 
 // ---------------------------------------------------------------------------
@@ -166,19 +165,6 @@ struct RtCoreConfig {
   // stream on with nothing watching the gates it cannot see. Generous vs the beat
   // interval (~100 ms) to tolerate GIL-storm / GC pauses without a false trip.
   double supervisor_lost_s{3.0};  // controller_facts.SUPERVISOR_LOST_S
-
-  // --- Drift guard (DRIFT) ---
-  // Lag-aligned commanded↔measured divergence: q_meas(now) vs q_cmd(now − lag).
-  // Sustained divergence > drift_fault_rad for drift_fault_ticks → FAULTED(DRIFT)
-  // → SAFE_FOLLOW (re-anchor + recover). This is the runaway guard: if the arm
-  // silently stops tracking the commanded stream, nothing else notices, and the
-  // commanded pose walks tens of degrees away from where the arm actually is.
-  // Aligning against the measured servo lag (25 ms ≈ 3 ticks) is what makes the
-  // threshold mean genuine divergence rather than ordinary tracking lag.
-  // drift_lag_ticks is set from tracking_lag_s / ITP.
-  int drift_lag_ticks{3};                     // round(controller_facts.tracking_lag_s / ITP_S) = round(0.025/0.008)
-  double drift_fault_rad{deg2rad(10.0)};      // controller_facts.DRIFT_FAULT_DEG
-  int drift_fault_ticks{5};                   // controller_facts.DRIFT_FAULT_TICKS
 
   // --- Gates ---
   // SAFETY_CLAMP threshold: a safety_scale under 5 % means the controller is
@@ -243,11 +229,12 @@ struct Target {
   // Servo.
   Vec6 servo_q{};
   double servo_duration_s{0.0};
-  // Feed-forward servo (optional): when servo_has_ff, the RT servo uses these as
-  // Ruckig target_velocity/target_acceleration instead of reconstructing a secant
-  // velocity + zero acceleration from consecutive position targets.  Lets a caller
-  // stream an externally-planned smooth trajectory (e.g. an MPC action-sequence knot)
-  // faithfully — no secant lag, no accel=0 forcing at every knot (the servoing twitch).
+  // Caller-supplied derivatives. ACCEPTED AND CURRENTLY UNUSED: the servo demands no
+  // arrival state, so a target is a position plus a deadline and nothing else (see
+  // BEST EFFORT in tick_engine/servo.hpp for why demanding one made the command
+  // reverse against a forward-moving stream). Carried on the wire so a future
+  // tracking law can use them — as a lookahead, the way UR's servoj uses velocity —
+  // without another RT struct change.
   Vec6 servo_qd{};
   Vec6 servo_qdd{};
   bool servo_has_ff{false};
@@ -278,7 +265,6 @@ enum class EventType : std::uint16_t {
   kMotionRunning,
   kGateEdge,  // value = Condition bit that changed; reason = mapped fault
   kSupervisorLost,  // supervisor heartbeat lapsed
-  kDrift,           // commanded↔measured divergence fault
 };
 
 struct Event {

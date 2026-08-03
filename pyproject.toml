@@ -6,7 +6,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "airo-fanuc"
 version = "0.1.0.dev0"
-description = "FANUC CRX-10iA/L driver: C++17 real-time Stream Motion core behind a Python receive/control API"
+description = "FANUC driver: C++17 real-time Stream Motion core behind a Python receive/control API"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSES/*", "NOTICE"]

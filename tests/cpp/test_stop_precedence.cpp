@@ -174,7 +174,7 @@ TEST(StopPrecedence, SameTickStopSupersedesServo) {
   sv.kind = TargetKind::kServo;
   sv.epoch = tc.epoch();
   sv.motion_id = 4242;
-  sv.servo_q = Vec6{0.01, 0, 0, 0, 0, 0};  // within servo_window of q_cmd (0)
+  sv.servo_q = Vec6{0.01, 0, 0, 0, 0, 0};  // a small step from q_cmd (0)
   sv.servo_duration_s = 0.1;
 
   tc.request_stop();
@@ -282,8 +282,8 @@ void be_store_f32(std::uint8_t* p, float f) {
 }
 // Valid 416 B type-204: all gates clear, motion_possible=1, safety_scale=1.0.
 // joint_angle[0] echoes the last commanded J0 (deg) so the fake models a robot
-// that TRACKS its command — otherwise the RT core's drift guard (correctly)
-// faults on commanded↔measured divergence. Other joints stay 0 (unused by tests).
+// that TRACKS its command, which is what the brake/settle assertions read back.
+// Other joints stay 0 (unused by tests).
 void build_status(std::uint8_t* buf, std::uint32_t seq, double j0_deg = 0.0) {
   std::memset(buf, 0, 416);
   be_store_u32(buf + 0, 204);

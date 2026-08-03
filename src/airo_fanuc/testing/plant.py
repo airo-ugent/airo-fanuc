@@ -6,8 +6,8 @@ a test disagree, the model is normative, because it is what the driver is
 specified against. Given a stream of commanded joint angles at the controller ITP
 (8 ms), it produces the *measured* joint angles the controller would report back
 in its status packet (type-202 at the default v3; type-204 at v4) — modeling the
-servo tracking lag that the drift guard, the capture math, and the on-hardware
-lag measurement all depend on.
+servo tracking lag that the capture math and the on-hardware lag measurement both
+depend on.
 
 Three modeled effects, each pinned to a value measured on the physical
 controller:

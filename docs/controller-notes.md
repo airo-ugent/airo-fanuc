@@ -15,7 +15,7 @@
 > **J2/J3 representation** (§1.5) is now measured, but its conversion stays disabled
 > pending confirmation at a second J2 value. Open items raised on 2026-07-30 and not
 > yet resolved: the **command-to-report offset** vs `tracking_lag_s` (§1.9a) and the
-> **acceleration/jerk clamps** (see `controller_facts.py`).
+> **acceleration/jerk clamps** (see `examples/crx10ial.py`).
 
 ---
 
@@ -31,10 +31,43 @@
 | RMI protocol Major.Minor (Connect_STMO) | **9.0** (redirect port 16002) | RMI version record |
 | SM `available_version` / `sampling_rate_ms` | **v3 / 8 ms** (125 Hz). NOTE: v3 < 4 → **FSConfig(v4) N/A**; controller streams **type-202 (no force)** | version echo; 8 ms ITP |
 | J2/J3 coupled envelope (`$JNT23_UPLIM/$JNT23_LOWLI`) | **0.0 / 0.0 → INACTIVE** | context for §1.5 |
-| Joint vel limits (deg/s and rad/s) | deg/s `[120,120,180,180,180,180]`; rad/s `[2.094,2.094,3.142,3.142,3.142,3.142]` — **exact match to `controller_facts.py`** ✓ | cross-check `controller_facts.py` |
-| Joint pos limits (active vs URDF) | active lower `[-180,-180,-270,-190,-180,-225]` upper `[180,180,270,190,180,225]`; J1–J5 == URDF, **J6 URDF (±190) narrower than ctrl (±225)** = safe | SRVO-115 (flag URDF-wider) |
+| Joint vel limits (deg/s and rad/s) | deg/s `[120,120,180,180,180,180]`; rad/s `[2.0944,2.0944,3.1416,3.1416,3.1416,3.1416]` — **exact match to `examples/crx10ial.py`** ✓ | cross-check the `RobotProfile` in `examples/crx10ial.py` |
+| Joint pos limits (active vs URDF) | active lower `[-179.999,-179.999,-270,-190,-179.999,-225]` upper `[179.999,179.999,270,190,179.999,225]` — note **±179.999, not ±180**, on J1/J2/J5; J1–J5 == URDF, **J6 URDF (±190) narrower than ctrl (±225)** = safe | SRVO-115 (flag URDF-wider) |
 | DCS joint / Cartesian envelopes | joint DCS ±9999° (LIM_ENB=1, wide-open); Cartesian ±3000 mm (LIM_ENB=1, whole cell) — enabled but permissive | fallback if the §1.2 coast is ever judged insufficient (zone tightening) — **DCS is enabled, so tightening is viable** |
 | Master position / max payload | MASTER_POS `[0, 55.21, -104.852, 0, -75.148, 0]`°; MAX_PAYLOAD **10.0 kg**; TRKERRLIM 524288; `$RMI_CFG.$DISCNT_TIM = 60 min` | reference |
+
+#### 1.1a Where each of these comes from, and which are read automatically
+
+Most of §1.1 does not need transcribing: the controller serves generated diagnostic and
+variable dumps from its virtual `md:` device over FTP (anonymous, read-only), and
+`airo_fanuc.controller_probe` parses them. `python -m airo_fanuc.controller_probe --ip <addr>`
+prints the lot; `--emit-profile` prints a paste-ready `RobotProfile`.
+
+| Fact | File on `md:` | Field |
+|---|---|---|
+| P-level ("Deliver Ver") | `orderfil.dat` | `!SOF Ref5: Deliver Ver` |
+| Option list, S636 presence, model order code | `orderfil.dat` | `1A05B-…-S636 ! External Control Pkg` |
+| Model name | `version.dg` | line after `Default Personality (from FD)` |
+| Software edition / root / boot monitor / servo / DCS versions, serial | `version.dg` | labelled `Label : Value` lines |
+| `stream_motn`, `rmi_move`, `gripdisp`, `grprun` installed | `md:` listing | `*.tp` names |
+| Joint velocity limits | `symotn.va` | `$PARAM_GROUP[1].$JNTVELLIM` (deg/s, active) |
+| Joint position limits | `symotn.va` | `$PARAM_GROUP[1].$LOWERLIMS` / `$UPPERLIMS` (deg, active) |
+| Max payload | `symotn.va` | `$MRR_GRP[1].$MAX_PAYLOAD` |
+| J2/J3 coupled envelope | `symotn.va` | `$PARAM_GROUP[1].$JNT23_UPLIM` / `$JNT23_LOWLI` |
+
+Two details worth knowing:
+
+* **`$PARAM_GROUP` is degrees and RW (the active limits, what binds); `$MRR_GRP` is the same
+  three quantities in radians and RO (the model master).** The probe reads both and reports any
+  disagreement rather than picking a side — on this controller they agree exactly.
+* **The order file and `version.dg` disagree about the P-level** (V9.40/P82 vs V9.40P/84), and so
+  does the FTP login banner (`[LR V9.40P/84]`). The gate bands on the order file's Deliver Ver,
+  which is the value this section records; the probe reports the divergence rather than quietly
+  taking the more flattering number.
+
+**Still not on the controller in any form:** the **acceleration and jerk clamps**. Nothing here
+publishes a clamp equivalent, so those remain a decision — derived from the measured velocity at
+2× and 8×, recorded in `examples/crx10ial.py`, and still the open item below.
 
 **Verdict: WARN** — S636 present (options GO), but system software P-level (V9.40/P82) is in the
 P81–P83 vibration-risk WARN band, not the ≥P84 GO band. Not a hard fail (all ≥P81). Non-blocking.
@@ -60,12 +93,19 @@ deadman must be sized for ~120 ms of coast. Missed-packet tolerance empirically 
 cross-check against the J519 manual (§3).
 
 > **Driver-side handling.** The driver **accepts the bounded ~120 ms deviation-triggered
-> coast as the host-death backstop** and wires **in-process C++ RT-core guards**
-> (`SUPERVISOR_LOST` + `DRIFT`, see `rt_core_config.hpp`) rather than an external
-> RMI-abort watchdog: a watchdog process on the same host dies *with* the host and is
-> slower than the coast even when it survives (see `docs/successor-invariants.md`
-> "Host-death & liveness watchdogs"). DCS zone tightening (§1.1 envelope) remains
-> available as a further mitigation but is not wired.
+> coast as the host-death backstop** and wires an **in-process C++ RT-core guard**
+> (`SUPERVISOR_LOST`, see `rt_core_config.hpp`) rather than an external RMI-abort
+> watchdog: a watchdog process on the same host dies *with* the host and is slower than
+> the coast even when it survives (see `docs/successor-invariants.md` "Host-death &
+> liveness watchdogs"). DCS zone tightening (§1.1 envelope) remains available as a
+> further mitigation but is not wired.
+>
+> The same deviation monitor is what covers commanded↔measured divergence generally,
+> not just on TX silence: there is **no host-side divergence guard** in the driver. An
+> arm that stops following the stream accrues position error until the controller's own
+> monitor hard-stops it and drops `motion_possible` / raises `in_error` — gates the C++
+> tick reacts to within one ITP. Measured here at 71–121 ms with an overrun of 2.10°
+> @ 15.3 °/s and 4.63° @ 49.9 °/s.
 
 ### 1.3 E-stop continuation
 
@@ -178,14 +218,14 @@ and/or a force option — confirm with FANUC.
 | Fact | Value |
 |------|-------|
 | Measured tracking lag (ms) | **25.0 ms** (xcorr; a later verify run gave 20 ms → ~20–25 ms) |
-| `DriverConfig.tracking_lag_s` | **0.025** |
+| `INTERIM_FACTS.tracking_lag_s` | **0.025** |
 | Amplitude ratio | **1.000** (commanded 10.000° pk-pk, measured 9.997°) |
 | Post-stop settle: overshoot / time-to-rest | **NOT captured** — the lag measurement samples during motion only (~1 post-end sample). During-motion tracking is clean. Settle defaults (0.5° / 2 °/s / 2 s) stand pending a dedicated move-then-observe capture. |
 
-**Uses:** drift guard (`plan @ now − lag`), FakeCRX first-order-lag τ, C++ settle constants. The
-drift guard predicts the measured pose as `commanded @ (now − tracking_lag_s)`, so an overstated
-`tracking_lag_s` makes it over-predict: at roughly 4× the true lag a spurious DRIFT fault becomes
-possible above ~57–61 °/s. Hence `tracking_lag_s = 0.025`, matching the measurement.
+**Uses:** FakeCRX first-order-lag τ, and the figure the validation examples report a motion's peak
+`|q_cmd − q_meas|` against. It gates nothing — no fault threshold is derived from it and it is not
+mirrored into `DriverConfig`, so a wrong value costs accuracy in the fake and in a printed
+comparison, not safety.
 
 #### 1.9a OPEN: the observed command-to-report offset is ~3.4× `tracking_lag_s` (2026-07-30)
 
@@ -215,15 +255,77 @@ this measurement over-reads a known 25 ms by only ~4 ms. Add the wire (ping RTT 
 That is the part worth resolving, and it wants the xcorr method on logged series rather than this
 ratio.
 
-**Why it matters anyway.** The drift guard compares `q_cmd @ (now − drift_lag_ticks)` against
-`q_meas @ now`, with `drift_lag_ticks = round(0.025 / 0.008) = 3`. If the *empirical* offset is ~11
-ticks, the guard's reference sits ~8 ticks ahead of what the measurement reflects, and that residual
-counts as drift: `8 × 8 ms × v`. At the tested speeds it is negligible (0.7° at 11 °/s against
-`DRIFT_FAULT_DEG = 10`), but at this arm's 120 °/s ceiling it is ~7.7° — inside 25% of a false DRIFT
-fault, in the false-positive direction. **Resolve before running fast moves (>50 °/s):** log q_cmd
-and q_meas through a swept-speed move, cross-correlate, and re-derive `tracking_lag_s` (and hence
-`drift_lag_ticks`) from that. Until then the guard is a bound with less margin than its constants
-imply, not a wrong bound.
+**What it costs.** Nothing in the driver is gated on this number (see §1.9 **Uses**), so the ~50 ms
+is an accuracy question, not a safety one: the FakeCRX plant is τ = 25 ms where the real command→report
+path measures ~85 ms, and the examples' printed lag comparison is correspondingly optimistic. **To
+settle it:** log `q_cmd` and `q_meas` through a swept-speed move and cross-correlate, which separates
+the servo lag from the status pipeline instead of lumping them as this ratio does.
+
+### 1.10 The streamed Cartesian pose is NOT the TCP (measured 2026-07-30)
+
+The Stream Motion status packet carries a Cartesian pose (`position[9]`, XYZWPR + 3 ext, float32,
+in the shared header ahead of the force fields — so it is present at v3/type-202, unlike the
+wrench). It carries **no frame tag**. `examples/verify_tcp_frame.py` reads it along
+`FRC_ReadCartesianPosition` (§2.3.14, which *does* name its UFRAME/UTOOL) at one standstill pose:
+
+| Fact | Value |
+|------|-------|
+| Joints at the read | `[92.678, 2.595, -1.380, -45.464, -27.230, -11.037]`° |
+| Stream Motion `position` | `X 20.166  Y 703.511  Z 504.091  W -115.210  P -26.319  R 35.132` |
+| `FRC_ReadCartesianPosition` | `X -43.921  Y 852.017  Z 437.279  W -115.210  P -26.319  R 35.132` |
+| Orientation difference | **exactly 0.000° on all three angles** |
+| Position difference | **175.0001 mm**, aligned with the **tool Z axis to 0.000°** (0.0009 mm perpendicular residual) |
+| `FRC_ReadCartesianPosition` Configuration | UFRAME **0**, UTOOL **1** |
+| `FRC_GetStatus` | UFRAME **9**, UTOOL **10** ← *different numbers, same session, see 1.10a* |
+
+**The two planes differ by a pure 175.000 mm translation along tool +Z and nothing else.** A
+different UFRAME would rotate or translate the orientation too; it is bit-identical. So this is a
+*tool* difference, not a frame difference: the streamed pose sits 175 mm short of the pose RMI
+reports, i.e. **Stream Motion does not apply the tool offset that RMI applies.**
+
+**The 175 mm is the cell's Robotiq gripper** (operator-confirmed, 2026-07-30). So the RMI read is
+the gripper TCP and the Stream Motion stream is the faceplate. The driver exposes both, named for
+what they are, and neither derives the other:
+
+| Getter | Source | Cadence | Point |
+|---|---|---|---|
+| `get_tcp_pose()` | `FRC_ReadCartesianPosition` | one RMI round trip, **blocks** ~tens of ms | **tool tip**, the controller's own arithmetic with its active UTOOL |
+| `get_flange_pose()` | Stream Motion status `position` | 125 Hz seqlock read, non-blocking | **faceplate**, same packet as `q_meas` |
+
+Nothing about the tool is configured driver-side: `get_tcp_pose()` asks the control box, so changing
+the UTOOL entry on the pendant changes what it returns, with no code change and nothing to keep in
+sync. The driver therefore ships **no pose algebra at all** — the controller does the conversion, so
+duplicating it would only add a second definition of the tool that could drift from the pendant's.
+The cost is that this is the one getter on `FanucDriver` that blocks, so it does not belong in a
+control loop; a caller who needs a TCP at tick rate applies its own tool transform to
+`get_flange_pose()`, using the convention below.
+
+**Bonus, free from the same measurement: the W/P/R convention is fixed-axis XYZ**, i.e.
+`R = Rz(R)·Ry(P)·Rx(W)`. The 175 mm offset lies along that matrix's third column to 0.000°; under
+the intrinsic `Rx·Ry·Rz` reading it is 4.92° off. A 175 mm lever arm resolves the convention to
+better than a tenth of a degree, so this is settled, not assumed.
+
+#### 1.10a OPEN: does the streamed pose track the *active* UTOOL? (2026-07-30)
+
+Unresolved, and it decides how dangerous the field is. `FRC_GetStatus` reported UFRAME 9 / UTOOL 10
+while `FRC_ReadCartesianPosition` reported UFRAME 0 / UTOOL 1 **in the same session** — so "the
+active tool" is not one number on this controller, and two readings of it disagree. Two hypotheses
+fit the data equally well:
+
+* **(a) Stream Motion always reports the faceplate**, ignoring UTOOL entirely. Then the flange/TCP
+  gap is fixed at whatever UTOOL 1 holds, and `get_flange_pose()` means one thing forever.
+* **(b) Stream Motion applies the controller-active UTOOL** (10 per GetStatus), which happens to be
+  empty. Then **the meaning of the streamed pose changes the moment someone switches UTOOL**, with
+  nothing on the wire to signal it.
+
+`get_tcp_pose()` is unaffected either way — it asks the controller, so it tracks the active tool by
+construction. What is at risk is `get_flange_pose()` and any caller that composes a *fixed* tool
+transform onto it: under (b) that transform silently stops matching reality.
+
+**To resolve:** read UTOOL 1, UTOOL 10 and UFRAME 9 off the pendant (SETUP → Frames). If UTOOL 10 is
+all zeros both hypotheses still fit, so the decisive test is *active*: change the active UTOOL at the
+pendant and re-run `examples/verify_tcp_frame.py`. If the reported offset changes, it is (b). That
+run also re-measures the offset, so it is the check to repeat after any end-effector change.
 
 ---
 

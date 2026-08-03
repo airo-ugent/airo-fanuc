@@ -64,30 +64,71 @@ the package, and bring-up refuses to run if it disagrees with the period the con
 in its GetCapability reply — every per-tick quantity is scaled by it, so a mismatch means limits
 that are silently wrong by that ratio.
 
-### Injectable, CRX-defaulted
+### Injected, with no default: the arm
 
-`DriverConfig.velocity_limits`, `acceleration_limits` and `jerk_limits` are ordinary constructor
-fields. They *default* to `controller_facts.CRX10IAL_VELOCITY_LIMITS` /
-`CRX10IAL_ACCELERATION_LIMITS` / `CRX10IAL_JERK_LIMITS`, which describe a CRX-10iA/L — swap them
-per arm.
+The arm's motion envelope — velocity, acceleration and jerk clamps plus joint position limits —
+is a `RobotProfile`, and `DriverConfig(profile=...)` **requires** one. The package ships the type
+and no instance, deliberately: those limits are the ceiling the RT core clamps against, this
+driver cannot ask the controller which robot is attached, and a default would silently apply
+limits somebody else measured on a different arm.
 
-Read the comment block above those fields in `src/airo_fanuc/controller_facts.py` before you
-trust them anywhere. In summary: velocity comes straight off FANUC Europe datasheet
-**MDS-04018**; acceleration and jerk are engineering *derivations* from it (2× velocity and 8×
-acceleration respectively). FANUC does publish accelerations for this arm too — in a file inside
-this repo's own vendored submodule,
+Most of a profile does not have to be written by hand, because the controller already knows the
+answer. It serves its own configuration over FTP, and `airo_fanuc.controller_probe` reads it:
+
+```bash
+python -m airo_fanuc.controller_probe --ip 192.168.1.100 --emit-profile
+```
+
+That prints the controller's model, software P-level, ordered options (so **S636** presence is a
+lookup rather than a claim), which teach-pendant programs are installed, and its **active joint
+velocity and position limits** — followed by a paste-ready `RobotProfile`. Read-only: it fetches
+diagnostic files from the virtual `md:` device and writes nothing, touching neither motion nor
+RMI nor Stream Motion. What it *cannot* supply is the acceleration and jerk clamps, because the
+controller publishes no clamp equivalent; those are derived from the measured velocity by an
+explicit rule and the profile's `source` string records which half is which.
+
+`DriverPolicy(preflight_full=True)` closes the loop at bring-up: it re-reads the controller, bands
+the P-level, checks the option and TP programs, and warns when the supplied profile has drifted
+from the limits the controller says it is enforcing — naming the direction, since a profile
+*wider* than the controller is the dangerous one. It flags and never adopts: the controller is
+authoritative about what it will allow, but overwriting a configured clamp mid-bring-up would
+change the envelope under a caller who never asked. The probe is deliberately off the per-connect
+path — `symotn.va` is ~650 kB, about 3 s on a point-to-point link.
+
+`examples/crx10ial.py` is the written-down result for the CRX-10iA/L this driver has been run
+against, and is the file to copy for another model. Keeping it in the repo rather than probing at
+start-up is what makes a `--fake` run possible with no controller to ask, the numbers reviewable
+in a diff, and a run reproducible against a controller whose settings have since changed.
+
+Read it before trusting the numbers anywhere. In summary: velocity is the controller's own
+`$PARAM_GROUP` value, which happens to match FANUC Europe datasheet **MDS-04018** exactly;
+acceleration and jerk are engineering *derivations* from it (2× velocity and 8× acceleration).
+FANUC does publish accelerations for this
+arm too — in a file inside this repo's own vendored submodule,
 `vendor/fanuc_driver/fanuc_moveit_config/config/joint_limits.yaml` — and those are 6–16× lower,
-with velocities matching exactly. The module records why that is not simply a bug to patch:
+with velocities matching exactly. The profile records why that is not simply a bug to patch:
 FANUC's figures are *planning* limits (a profile a planner shapes trajectories to) while these
 are *clamps* (the ceiling above which the RT core refuses to pass a command through), so they
-are deliberately looser. Whether the gap is the right size is an **open question** flagged in
-the comment, to be resolved by measuring this controller rather than by picking one of the two
-numbers.
+are deliberately looser. Whether the gap is the right size is an **open question** flagged there,
+to be resolved by measuring this controller rather than by picking one of the two numbers.
 
 One related caveat, also documented there: a planner feeding this driver should shape
 trajectories with a *softer* jerk than the clamp (~3× acceleration rather than 8×). The CRX
 collaborative-stop monitor infers contact force from motor disturbance torque, so a sharp jerk
 ramp reads as a phantom contact mid-transit. Jerk is the trip trigger; acceleration is not.
+
+Profiles are written in degrees (`RobotProfile.from_degrees`), the unit of both the datasheet and
+the controller's system variables, and stored in radians. `DriverConfig.to_rt_core_config()`
+carries them into the C++ tick engine, which is the thing that actually enforces them; the C++
+struct's own defaults are a synthetic envelope that exists only so the tick-engine math is
+testable stand-alone.
+
+What stays in the package is everything that is *not* a property of the arm:
+`controller_facts.py` holds the controller-class protocol facts (the 8 ms interpolation period,
+the Stream Motion dataStyle word), the facts measured on our specific controller, and this
+driver's own tuning — the brake scales, the capture window, the RX-silence ladder and watchdog
+thresholds, which are fractions of a profile's limits rather than limits themselves and so carry
+across arms unchanged.
 
 ### Baked in: six joints
 
@@ -295,17 +336,26 @@ resolves to a non-raising `MotionResult` (`DONE`, `SETTLE_TIMEOUT`, `STOPPED`, `
 `FAULTED`, `REJECTED`). Skip `.wait()` for the non-blocking form and poll `.done()` /
 `.result()`. `driver.stop_j()` is callable from any thread, takes effect within one tick, never
 raises, and resolves a waiting handle as `STOPPED` — a clean preempt, not a fault, so the caller
-can replan from rest. For streaming an externally planned sequence,
-`driver.servo_j(q, duration, qd=..., qdd=...)` is the replace-not-queue path.
+can replan from rest. For streaming an externally planned
+sequence, `driver.servo_j(q, duration)` is the replace-not-queue path. It is **best-effort** in
+the sense UR's `servoj` is: head for this pose, with this long to do it, tracked under the servo
+limits with no promise of arriving on time or at rest, and no rejection of a target for being far
+away — falling behind means keep going, not stop. `duration` is the spacing between targets, not
+the tick. The caller owns the loop, which has two consequences worth knowing: `stop_j()` preempts
+the targets already submitted but *not* the ones the loop sends next, and ending a stream means
+letting it drain onto its last target and then calling `driver.hold()` (stop feeding alone leaves
+the core resting in SERVO indefinitely). Unlike `move_trajectory` there is no collision-check hook
+anywhere on the servo path, so setpoint sanity is the caller's job.
 
 Runnable versions of the above, including an offline `--fake` mode that needs no hardware:
 
 ```bash
 uv run python examples/move_joints.py --fake      # single-joint rest-to-rest move
 uv run python examples/sine_wave.py --fake        # dense-knot trajectory, all joints
+uv run python examples/servo_stream.py --fake     # the same path streamed via servo_j
 ```
 
-Both are also the bring-up validation scripts: each one reports what the controller said, moves,
+All three are also bring-up validation scripts: each one reports what the controller said, moves,
 and ends in a `PASS`/`FAIL` verdict with the real-time loop's measured timing.
 [`examples/README.md`](examples/README.md) is the step-by-step procedure for a first run against a
 real controller.

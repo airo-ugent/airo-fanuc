@@ -456,3 +456,38 @@ def test_gripdisp_register_happy_path() -> None:
                     break
             assert cleared
             assert c.last_gripper_command == {"action": 1, "modifier": 1}
+
+
+# ---------------------------------------------------------------------------
+# FRC_ReadCartesianPosition — the pose read that names its own frame
+# ---------------------------------------------------------------------------
+
+
+def test_read_cartesian_position_decodes_pose_and_active_frame() -> None:
+    with FakeCRXController() as c:
+        c.set_cartesian([1234.5, -678.25, 901.75, -179.5, 45.25, 90.125], utool=2, uframe=3)
+        with _client(c) as rmi:
+            pos = rmi.read_cartesian_position()
+
+    # X/Y/Z in mm, W/P/R in degrees, extended axes appended (zero on a 6-DOF arm).
+    assert pos.xyzwpr[:6] == pytest.approx([1234.5, -678.25, 901.75, -179.5, 45.25, 90.125])
+    # The reason this read exists: the pose comes tagged with the frame it is in.
+    assert (pos.uframe_number, pos.utool_number) == (3, 2)
+    assert pos.turn == (0, 0, 0)
+
+
+def test_read_cartesian_position_rejects_a_reply_missing_the_pose() -> None:
+    # Getters may return None for "no data", but an RMI read either decodes or
+    # raises — a half-populated Position block must never become a partial pose.
+    with FakeCRXController() as c:
+        orig = c.rmi._handle_read_cartesian_position
+
+        def truncated(req: dict[str, Any]) -> dict[str, Any]:
+            reply = orig(req)
+            reply["Position"] = {"X": 1.0, "Y": 2.0, "Z": 3.0}  # no W/P/R
+            return reply
+
+        c.rmi._handle_read_cartesian_position = truncated  # type: ignore[method-assign]
+        with _client(c) as rmi:
+            with pytest.raises(RmiError, match="3 of the 6 required"):
+                rmi.read_cartesian_position()

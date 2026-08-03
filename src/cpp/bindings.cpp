@@ -49,10 +49,9 @@ py::bytes py_encode_command_packet(std::uint32_t sequence_no, bool is_last_comma
 // Expose the deterministic CAPTURE-splice generator so the Python driver can
 // collision-check the EXACT knots the RT core will execute ("the checked path IS
 // the executed path" — see the capture.hpp header note and
-// docs/successor-invariants.md, "Collision-check hook"). Uses a default
-// TickEngineConfig, whose capture/limit fields mirror controller_facts and equal
-// the RT core's embedded cfg.tick (RtCoreConfig does not expose the tick config to
-// Python, so both sides use the same defaults → byte-identical output).
+// docs/successor-invariants.md, "Collision-check hook"). The caller passes the same
+// RtCoreConfig the core was built from, so the splice is synthesized under the
+// arm's own limits rather than the C++ fallback defaults.
 py::dict py_generate_capture_path(const std::vector<double>& q_cmd, const std::vector<double>& qd_cmd,
                                   const std::vector<double>& q0, const std::vector<double>& qd0,
                                   const std::optional<airo_fanuc::rt_core::RtCoreConfig>& config) {
@@ -155,6 +154,19 @@ py::list vec6_to_list(const Vec6& v) {
   py::list out;
   for (double x : v) out.append(x);
   return out;
+}
+
+// Same as to_vec6, naming the field in the error. Used by the RtCoreConfig limit
+// setters, where three same-shaped vectors are assignable and "a length-6 vector" on
+// its own would not say which one was wrong. A short list raises instead of copying
+// what fits, which would leave the trailing joints clamped by a default the caller
+// never chose.
+Vec6 to_vec6_named(const std::vector<double>& v, const char* what) {
+  if (v.size() != static_cast<std::size_t>(kNumJoints)) {
+    throw std::invalid_argument(std::string(what) + " needs " + std::to_string(kNumJoints) +
+                                " values (one per joint), got " + std::to_string(v.size()));
+  }
+  return to_vec6(v);
 }
 
 class StreamCore {
@@ -351,8 +363,9 @@ PYBIND11_MODULE(_core, m) {
         "Synthesize the deterministic CAPTURE splice (q_cmd,qd_cmd)->(q0,qd0) the RT core will "
         "execute. Returns {would_reject, count, finished, overflow, q, qd} — the same code path "
         "as the RT execution so the Python collision check IS the executed path. Pass the same "
-        "RtCoreConfig the core was constructed with; omitting it uses the shipped defaults, which "
-        "only matches a core built from a default RtCoreConfig.");
+        "RtCoreConfig the core was constructed with — the splice is bounded by the arm limits it "
+        "carries, so omitting it synthesizes under the synthetic C++ fallback envelope instead and "
+        "matches only a core built from a default RtCoreConfig.");
 
   // -------------------------------------------------------------------------
   // RT core: StreamCore + RtCoreConfig + mode/fault/status enums.
@@ -378,7 +391,6 @@ PYBIND11_MODULE(_core, m) {
       .value("SAFETY_CLAMP", rt::FaultReason::SAFETY_CLAMP)
       .value("RX_SILENT", rt::FaultReason::RX_SILENT)
       .value("RX_DEGRADED", rt::FaultReason::RX_DEGRADED)
-      .value("DRIFT", rt::FaultReason::DRIFT)
       .value("WATCHDOG_EXPIRED", rt::FaultReason::WATCHDOG_EXPIRED)
       .value("FORCE_GUARD", rt::FaultReason::FORCE_GUARD)
       .value("REJECTED_START_MISMATCH", rt::FaultReason::REJECTED_START_MISMATCH)
@@ -404,6 +416,52 @@ PYBIND11_MODULE(_core, m) {
       .def_property(
           "itp_s", [](const rt::RtCoreConfig& c) { return c.tick.itp_s; },
           [](rt::RtCoreConfig& c, double v) { c.tick.itp_s = v; })
+      // The arm's motion envelope (rad/s, rad/s², rad/s³), one value per joint. The
+      // C++ defaults are a synthetic envelope for the stand-alone tick-engine tests;
+      // `DriverConfig.to_rt_core_config` overwrites all three from the caller's
+      // RobotProfile, and these are the values the trajectory, servo, brake, capture
+      // and slew stages all clamp against.
+      .def_property(
+          "velocity_limits", [](const rt::RtCoreConfig& c) { return vec6_to_list(c.tick.limits.v); },
+          [](rt::RtCoreConfig& c, const std::vector<double>& v) {
+            c.tick.limits.v = to_vec6_named(v, "velocity_limits");
+          })
+      .def_property(
+          "acceleration_limits", [](const rt::RtCoreConfig& c) { return vec6_to_list(c.tick.limits.a); },
+          [](rt::RtCoreConfig& c, const std::vector<double>& v) {
+            c.tick.limits.a = to_vec6_named(v, "acceleration_limits");
+          })
+      // Joint position limits (rad). Default ±inf in the C++ core — a driver sets the
+      // arm's real values from its RobotProfile; see Limits::pos_lo.
+      .def_property(
+          "position_limits_lower",
+          [](const rt::RtCoreConfig& c) { return vec6_to_list(c.tick.limits.pos_lo); },
+          [](rt::RtCoreConfig& c, const std::vector<double>& v) {
+            c.tick.limits.pos_lo = to_vec6_named(v, "position_limits_lower");
+          })
+      .def_property(
+          "position_limits_upper",
+          [](const rt::RtCoreConfig& c) { return vec6_to_list(c.tick.limits.pos_hi); },
+          [](rt::RtCoreConfig& c, const std::vector<double>& v) {
+            c.tick.limits.pos_hi = to_vec6_named(v, "position_limits_upper");
+          })
+      .def_property(
+          "jerk_limits", [](const rt::RtCoreConfig& c) { return vec6_to_list(c.tick.limits.j); },
+          [](rt::RtCoreConfig& c, const std::vector<double>& v) {
+            c.tick.limits.j = to_vec6_named(v, "jerk_limits");
+          })
+      // Fractions of those limits, not limits themselves: the brake envelope and the
+      // per-tick slew clip. Arm-independent, but they multiply the limits above, so
+      // they travel with them.
+      .def_property(
+          "stop_scale_va", [](const rt::RtCoreConfig& c) { return c.tick.stop_scale_va; },
+          [](rt::RtCoreConfig& c, double v) { c.tick.stop_scale_va = v; })
+      .def_property(
+          "stop_scale_j", [](const rt::RtCoreConfig& c) { return c.tick.stop_scale_j; },
+          [](rt::RtCoreConfig& c, double v) { c.tick.stop_scale_j = v; })
+      .def_property(
+          "slew_factor", [](const rt::RtCoreConfig& c) { return c.tick.slew_factor; },
+          [](rt::RtCoreConfig& c, double v) { c.tick.slew_factor = v; })
       .def_readwrite("rx_silence_blind_hold_ms", &rt::RtCoreConfig::rx_silence_blind_hold_ms)
       .def_readwrite("rx_silence_qd_ramp_ms", &rt::RtCoreConfig::rx_silence_qd_ramp_ms)
       .def_readwrite("rx_silent_park_ms", &rt::RtCoreConfig::rx_silent_park_ms)
@@ -412,9 +470,6 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("safe_follow_deadband_rad", &rt::RtCoreConfig::safe_follow_deadband_rad)
       .def_readwrite("safety_scale_min", &rt::RtCoreConfig::safety_scale_min)
       .def_readwrite("supervisor_lost_s", &rt::RtCoreConfig::supervisor_lost_s)
-      .def_readwrite("drift_lag_ticks", &rt::RtCoreConfig::drift_lag_ticks)
-      .def_readwrite("drift_fault_rad", &rt::RtCoreConfig::drift_fault_rad)
-      .def_readwrite("drift_fault_ticks", &rt::RtCoreConfig::drift_fault_ticks)
       .def_readwrite("preroll_timeout_s", &rt::RtCoreConfig::preroll_timeout_s)
       .def_readwrite("rt_priority", &rt::RtCoreConfig::rt_priority)
       .def_readwrite("sched_fifo", &rt::RtCoreConfig::sched_fifo)

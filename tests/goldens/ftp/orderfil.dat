@@ -1,0 +1,33 @@
+!Orderfile Header       - 
+!SOF Ref0: Reference    - 0000000000
+!SOF Ref1: Request Date - 26/01/2026
+!SOF Ref2: Requested By - FANUC Example
+!SOF Ref3: Customer     - Example Customer
+!SOF Ref4: Ship to      - Example Customer
+!SOF Ref5: Deliver Ver  - V9.40/P82
+!SOF Ref6: Robot F/E No - E000000
+!SOF Ref7: SOF Filename - 0000#0000
+!Orderfile Starts
+1A05B-2680-H510#7DF5 ! Basic Software
+1A05B-2600-H521 ! Basic dictionary(ENGL
+1A05B-2680-H551 ! LR HandlingTool
+1A05B-2680-H705 ! CRX-10iA/L
+1A05B-2600-H930 ! Digital servo function
+1A05B-2600-J508 ! Customer Reg
+1A05B-2670-J766 ! Maint Reminder Plus
+1A05B-2600-R558 ! Internet Conn/Custo
+1A05B-2600-R651 ! FRL Params
+1A05B-2600-R765 ! iRDiagnostics
+1A05B-2680-S526 ! Mini Controller
+1A05B-2680-S569 ! Wrist Button Function
+1A05B-2600-S628 ! Disable CRX ExcNR.
+!Option added by AW on 26/01/2026
+1A05B-2600-J567 ! DCS Pos./Speed check
+1A05B-2600-J684 ! Collision Guard Pack
+1A05B-2600-R577 ! Menu Utility
+1A05B-2600-R665 ! Alarm Cause/Remedy
+1A05B-2600-S568 ! ROS 2 Package
+!Option added by AW on 27/03/2026
+1A05B-2600-S636 ! External Control Pkg
+ZZZZZZZZZZZZZZZZZZZZZZZZ
+BYS00000

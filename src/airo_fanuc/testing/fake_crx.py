@@ -33,6 +33,7 @@ behavior, every downstream test inherits the lie, so it fails loudly instead.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -108,6 +109,29 @@ class ControllerState:
         self.force: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self.moment: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self.fs_type: int = FS_TYPE_EMBEDDED
+
+        # FACEPLATE Cartesian pose: X, Y, Z (mm), W, P, R (deg), then 3 extended axes.
+        # This is what the SM status `position` block streams — measured on the real
+        # controller, that block is the faceplate and NOT the tool tip
+        # (controller-notes.md §1.10).
+        #
+        # The fake does NO forward kinematics: this is whatever a test injects, so it
+        # does not track `plant` joints. That bounds what a fake-based test can prove —
+        # that the pose survives the wire, the decode and the seqlock publish.
+        self.cartesian: tuple[float, ...] = (0.0,) * N_AXES
+
+        # TOOL-TIP Cartesian pose, reported by FRC_ReadCartesianPosition. Held
+        # SEPARATELY from `cartesian` rather than derived from it, because the fake
+        # computes nothing — and because the split is the point: on the physical
+        # controller the RMI read applies the active tool and the SM stream does not,
+        # 175 mm apart on this cell (§1.10). `None` means "same as the faceplate",
+        # which is what a controller with an empty UTOOL reports.
+        self.cartesian_tcp: tuple[float, ...] | None = None
+
+        # Active frame/tool numbers, reported by FRC_GetStatus and named in the
+        # FRC_ReadCartesianPosition Configuration block.
+        self.number_utool: int = 1
+        self.number_uframe: int = 1
 
         # Coupling flags.
         self.stream_started: bool = False  # SM StartPacket accepted
@@ -351,6 +375,51 @@ class FakeCRXController:
     def set_moment(self, mx: float, my: float, mz: float) -> None:
         with self.state.lock:
             self.state.moment = (float(mx), float(my), float(mz))
+
+    def set_cartesian(
+        self,
+        xyzwpr: Sequence[float],
+        *,
+        utool: int | None = None,
+        uframe: int | None = None,
+    ) -> None:
+        """Set the FACEPLATE pose the SM plane streams: X, Y, Z (mm), W, P, R (deg).
+
+        Accepts 6 values (extended axes zero-filled) or all :data:`N_AXES`. The fake
+        does no FK, so this does not follow the plant — see
+        :attr:`ControllerState.cartesian`. ``FRC_ReadCartesianPosition`` reports
+        :meth:`set_cartesian_tcp` instead, or this pose if none was set.
+        """
+        values = [float(v) for v in xyzwpr]
+        if len(values) not in (6, N_AXES):
+            raise ValueError(f"set_cartesian: expected 6 or {N_AXES} values (got {len(values)})")
+        values += [0.0] * (N_AXES - len(values))
+        with self.state.lock:
+            self.state.cartesian = tuple(values)
+            if utool is not None:
+                self.state.number_utool = int(utool)
+            if uframe is not None:
+                self.state.number_uframe = int(uframe)
+
+    def set_cartesian_tcp(self, xyzwpr: Sequence[float] | None) -> None:
+        """Set the TOOL-TIP pose ``FRC_ReadCartesianPosition`` reports (mm / deg).
+
+        Independent of :meth:`set_cartesian` on purpose — the fake computes no tool
+        composition, it just serves the two poses it was given, which is how the real
+        controller behaves (the RMI read applies the active tool, the SM stream does
+        not; controller-notes.md §1.10). ``None`` makes the RMI read report the
+        faceplate, as a controller with an empty UTOOL does.
+        """
+        if xyzwpr is None:
+            with self.state.lock:
+                self.state.cartesian_tcp = None
+            return
+        values = [float(v) for v in xyzwpr]
+        if len(values) not in (6, N_AXES):
+            raise ValueError(f"set_cartesian_tcp: expected 6 or {N_AXES} values (got {len(values)})")
+        values += [0.0] * (N_AXES - len(values))
+        with self.state.lock:
+            self.state.cartesian_tcp = tuple(values)
 
     def drop_motion_possible(self) -> None:
         with self.state.lock:

@@ -62,7 +62,6 @@ struct ConsumeResult {
   bool accepted{false};
   bool rejected_stale{false};     // tagged epoch < live epoch (structurally unexecutable)
   bool rejected_capture{false};   // |q_cmd − q0| > capture_tol (REJECTED_START_MISMATCH)
-  bool rejected_servo{false};     // |q_target − q_cmd| > servo_window
   std::uint64_t motion_id{0};
 };
 
@@ -128,7 +127,6 @@ class TickCore {
   void handle_rx_silence();                      // graduated 100 ms / 500 ms escalation
   void handle_deadman();                         // TRAJECTORY-only caller-fed watchdog
   void handle_supervisor_liveness();             // heartbeat-fed watchdog → FAULTED(SUPERVISOR_LOST)
-  void handle_drift(const RxSample& rx);         // lag-aligned commanded↔measured divergence → FAULTED(DRIFT)
   void handle_force_guard(const RxSample& rx);   // armed-per-motion |F| threshold
   ConsumeResult consume(const Target& t, bool superseded_by_stop);  // epoch-checked mailbox pop
   Vec6 dispatch_mode();                          // produce the desired (pre-slew) command
@@ -229,13 +227,6 @@ class TickCore {
   bool heartbeated_{false};          // beat drained at tick start
   bool supervisor_hb_armed_{false};  // armed after the supervisor's FIRST beat
   int ticks_since_heartbeat_{0};
-
-  // --- drift guard (DRIFT): small ring of recent commanded poses for lag alignment ---
-  static constexpr int kDriftRingCap = 16;  // must exceed any drift_lag_ticks
-  std::array<Vec6, kDriftRingCap> drift_ring_{};
-  int drift_ring_head_{0};    // index of the next write slot
-  int drift_ring_count_{0};   // valid entries (saturates at kDriftRingCap)
-  int drift_ticks_{0};        // consecutive over-threshold fresh-RX ticks
 
   // --- force-guard ---
   bool force_armed_{false};

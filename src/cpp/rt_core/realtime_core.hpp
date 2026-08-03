@@ -103,8 +103,8 @@ class RealtimeCore {
                                   double settle_vel_eps_rad_s, double settle_timeout_s, double force_stop_n,
                                   double deadman_s);
   std::uint64_t submit_servo(const Vec6& q, double duration_s);
-  // Feed-forward servo: qd/qdd become the Ruckig target velocity/acceleration (see the
-  // Target::servo_has_ff note). Same replace-not-queue / distance-guard semantics.
+  // Feed-forward overload: qd/qdd are accepted and currently ignored (see the
+  // Target::servo_qd note). Identical behaviour to the position-only overload.
   std::uint64_t submit_servo(const Vec6& q, const Vec6& qd, const Vec6& qdd, double duration_s);
   std::uint64_t submit_brake();
   std::uint64_t submit_hold();

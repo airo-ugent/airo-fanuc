@@ -5,7 +5,6 @@
 #include "tick_engine/servo.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <optional>
 
 namespace airo_fanuc::tick_engine {
@@ -19,7 +18,6 @@ void Servo::start(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& qdd_cmd) {
     inp_.max_acceleration[j] = cfg_.servo_limit_scale * cfg_.limits.a[j];
     inp_.max_jerk[j] = cfg_.servo_limit_scale * cfg_.limits.j[j];
   }
-  prev_target_ = q_cmd;
 
   // Initial state = current commanded; initial target = hold at q_cmd.
   inp_.current_position = q_cmd;
@@ -32,60 +30,29 @@ void Servo::start(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& qdd_cmd) {
   active_ = true;
 }
 
-ServoAccept Servo::set_target(const Vec6& q_target, double duration_s) {
-  // Distance guard: compare against the CURRENT commanded position
-  // (inp_.current_position is kept current by pass_to_input each step()).
+void Servo::set_target(const Vec6& q_target, double duration_s) {
+  // Clamp the destination into the arm's soft limits. This is a real clamp, not a
+  // reject: best effort means a setpoint past a stop is followed as far as the stop
+  // and no further, which is also what makes it safe to stream IK solutions that
+  // occasionally wander out of range. The commanded output is clamped again on the
+  // way to the wire (tick_core), because a profile aiming AT a limit can still
+  // overshoot it in transit.
   for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
-    if (std::abs(q_target[j] - inp_.current_position[j]) > cfg_.servo_window_rad) {
-      return ServoAccept::kRejectedDistance;
-    }
+    inp_.target_position[j] = std::clamp(q_target[j], cfg_.limits.pos_lo[j], cfg_.limits.pos_hi[j]);
   }
-
-  const double inv_dur = (duration_s > 0.0) ? (1.0 / duration_s) : 0.0;
-  for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
-    // Velocity feedforward = clamp((q_new − q_prev)/duration, ±v_lim·scale).
-    const double v_lim = cfg_.servo_limit_scale * cfg_.limits.v[j];
-    double ff = (q_target[j] - prev_target_[j]) * inv_dur;
-    ff = std::clamp(ff, -v_lim, v_lim);
-    inp_.target_velocity[j] = ff;
-  }
-  inp_.target_position = q_target;
+  // No arrival state is demanded — see BEST EFFORT in servo.hpp. Written on every
+  // target rather than once in start(), so the property holds for the whole stream
+  // and not merely until something else touches the input.
+  inp_.target_velocity = Vec6{};
   inp_.target_acceleration = Vec6{};
   // minimum_duration = the call's duration (== the servo update period, i.e. the
-  // spacing between set_target calls). It BINDS only when the time-optimal profile
-  // would be shorter than `duration` — exactly the reach-early case it exists to
-  // fix (kills the freeze-until-next-target sawtooth). Replace-not-queue: this
-  // just updates the target; the next step() re-plans from the current commanded
-  // state (Ruckig online).
+  // spacing between set_target calls). It BINDS whenever the time-optimal profile
+  // would be shorter than `duration`, which for the small steps a stream is made of
+  // is essentially always — and that is what keeps the command gliding between
+  // targets instead of arriving early and dwelling (the sawtooth). Replace-not-queue:
+  // this just updates the target, which is the ONLY thing that makes Ruckig
+  // recalculate; the 2-3 ticks that follow sample the plan it produces.
   inp_.minimum_duration = (duration_s > 0.0) ? std::optional<double>(duration_s) : std::nullopt;
-
-  prev_target_ = q_target;
-  return ServoAccept::kOk;
-}
-
-ServoAccept Servo::set_target(const Vec6& q_target, const Vec6& qd_target,
-                              const Vec6& qdd_target, double duration_s) {
-  // Distance guard — identical to the position-only overload.
-  for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
-    if (std::abs(q_target[j] - inp_.current_position[j]) > cfg_.servo_window_rad) {
-      return ServoAccept::kRejectedDistance;
-    }
-  }
-
-  // Feed-forward directly from the caller's planned derivatives (clamped to the servo
-  // limits), instead of the secant reconstruction + zero target acceleration. This is
-  // what lets Ruckig reproduce a smooth externally-planned trajectory faithfully.
-  for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
-    const double v_lim = cfg_.servo_limit_scale * cfg_.limits.v[j];
-    const double a_lim = cfg_.servo_limit_scale * cfg_.limits.a[j];
-    inp_.target_velocity[j] = std::clamp(qd_target[j], -v_lim, v_lim);
-    inp_.target_acceleration[j] = std::clamp(qdd_target[j], -a_lim, a_lim);
-  }
-  inp_.target_position = q_target;
-  inp_.minimum_duration = (duration_s > 0.0) ? std::optional<double>(duration_s) : std::nullopt;
-
-  prev_target_ = q_target;
-  return ServoAccept::kOk;
 }
 
 ServoStep Servo::step() {
@@ -102,8 +69,10 @@ ServoStep Servo::step() {
     s.qd = out_.new_velocity;
     s.qdd = out_.new_acceleration;
     // Feed the new state back as the current state (canonical Ruckig online
-    // pattern). This is what advances the trajectory; without it Ruckig
-    // re-plans from the same start every tick (frozen output).
+    // pattern), so the next set_target plans from where the command actually is.
+    // It does NOT by itself force a recalculation — Ruckig reconciles the state it
+    // produced itself, so a tick with no fresh target just advances the existing
+    // plan (measured: recalculations == targets, not == ticks).
     out_.pass_to_input(inp_);
   } else {
     s.error = true;

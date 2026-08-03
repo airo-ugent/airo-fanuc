@@ -274,6 +274,7 @@ class FakeRmiServer:
             "FRC_ReadRegister": self._handle_read_register,
             "FRC_WriteRegister": self._handle_write_register,
             "FRC_ReadJointAngles": self._handle_read_joint_angles,
+            "FRC_ReadCartesianPosition": self._handle_read_cartesian_position,
         }.get(cmd)
         if handler is None:
             return self._echo(req, error_id=0)
@@ -331,6 +332,42 @@ class FakeRmiServer:
             "JointAngle": joint_angle,
         }
 
+    def _handle_read_cartesian_position(self, req: dict[str, Any]) -> dict[str, Any]:
+        # Reports the TOOL TIP (`cartesian_tcp`), which is a DIFFERENT pose from the
+        # faceplate the SM plane streams — measured on the physical controller, this
+        # read applies the active tool and the SM stream does not (controller-notes.md
+        # §1.10). A fake serving one array to both planes would hide the exact trap
+        # FanucDriver.get_tcp_pose exists to avoid. Falls back to the faceplate when no
+        # TCP was injected, as a controller with an empty UTOOL does. Configuration
+        # carries the active frame/tool numbers, which SM's pose block has no
+        # equivalent of.
+        with self._state.lock:
+            pose = list(self._state.cartesian_tcp or self._state.cartesian)
+            utool = int(self._state.number_utool)
+            uframe = int(self._state.number_uframe)
+        names = ("X", "Y", "Z", "W", "P", "R", "Ext1", "Ext2", "Ext3")
+        position = {name: pose[idx] for idx, name in enumerate(names) if idx < len(pose)}
+        with self._lock:
+            tag = self._joint_time_tag
+            self._joint_time_tag += 1
+        return {
+            "Command": "FRC_ReadCartesianPosition",
+            "ErrorID": 0,
+            "TimeTag": tag,
+            "Configuration": {
+                "UToolNumber": utool,
+                "UFrameNumber": uframe,
+                "Front": 1,
+                "Up": 1,
+                "Left": 0,
+                "Flip": 1,
+                "Turn4": 0,
+                "Turn5": 0,
+                "Turn6": 0,
+            },
+            "Position": position,
+        }
+
     def _handle_get_status(self, req: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             st = self._state
@@ -343,9 +380,9 @@ class FakeRmiServer:
                 "RMIMotionStatus": 0,
                 "ProgramStatus": 1 if st.stream_motn_launched else 0,
                 "SingleStepMode": 0,
-                "NumberUTool": 1,
+                "NumberUTool": int(st.number_utool),
                 "NextSequenceID": self._next_sequence_id,
-                "NumberUFrame": 1,
+                "NumberUFrame": int(st.number_uframe),
                 "Override": int(st.gen_override_pct),
             }
         return reply

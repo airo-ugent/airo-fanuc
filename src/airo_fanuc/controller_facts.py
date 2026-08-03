@@ -1,20 +1,29 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Single source of truth for CRX-10iA/L kinematic limits and measured controller facts.
+"""Single source of truth for measured controller facts and this driver's own tuning.
 
-Every constant whose *true* value is measured on the physical controller lives here,
-each carrying a ``MEASURED`` marker and the observation that produced it. The values
-below were transcribed from a hardware-in-the-loop probe run on 2026-07-06
-(``confirmed=True``). Two facts are still UNVERIFIED and keep their safe defaults:
-e-stop continuation path A (unprovable during the probe — the Stream Motion status
-feed never came up) and the J2/J3 representation (never exercised on hardware). If a
-value here ever changes, update it in ONE place (this module) and re-run the affected
-tests.
+Two kinds of constant live here, and neither is a property of the *arm*:
 
-Do NOT scatter these numbers across the C++ core, the FakeCRX plant, or the supervisor —
-they flow from here into ``DriverConfig`` (Python) and are passed into the C++ ``StreamCore``
-at construction. The C++ side holds only mirror-comment copies used by its own unit tests;
-if you change a value here that a C++ test hardcodes, grep ``controller_facts`` in the C++
-tree and update the mirror comment + test.
+* **Measured controller facts** — values whose true value was read off the physical
+  controller, each carrying a ``MEASURED`` marker and the observation that produced
+  it. They were transcribed from a hardware-in-the-loop probe run on 2026-07-06
+  (``confirmed=True``). One fact is still UNVERIFIED and keeps its safe default:
+  e-stop continuation path A, unprovable during the probe because the Stream Motion
+  status feed never came up.
+* **Driver tuning** — the brake scales, capture and servo windows, RX-silence ladder,
+  anti-flap dwell and watchdog thresholds. Chosen against those measurements, but they
+  are decisions rather than observations, and they carry across FANUC models unchanged.
+
+The arm's own motion envelope is NOT here: velocity, acceleration and jerk clamps plus
+joint position limits vary per robot model, so they are injected by the caller as an
+:class:`airo_fanuc.robot_profile.RobotProfile`. ``examples/crx10ial.py`` builds one for
+the CRX-10iA/L these examples run on.
+
+If a value here ever changes, update it in ONE place (this module) and re-run the
+affected tests. Do NOT scatter these numbers across the C++ core, the FakeCRX plant or
+the supervisor — they flow from here into ``DriverConfig`` (Python) and are passed into
+the C++ ``StreamCore`` at construction. The C++ side holds only mirror-comment copies
+used by its own unit tests; if you change a value here that a C++ test hardcodes, grep
+``controller_facts`` in the C++ tree and update the mirror comment + test.
 
 The narrative behind these facts — alarm texts, recovery procedures, the raw probe
 observations — is in ``docs/controller-notes.md``.
@@ -23,8 +32,6 @@ observations — is in ``docs/controller-notes.md``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-import numpy as np
 
 # ---------------------------------------------------------------------------
 # Stream Motion timing (fixed by the R-30iB controller class; not a measured unknown)
@@ -41,57 +48,12 @@ STREAM_RATE_HZ: float = 125.0
 COMMAND_DATA_STYLE: int = 0xFFFF
 
 # ---------------------------------------------------------------------------
-# CRX-10iA/L kinematic limits (rad, rad/s, rad/s², rad/s³)
+# Brake / slew envelope
 #
-# THE single source of truth for this arm's limits. Everything downstream derives
-# from here: the C++ tick engine brakes with these values, and any consumer that
-# needs a motion envelope (a planner's cspace limits, say) should read them from this
-# module rather than restating them.
-#
-# Only velocity comes straight off a FANUC datasheet; acceleration and jerk are
-# engineering derivations, so the reasoning is recorded rather than just the numbers:
-#
-#   * Velocity — FANUC Europe datasheet MDS-04018: J1,J2 = 120°/s; J3-J6 = 180°/s.
-#   * Acceleration = 2× velocity (~1 s to reach max velocity, typical for cobots).
-#     Universal Robots' joint-health guidance recommends ≤5.2 rad/s² (300°/s²) and
-#     Franka Panda specs 15 rad/s², so these sit at the conservative end.
-#   * Jerk = 8× acceleration (~0.125 s to max accel). Conservative; some aggressive
-#     cobot configs target ~33× accel.
-#
-# FANUC does also publish accelerations for this arm, and they are much lower than
-# these: the vendored MoveIt config
-# (`vendor/fanuc_driver/fanuc_moveit_config/config/joint_limits.yaml`, headed "Joint
-# limits for CRX-10iA and CRX-10iA/L") gives max_acceleration 0.4 rad/s² for J1-J3 and
-# 1.0 rad/s² for J4-J6, with velocities identical to ours — i.e. 6-16× below the
-# derived values here. The two numbers are not the same kind of thing: FANUC's are
-# *planning* limits, a target profile a planner shapes trajectories to, whereas these
-# are *clamps* — the ceiling above which the RT core refuses to pass a command
-# through — so they are deliberately looser, to avoid silently mangling a legitimate
-# planned motion. Whether that gap is the right size is an OPEN QUESTION: what this
-# controller actually tolerates has not been measured, and if a measurement lands near
-# FANUC's planning figures then these clamps are too permissive to be a useful net.
-# Resolve it with hardware measurement, not by picking one of the two numbers.
-#
-# A planner feeding this driver should shape trajectories with a SOFTER jerk than the
-# clamp here (~3× accel rather than 8×). The CRX collaborative-stop monitor infers
-# contact force from motor disturbance torque, so a sharp jerk ramp reads as a phantom
-# contact mid-transit. Jerk is the trip trigger; acceleration is not.
-#
-# Sources:
-#   * FANUC Europe datasheet MDS-04018 (CRX-10iA family)
-#   * vendor/fanuc_driver/fanuc_moveit_config/config/joint_limits.yaml (FANUC's own
-#     published planning velocity + acceleration limits)
-#   * https://forum.universal-robots.com/t/maximum-axis-speed-acceleration/13338
-#   * https://answers.ros.org/question/406533/how-to-make-fanuc-crx-10ial-move-faster/
-#
-# Worth cross-checking on any new controller: the active limits it reports in
-# $PARAM_GROUP / $MRR_GRP.$JNTVELLIM may differ from the datasheet. Flag any
-# divergence but do NOT auto-adopt it.
+# Fractions of the arm's limits rather than limits themselves, which is why they live
+# here and not in a RobotProfile: they express how hard THIS DRIVER is willing to push
+# a given envelope, and that judgement carries across arms.
 # ---------------------------------------------------------------------------
-
-CRX10IAL_VELOCITY_LIMITS: np.ndarray = np.array([2.094, 2.094, 3.142, 3.142, 3.142, 3.142], dtype=np.float64)
-CRX10IAL_ACCELERATION_LIMITS: np.ndarray = 2.0 * CRX10IAL_VELOCITY_LIMITS
-CRX10IAL_JERK_LIMITS: np.ndarray = 8.0 * CRX10IAL_ACCELERATION_LIMITS
 
 # Brake / stop envelope scale factors. Split v/a vs jerk: the CRX collaborative-stop
 # monitor estimates contact force from motor disturbance torque, so a high jerk ramp reads
@@ -113,16 +75,16 @@ class P1Facts:
 
     Each field carries the observation that produced it. ``confirmed`` is ``True``
     because these values are transcribed from a hardware probe (2026-07-06) rather
-    than guessed. The two UNVERIFIED facts (e-stop continuation path A, the J2/J3
-    representation) keep their safe defaults; code paths that would be unsafe under a
-    wrong guess still assert on them (e.g. the calibration loader hard-rejects RMI
-    joints while ``rmi_joints_identical_to_stream`` is False).
+    than guessed. The one UNVERIFIED fact (e-stop continuation path A) keeps its safe
+    default; code paths that would be unsafe under a wrong guess still assert on the
+    facts they depend on (e.g. the calibration loader hard-rejects RMI joints while
+    ``rmi_joints_identical_to_stream`` is False).
     """
 
     confirmed: bool = True  # values transcribed from the 2026-07-06 hardware probe output
 
     # --- servo tracking lag (first-order) ---
-    # Used by: drift guard (plan @ now − lag), FakeCRX plant τ, DriverConfig.tracking_lag_s.
+    # Used by: FakeCRX plant τ and the examples' lag reporting. Gates nothing.
     tracking_lag_s: float = 0.025  # MEASURED: cross-correlation 25 ms (verification runs 20 ms)
 
     # --- TX-silence backstop — THE go/no-go for host-death safety ---
@@ -150,15 +112,17 @@ class P1Facts:
     sm_session_survives_estop: bool = False  # UNVERIFIED: not proven (stream never came up)
 
     # --- J2/J3 representation ---
-    # Until proven identical, RMI-sourced joints are tagged rmi_unconverted and calibration
-    # HARD-REJECTS them (a wrong guess = silent J2-sized FK error). Vendor lib is known to
-    # apply J3 += J2 on RMI reads; stream carries the coupled interaction angle unconverted.
-    # UNVERIFIED — never run on hardware: a single RMI session + a single SM peer + AUTO-only (no T1 on
-    # this CRX) + RMI-init locking hand-guidance made a clean simultaneous stream-vs-RMI capture
-    # impractical. Safe default RETAINED (calibration still hard-rejects RMI joints). Resolve during
-    # on-hardware driver bring-up.
-    rmi_joints_identical_to_stream: bool = False  # UNVERIFIED: keep hard-reject default
-    rmi_j3_plus_j2_conversion: bool = True  # UNVERIFIED: vendor default kept
+    # MEASURED 2026-07-30 (docs/controller-notes.md §1.5): the two interfaces do NOT agree.
+    # RMI omits the J2 coupling that Stream Motion carries, so RMI J3 = SM J3 − J2 and the
+    # RMI→stream conversion is `q_stream[2] = q_rmi[2] + q_rmi[1]` — the documented vendor
+    # default, in the vendor's sign, matched to 0.0001 deg (the RMI wire quantization
+    # itself; every other joint agreed to 0.000).
+    # Captured at ONE J2 value, so the conversion stays DISABLED pending a second: the
+    # coupling is linear in J2 and a single point cannot separate it from a fixed offset.
+    # While disabled, RMI-sourced joints are tagged rmi_unconverted and calibration
+    # HARD-REJECTS them, because applying a wrong conversion is a silent J2-sized FK error.
+    rmi_joints_identical_to_stream: bool = False  # MEASURED: not identical (RMI J3 = SM J3 − J2)
+    rmi_j3_plus_j2_conversion: bool = True  # MEASURED at one J2; awaiting a second before it is applied
 
     # --- RMI angle read quantization ---
     # Calibration stillness gate is 0.1 deg/s; quantization budget ≤ 0.0067 deg/read.
@@ -203,8 +167,12 @@ class SettlePolicy:
 CAPTURE_TOL_DEG: float = 5.0  # re-anchor deadband; REJECT beyond, typed error
 CAPTURE_RATE_DEG_S: float = 15.0  # starvation re-anchor rate; also the SAFE_FOLLOW envelope
 
-# servo_j replace-not-queue window: typed reject if |q_target − q_cmd| > this.
-SERVO_WINDOW_DEG: float = 5.0
+# servo_j has NO distance window: a target is tracked however far away it is, bounded
+# by the servo limits below rather than refused. A window was tried and removed — it is
+# measured against the COMMANDED pose, which trails a streamed plan by the tracker's own
+# response time, so at speed ordinary tracking lag ate it and the guard began discarding
+# good setpoints (295 rejects on a 20 °/s ramp; total stall at 60 °/s). See NO DISTANCE
+# GUARD in tick_engine/servo.hpp.
 SERVO_LIMIT_SCALE: float = 1.0
 
 # Graduated RX-silence response, mid-TRAJECTORY:
@@ -225,10 +193,9 @@ CALIB_STILLNESS_DEG_S: float = 0.1
 CALIB_LSQ_WINDOW_S: float = 0.5
 
 # ---------------------------------------------------------------------------
-# In-process safety watchdogs. Both FaultReasons (SUPERVISOR_LOST, DRIFT) are raised
-# by the C++ RT core, and both exist because of the measurements above: host death
-# rides a ~120 ms controller coast, so the controller is not a fast host-death
-# backstop, and the 25 ms servo lag sets the drift alignment.
+# In-process safety watchdog. SUPERVISOR_LOST is raised by the C++ RT core, and it
+# exists because of the measurements above: host death rides a ~120 ms controller
+# coast, so the controller is not a fast host-death backstop.
 # Mirrored in rt_core_config.hpp.
 # ---------------------------------------------------------------------------
 
@@ -238,9 +205,3 @@ CALIB_LSQ_WINDOW_S: float = 0.5
 # supervisor/process death — not on a slow RMI round-trip. Generous vs the ~100 ms
 # beat interval to tolerate GIL-storm / GC pauses without a false trip. seconds.
 SUPERVISOR_LOST_S: float = 3.0
-
-# DRIFT: sustained commanded↔measured divergence fault — the guard against the 22°
-# runaway. deg + consecutive ticks. The lag alignment uses tracking_lag_s (the measured
-# 25 ms ≈ 3 ticks), so the threshold catches genuine divergence, not the servo lag itself.
-DRIFT_FAULT_DEG: float = 10.0
-DRIFT_FAULT_TICKS: int = 5

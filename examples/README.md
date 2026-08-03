@@ -7,23 +7,44 @@
 > FANUC every assumption below is yours to check first — see
 > [What is specific to this arm](#what-is-specific-to-this-arm).
 
-Three runnable scripts. The first two are the ordered validation run: each connects,
+Five runnable scripts. The first three are the ordered validation run: each connects,
 prints what the controller told it, moves a little, and ends in an explicit
 `PASS`/`FAIL` verdict — so a run is something you can read rather than something you
-have to interpret. Exit code `0` means every check passed. The third commands nothing
-and checks the guard table against the arm.
+have to interpret. Exit code `0` means every check passed. The last two command nothing
+by default: one checks the guard table against the arm, the other resolves what frame
+the streamed Cartesian pose is in.
 
 | Script | What it proves |
 |---|---|
 | `move_joints.py` | The stack connects and executes one commanded move |
 | `sine_wave.py` | It *tracks* a continuous multi-joint path, and `stop_j()` stops it |
+| `servo_stream.py` | The same path *streamed* setpoint-by-setpoint through `servo_j` |
 | `check_joint_limits.py` | The recorded soft limits match the arm. Read-only, you move it |
+| `verify_tcp_frame.py` | Which frame `get_tcp_pose()` is in — read-only unless `--move` |
 
-The two motion scripts take `--fake`, which stands up an in-process fake controller and
+The motion scripts take `--fake`, which stands up an in-process fake controller and
 needs no hardware (`check_joint_limits.py` has nothing to fake — it needs a real arm to
-move). `--help` lists every knob. Shared connection/reporting plumbing lives in
-`_common.py`; each script keeps its own trajectory construction inline, which is the
-part worth copying into your own code.
+move; the fake serves `verify_tcp_frame.py` one injected pose on both planes, so a
+`--fake` PASS there proves the comparison runs, never the frame). `--help` lists every
+knob. Shared connection/reporting plumbing lives in `_common.py`; each script keeps its
+own trajectory construction inline, which is the part worth copying into your own code.
+
+The arm itself is `crx10ial.py`: the `RobotProfile` — velocity/acceleration/jerk clamps
+and joint position limits, in degrees, each carrying the provenance of its number — that
+every script passes to `DriverConfig(profile=...)`. The package requires one and ships
+none, so this file is the answer to "which robot is on the other end of the wire".
+
+Most of it was generated rather than typed. The controller reports its own active
+velocity and position limits, and
+
+```bash
+python -m airo_fanuc.controller_probe --ip 192.168.1.100 --emit-profile
+```
+
+prints that file's profile call ready to paste, along with the model, software P-level,
+ordered options and which teach-pendant programs are installed. It is read-only — FTP
+fetches from the controller's `md:` device, no motion, no RMI — so it is safe to run
+against a live cell, and it is the first thing to run on an arm that is not this one.
 
 ## Before you touch the robot
 
@@ -32,9 +53,11 @@ uv sync --extra dev                       # builds the C++ extension into the ve
 uv run python examples/move_joints.py --fake
 uv run python examples/sine_wave.py --fake --period 4 --cycles 1
 uv run python examples/sine_wave.py --fake --period 8 --cycles 1 --stop-after 2
+uv run python examples/servo_stream.py --fake --period 4 --cycles 1
+uv run python examples/verify_tcp_frame.py --fake
 ```
 
-All three must end in `PASSED`. This is also the check to re-run after editing any
+All five must end in `PASSED`. This is also the check to re-run after editing any
 C++: `uv run pytest` does **not** rebuild the extension, so run `uv sync --extra dev
 --reinstall-package airo-fanuc` first or you will be validating the old `_core`.
 
@@ -171,6 +194,59 @@ calls `arm()`, deliberately, so a fault cannot silently resume into motion. And
 `TP RESET` has no authority in AUTO on this controller, so a reset that appears to
 do nothing on the pendant is expected; the driver clears faults over RMI.
 
+### Step 7 — servoing
+
+Not part of the minimal ladder: steps 1–6 validate the motion path, and this validates
+the *other* way of driving it. Run it before servoing in anger.
+
+```bash
+uv run python examples/servo_stream.py --ip <CONTROLLER_IP> --amplitude-deg 5 --period 10 --rate 50
+```
+
+The same raised cosine as step 3, but streamed — Python evaluates the setpoint every
+20 ms and pushes it with `servo_j` instead of handing the whole path over in one
+`move_trajectory`. Running the identical motion both ways is the point: the difference
+in the numbers is the delivery mechanism.
+
+Three blocks are worth reading, in this order.
+
+- **`commanded` / `plan error`** — core-side, and the question a servo stream exists to
+  ask: did the driver put *this* path on the wire? `commanded` is the peak velocity the
+  core actually sent, against the peak the plan asked for; `plan error` is the worst gap
+  between the commanded pose and where the plan says it should have been. Neither is
+  asserted — the position figure has a floor of one snapshot age, and neither has a
+  principled ceiling — but a ratio well above 1.0 means the stream is not being rendered
+  tightly, and step 3's numbers for the same motion are the comparison. This is the
+  measurement the fake cannot settle either way, so take it on the arm.
+- **`send spacing` / `starved`** — host-side, and specific to servoing. With
+  `move_trajectory` a late Python thread costs nothing, because the C++ loop already
+  holds every knot it needs. Streaming puts the host inside the control loop: past the
+  printed *staleness horizon* the core re-issues its last target and rests, so the arm
+  dwells. That is a stutter, not a fault, and nothing else in the driver reports it —
+  which is why `starved` is a check. The horizon is derived from the core's own
+  arithmetic, not chosen.
+- **`peak lag`** — the same servo-lag number as step 3, and comparable to it.
+
+Two servoing hazards the script is built around, both of which bite in real code:
+
+- **`stop_j()` does not stop a servo loop.** It preempts every target submitted before
+  it, but a target submitted *after* it is accepted normally — so a loop that keeps
+  feeding restarts the arm a tick or two after the brake. `--stop-after 4` stops the
+  loop as well, and then checks the arm was still stopped a second later.
+- **A servo stream never ends by itself.** Stop feeding and the core holds the last
+  target, in SERVO mode, indefinitely; it never reaches HOLD, so `is_steady()` stays
+  False however long you wait. `driver.hold()` is how a stream is ended.
+
+`--rate` decides how well the arm tracks, not whether the targets are accepted. A servo
+target is never refused for being far away: the core plans a fresh profile to it under
+the joint velocity, acceleration and jerk clamps and follows it best-effort, so a rate
+too low for the speed asked for shows up as a coarser commanded path and a larger `plan
+error`, never as a stalled arm. The script prints the peak per-step distance before it
+moves, so the granularity you chose is on the record. A non-zero `rejected` count means
+something else entirely — the driver was not commandable, i.e. faulted or recovering.
+Above 125 Hz there is nothing to gain — the mailbox is latest-wins, so extra targets are
+coalesced away rather than queued.
+
 ## Reading the RT numbers
 
 Every run ends with an `rt health` block. The loop must put exactly one command
@@ -203,28 +279,41 @@ loudly and nothing will improve either.
 
 The driver itself is far more portable than these scripts are — the top-level README's
 "Which robots this actually works on" is the accurate account of that. The scripts, by
-contrast, hardcode our arm on purpose, so a validation run has concrete numbers to
-check against instead of asking the operator for six of them. On a different FANUC,
-these are what to change:
+contrast, name our arm on purpose, so a validation run has concrete numbers to check
+against instead of asking the operator for six of them. Almost all of it is in one
+place: **`crx10ial.py`** holds the `RobotProfile` — velocity, acceleration and jerk
+clamps plus joint position limits, in degrees, each with the provenance of its number.
+That file is what the driver clamps against and what these scripts guard against, so
+for a different FANUC it is the file to copy. What is left:
 
 | What | Where | Why it is arm- or controller-specific |
 |---|---|---|
-| Joint position limits `[-180,-180,-270,-190,-180,-225]` / `[180,180,270,190,180,225]` deg | `sine_wave.py` `_LIMIT_*_DEG` | Measured on our controller (`docs/controller-notes.md` §1.1). This table is the only thing standing between an `--amplitude-deg` argument and a soft-limit hit. |
-| Velocity / acceleration / jerk clamps | `DriverConfig` defaults, from `controller_facts.CRX10IAL_*` | CRX-10iA/L. They are ordinary constructor fields — pass your own to `DriverConfig` rather than editing the package. |
+| Velocity / acceleration / jerk clamps, joint position limits | `crx10ial.py` | The whole arm envelope, in one profile. Passed to `DriverConfig(profile=...)`, which has no default — the package ships no arm's numbers. `_common.py`'s `LIMIT_LOWER_DEG` / `LIMIT_UPPER_DEG` read from it, so the pre-motion guard and the RT core's clamps cannot disagree. Regenerate the velocity and position halves for a new arm with `controller_probe --emit-profile`; only the acceleration and jerk derivation is a judgement call. |
 | 8 ms interpolation period | `--itp-ms` default | An R-30iB-class fact. Bring-up refuses a mismatch, so a wrong value fails loudly rather than silently mis-scaling every per-tick limit. |
 | Stream Motion v3 / type-202, no force block | the `bring-up` report, and `sm_version=3` under `--fake` | What our controller negotiates. A v4 controller streams a force block and `get_wrench()` starts returning values. |
 | Six joints, `--joint 1..6`, "J6 = wrist roll" | `NDOF = 6` in `_common.py` | `kNumJoints = 6` is a C++ compile-time constant, not a config knob. 7-axis arms and positioner axes are out of scope. |
 
 ## What these scripts deliberately do not cover
 
-Passing all six steps validates the motion path end to end. It does not validate:
+Passing all seven steps validates the motion path end to end. It does not validate:
 
-- **The gripper.** Both scripts run `enable_gripper=False`. The `GRPRUN`/`GRIPDISP`
+- **The gripper.** Every script runs `enable_gripper=False`. The `GRPRUN`/`GRIPDISP`
   path is the one part of this package specific to a particular end effector, and it
   needs its own run once the tool is mounted.
-- **The acceleration and jerk clamps.** The values in `controller_facts.py` are
-  derived from the velocity limits; FANUC's own `joint_limits.yaml` in the vendored
-  driver publishes accelerations 6–16× lower. Nothing in these runs distinguishes
+- **How faithfully a streamed servo plan is rendered.** Step 7 measures it and prints
+  it; nothing asserts it, because there is no principled threshold and the fake is not
+  authority on it. `plan error` is never zero and is not by itself a fault: a
+  best-effort tracker trails a moving target by roughly its response time, so the figure
+  grows with commanded speed. The two things worth reading are that `commanded` stays
+  near 1.0× — a core rendering the stream tightly has no reason to exceed the plan's own
+  peak speed — and that the error is steady rather than cyclic, since a cycle means the
+  profile is repeatedly giving ground and then making it up. Both are core-side (SERVO
+  dispatch reads no measurement), so the plant is not in the loop and the fake cannot
+  settle them; step 3 runs the identical path with the core holding the whole
+  trajectory, and that comparison is what gives either number meaning.
+- **The acceleration and jerk clamps.** The values in `crx10ial.py` are derived from
+  the velocity limits; FANUC's own `joint_limits.yaml` in the vendored driver
+  publishes accelerations 6–16× lower. Nothing in these runs distinguishes
   the two: both are permissive enough that 63°/s ran clean on 2026-07-30. Decide it by
   working the speed up further in step 3 and watching for vibration or a servo alarm.
 - **Recovery from a collision-induced `SystemFault`**, which is a different path from

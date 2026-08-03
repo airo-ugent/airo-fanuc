@@ -25,6 +25,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from conftest import TEST_PROFILE
 
 from airo_fanuc import (
     DriverConfig,
@@ -38,6 +39,7 @@ from airo_fanuc import (
     TrajectoryValidationError,
 )
 from airo_fanuc import controller_facts as cf
+from airo_fanuc.exceptions import RmiSessionDown
 from airo_fanuc.ownership import OwnershipLock
 from airo_fanuc.testing import FakeCRXConfig, FakeCRXController
 
@@ -75,6 +77,7 @@ class DriverRig:
         self.controller.start_realtime(speed=1.0)
 
         cfg = DriverConfig(
+            profile=TEST_PROFILE,
             sm_port=self.controller.sm_port,
             rmi_port=self.controller.rmi_port,
             sm_version=available_version,
@@ -156,7 +159,7 @@ def test_construct_and_go_reaches_commandable(rig: DriverRig) -> None:
 
 def test_unreachable_controller_raises_connection_error(tmp_path: Any) -> None:
     dead = _free_port()  # nothing listening here
-    cfg = DriverConfig(sm_port=_free_port(), rmi_port=dead, rmi_connect_timeout=1.0)
+    cfg = DriverConfig(profile=TEST_PROFILE, sm_port=_free_port(), rmi_port=dead, rmi_connect_timeout=1.0)
     policy = DriverPolicy(config=cfg, connect_retries=1, lock_path=str(tmp_path / "owner.lock"))
     with pytest.raises(FanucConnectionError):
         FanucDriver("127.0.0.1", policy)
@@ -211,7 +214,7 @@ def test_validation_table(rig: DriverRig) -> None:
     # wrong DOF
     with pytest.raises(TrajectoryValidationError):
         d.move_trajectory(good_t, [[0, 0, 0], [0.2, 0, 0]], [[0.0] * 3, [0.0] * 3])
-    # |qd| > v_lim (v_lim J0 = 2.094 rad/s; qd=3.0 exceeds)
+    # |qd| > v_lim (TEST_PROFILE J0 is 120°/s = 2.094 rad/s; qd=3.0 exceeds it)
     fast_qd = [[3.0, 0, 0, 0, 0, 0], [3.0, 0, 0, 0, 0, 0]]
     with pytest.raises(TrajectoryValidationError):
         d.move_trajectory(good_t, good_q, fast_qd)
@@ -361,7 +364,7 @@ def test_capture_check_hook_allows_safe_splice(tmp_path: Any) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_servo_j_within_window_executes(rig: DriverRig) -> None:
+def test_servo_j_executes(rig: DriverRig) -> None:
     start = _cur_q0(rig.driver)
     handle = rig.driver.servo_j([start + 0.04, 0, 0, 0, 0, 0], 0.1)
     # Servo has no natural terminal; just assert it did not reject and drives SERVO.
@@ -369,12 +372,14 @@ def test_servo_j_within_window_executes(rig: DriverRig) -> None:
     assert handle.result() != MotionResult.REJECTED
 
 
-def test_servo_j_far_target_rejected(rig: DriverRig) -> None:
-    handle = rig.driver.servo_j([0.9, 0, 0, 0, 0, 0], 0.5)  # ~51° from ~0
-    deadline = time.monotonic() + 1.5
-    while time.monotonic() < deadline and handle.result() is None:
-        time.sleep(0.004)
-    assert handle.result() == MotionResult.REJECTED
+def test_servo_j_far_target_is_tracked_not_rejected(rig: DriverRig) -> None:
+    # No distance guard: a far target is chased under the servo limits rather than
+    # refused, so a stream that falls behind keeps going instead of stopping.
+    start = _cur_q0(rig.driver)
+    handle = rig.driver.servo_j([start + 0.9, 0, 0, 0, 0, 0], 0.5)  # ~51° away
+    time.sleep(0.3)
+    assert handle.result() != MotionResult.REJECTED
+    assert _cur_q0(rig.driver) > start + 0.01, "moved toward the far target"
 
 
 def test_servo_j_bad_shape_raises(rig: DriverRig) -> None:
@@ -385,8 +390,8 @@ def test_servo_j_bad_shape_raises(rig: DriverRig) -> None:
 
 
 def test_servo_j_feedforward_executes(rig: DriverRig) -> None:
-    # Feed-forward path: qd/qdd become Ruckig's target velocity/acceleration (used for
-    # smooth externally-planned trajectory tracking, e.g. MPC action-sequence knots).
+    # qd/qdd are accepted and ignored; the call must still behave exactly as the
+    # position-only one rather than erroring on arguments it no longer uses.
     start = _cur_q0(rig.driver)
     handle = rig.driver.servo_j(
         [start + 0.04, 0, 0, 0, 0, 0],
@@ -398,17 +403,17 @@ def test_servo_j_feedforward_executes(rig: DriverRig) -> None:
     assert handle.result() != MotionResult.REJECTED
 
 
-def test_servo_j_feedforward_far_target_rejected(rig: DriverRig) -> None:
-    # The distance guard applies to the FF path exactly as to the position-only path.
+def test_servo_j_feedforward_far_target_is_tracked_not_rejected(rig: DriverRig) -> None:
+    # Same best-effort behaviour on the qd-carrying overload as on the plain one.
+    start = _cur_q0(rig.driver)
     handle = rig.driver.servo_j(
-        [0.9, 0, 0, 0, 0, 0],
+        [start + 0.9, 0, 0, 0, 0, 0],
         0.5,
-        qd=[0.2, 0, 0, 0, 0, 0],  # ~51° from ~0
+        qd=[0.2, 0, 0, 0, 0, 0],
     )
-    deadline = time.monotonic() + 1.5
-    while time.monotonic() < deadline and handle.result() is None:
-        time.sleep(0.004)
-    assert handle.result() == MotionResult.REJECTED
+    time.sleep(0.3)
+    assert handle.result() != MotionResult.REJECTED
+    assert _cur_q0(rig.driver) > start + 0.01, "moved toward the far target"
 
 
 def test_servo_j_feedforward_bad_shape_raises(rig: DriverRig) -> None:
@@ -461,6 +466,109 @@ def test_get_wrench_gated_on_fs_type(tmp_path: Any) -> None:
         assert w[2] == pytest.approx(3.0, abs=0.5)
     finally:
         rig.close()
+
+
+def test_get_flange_pose_carries_the_status_packets_pose_block(rig: DriverRig) -> None:
+    # End-to-end passthrough for the Cartesian pose: the fake's injected value →
+    # big-endian float32 on the SM status wire → C++ decode → seqlock snapshot →
+    # getter. Unlike the wrench this rides the shared header, so it IS present on
+    # this v3 / type-202 controller (docs/controller-notes.md §1.8).
+    #
+    # The fake does no FK, so the value is injected rather than derived from the
+    # plant's joints — this proves the pose survives the pipe, NOT that the
+    # controller's pose agrees with any frame (that is examples/verify_tcp_frame.py).
+    pose_mm_deg = [1234.5, -678.25, 901.75, -179.5, 45.25, 90.125]
+    rig.controller.set_cartesian(pose_mm_deg)
+
+    # Poll: under full-suite load the realtime FakeCRX needs a few 8 ms ticks to
+    # stream the new pose into the seqlock snapshot.
+    got = None
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        got = rig.driver.get_flange_pose()
+        if got is not None and abs(got[0] - pose_mm_deg[0]) < 0.01:
+            break
+        time.sleep(0.01)
+
+    assert got is not None and got.shape == (6,), got
+    # float32 on the wire (the joints are float32 too); these values are chosen to
+    # be exactly representable, so they must survive bit-for-bit.
+    assert list(got) == pytest.approx(pose_mm_deg, abs=0.0)
+    # The raw length-9 block stays reachable, ext axes zero-padded by the fake.
+    assert rig.driver.get_state()["cart"][6:] == [0.0, 0.0, 0.0]
+
+
+def test_get_flange_pose_is_none_before_the_first_status_packet() -> None:
+    # A getter must not present the zero-initialised snapshot field as a pose:
+    # all-zero XYZWPR is not a pose this arm can hold (flange at the world origin,
+    # inside the base). No core at all is the same story — None, never zeros.
+    driver = SimpleNamespace(core=None)
+    assert FanucDriver.get_flange_pose(driver) is None  # type: ignore[arg-type]
+
+    never_rx = SimpleNamespace(
+        core=SimpleNamespace(get_snapshot=lambda: {"rx_mono_ns": 0, "cart": [0.0] * 9})
+    )
+    assert FanucDriver.get_flange_pose(never_rx) is None  # type: ignore[arg-type]
+
+    # One RX is all it takes to make the same zeros meaningful-or-not the
+    # controller's problem rather than the getter's.
+    after_rx = SimpleNamespace(
+        core=SimpleNamespace(get_snapshot=lambda: {"rx_mono_ns": 1, "cart": [1.0] * 9})
+    )
+    pose = FanucDriver.get_flange_pose(after_rx)  # type: ignore[arg-type]
+    assert pose is not None and pose.shape == (6,)
+
+
+def test_get_tcp_pose_returns_the_controllers_tool_tip_not_the_faceplate(rig: DriverRig) -> None:
+    # The two getters read two different planes, and must not be confused for each
+    # other: get_tcp_pose() asks the controller (FRC_ReadCartesianPosition, which
+    # applies the active UTOOL), get_flange_pose() reads the streamed faceplate. On the
+    # real controller those are 175 mm apart — this cell's Robotiq gripper,
+    # docs/controller-notes.md §1.10 — so the fake serves two distinct poses and a
+    # regression that quietly answered both from one plane fails here.
+    #
+    # The geometric relationship between them is a HARDWARE fact and is verified where
+    # it can be: examples/verify_tcp_frame.py, against the real controller. Asserting it
+    # here would only be re-checking arithmetic the fake was told to produce.
+    flange = [20.166, 703.511, 504.091, -115.210, -26.319, 35.132]  # measured faceplate
+    tool_tip = [-43.921, 852.017, 437.279, -115.210, -26.319, 35.132]  # measured TCP
+    rig.controller.set_cartesian(flange)
+    rig.controller.set_cartesian_tcp(tool_tip)
+
+    streamed = None
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        streamed = rig.driver.get_flange_pose()
+        if streamed is not None and abs(streamed[0] - flange[0]) < 0.01:
+            break
+        time.sleep(0.01)
+
+    assert streamed is not None
+    assert list(streamed) == pytest.approx(flange, abs=1e-3)  # the SM plane
+
+    tcp = rig.driver.get_tcp_pose()
+    assert tcp is not None and tcp.shape == (6,)
+    assert list(tcp) == pytest.approx(tool_tip, abs=1e-3)  # the RMI plane
+
+    # And they are genuinely different points, not the same value twice.
+    assert float(np.linalg.norm(tcp[:3] - streamed[:3])) > 1.0
+
+
+def test_get_tcp_pose_returns_none_rather_than_substituting_the_faceplate() -> None:
+    # No RMI session, and an RMI read that raises, both yield None. The one thing this
+    # must never do is fall back to the streamed faceplate: that would report a point
+    # 175 mm from the tool tip under a method named get_tcp_pose.
+    assert FanucDriver.get_tcp_pose(SimpleNamespace(rmi=None)) is None  # type: ignore[arg-type]
+
+    def boom() -> Any:
+        raise RmiSessionDown("session is down")
+
+    broken = SimpleNamespace(
+        rmi=SimpleNamespace(read_cartesian_position=boom),
+        # A perfectly good faceplate pose is available and must NOT be used.
+        core=SimpleNamespace(get_snapshot=lambda: {"rx_mono_ns": 1, "cart": [1.0] * 9}),
+    )
+    assert FanucDriver.get_tcp_pose(broken) is None  # type: ignore[arg-type]
 
 
 def test_timing_stats_and_joints_at_wall(rig: DriverRig) -> None:
@@ -522,6 +630,7 @@ def test_bringup_settles_a_motion_possible_drop_without_the_recovery_ladder(tmp_
 
     threading.Thread(target=_blip, daemon=True).start()
     cfg = DriverConfig(
+        profile=TEST_PROFILE,
         sm_port=controller.sm_port,
         rmi_port=controller.rmi_port,
         preroll_timeout_s=_READY_TIMEOUT_S,
@@ -613,6 +722,7 @@ def test_context_manager(tmp_path: Any) -> None:
     controller.start()
     controller.start_realtime(speed=1.0)
     cfg = DriverConfig(
+        profile=TEST_PROFILE,
         sm_port=controller.sm_port,
         rmi_port=controller.rmi_port,
         preroll_timeout_s=_READY_TIMEOUT_S,
@@ -737,7 +847,7 @@ def _itp_check(reported_ms: int, configured_itp_s: float) -> None:
     """
     stub = SimpleNamespace(
         core=SimpleNamespace(sm_sampling_rate_ms=reported_ms),
-        _cfg=DriverConfig(itp_s=configured_itp_s),
+        _cfg=DriverConfig(profile=TEST_PROFILE, itp_s=configured_itp_s),
     )
     FanucDriver._verify_controller_itp(stub)  # type: ignore[arg-type]  # noqa: SLF001
 

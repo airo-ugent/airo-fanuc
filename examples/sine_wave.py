@@ -35,7 +35,6 @@ from __future__ import annotations
 import argparse
 import math
 import sys
-import time
 
 import numpy as np
 
@@ -53,28 +52,10 @@ from _common import (
     report_rt_health,
     rule,
     verdict,
+    wait_streaming,
     watch,
 )
 from airo_fanuc import FanucDriver, MotionResult
-
-
-def _wait_streaming(driver, hold_s: float = 2.0, timeout_s: float = 10.0) -> bool:
-    """Wait until the driver is STABLY streaming (mode=streaming, fault=none held for
-    ``hold_s``) — rides out any brief post-bring-up motion_possible transient."""
-    deadline = time.monotonic() + timeout_s
-    stable_since = None
-    while time.monotonic() < deadline:
-        st = driver.get_state()
-        streaming = st.get("lifecycle_state") == "streaming"
-        no_fault = str(st.get("fault_reason") or "none").lower() == "none"
-        if streaming and no_fault:
-            stable_since = stable_since or time.monotonic()
-            if time.monotonic() - stable_since >= hold_s:
-                return True
-        else:
-            stable_since = None
-        time.sleep(0.1)
-    return False
 
 
 def _build_sine(q_start_rad, joint_idx, amp_rad: float, period_s: float, cycles: float, knot_dt: float):
@@ -181,7 +162,7 @@ def main() -> int:
         if not safe:
             return verdict("sine_wave", checks, driver)
 
-        if not _wait_streaming(driver):
+        if not wait_streaming(driver):
             print("  driver did not reach stable streaming — aborting the move (no motion issued).")
             checks.append(("driver reached stable streaming", False))
             return verdict("sine_wave", checks, driver)
@@ -205,11 +186,10 @@ def main() -> int:
         # Tracking is MEASURED AND REPORTED, not asserted (report_motion prints the peak
         # lag and the offset it implies in ms). There is no threshold here because no
         # honest one exists at this altitude: a budget modelled on tracking_lag_s asserts
-        # the model rather than the robot — and on this arm that model is out by ~3.4x
-        # (docs/controller-notes.md §1.9a) — while a bound near the DRIFT threshold would
-        # sit so far above these gentle speeds that it could never fire. Real divergence
-        # is already caught where it belongs: the RT core latches DRIFT and holds, which
-        # lands here as a non-DONE result.
+        # the model rather than the robot, and on this arm that model is out by ~3.4x
+        # (docs/controller-notes.md §1.9a). Divergence big enough to matter trips the
+        # controller's own deviation monitor (§1.2), which lands here as a non-DONE
+        # result.
         checks.append((f"no slew clips (got {w.slew_clips})", w.slew_clips == 0))
 
         if args.stop_after is None:

@@ -99,7 +99,6 @@ class FaultReason(enum.IntEnum):
     SAFETY_CLAMP = ...
     RX_SILENT = ...
     RX_DEGRADED = ...
-    DRIFT = ...
     WATCHDOG_EXPIRED = ...
     FORCE_GUARD = ...
     REJECTED_START_MISMATCH = ...
@@ -118,9 +117,21 @@ class MotionStatus(enum.IntEnum):
 
 class RtCoreConfig:
     """RT core knobs (mirror of ``airo_fanuc.controller_facts``;
-    ``DriverConfig.to_rt_core_config`` fills these in). Defaults are the shipped
-    CRX-10iA/L values."""
+    ``DriverConfig.to_rt_core_config`` fills these in)."""
 
+    #: The arm's motion envelope, one value per joint, in rad/s, rad/s² and rad/s³.
+    #: Every stage — trajectory, servo, brake, capture, slew — clamps against these,
+    #: so they are what a ``RobotProfile`` has to reach. The C++ defaults are a
+    #: synthetic envelope for the stand-alone tick-engine tests, not any real arm;
+    #: assigning a list of the wrong length raises rather than partially overwriting.
+    velocity_limits: list[float]
+    acceleration_limits: list[float]
+    jerk_limits: list[float]
+    #: Fractions of the limits above: the brake envelope (v/a and jerk scaled
+    #: separately) and the per-tick slew clip, ``slew_factor × v × itp_s``.
+    stop_scale_va: float
+    stop_scale_j: float
+    slew_factor: float
     rx_silence_blind_hold_ms: float
     rx_silence_qd_ramp_ms: float
     rx_silent_park_ms: float
@@ -129,12 +140,13 @@ class RtCoreConfig:
     safe_follow_deadband_rad: float
     safety_scale_min: float
     supervisor_lost_s: float
-    drift_lag_ticks: int
-    drift_fault_rad: float
-    drift_fault_ticks: int
     preroll_timeout_s: float
     #: Controller interpolation period in seconds (8 ms on the R-30iB class). Every
     #: per-tick limit is scaled by it, so it must equal the controller's real period.
+    #: Joint position limits (rad). Default ±inf — the core clamps every commanded
+    #: pose against these, so leaving them unset disables the soft-limit clamp.
+    position_limits_lower: list[float]
+    position_limits_upper: list[float]
     itp_s: float
     rt_priority: int
     sched_fifo: bool
@@ -196,7 +208,10 @@ class StreamCore:
         exposes no scale knob: a trajectory's own ``times``/``qd`` are its speed, and
         stretching them caller-side scales the first knot too."""
 
-    def submit_servo(self, q: list[float], duration: float) -> int: ...
+    def submit_servo(self, q: list[float], duration: float) -> int:
+        """Best-effort servo target: head for ``q`` (length-6 radians), with
+        ``duration`` seconds to get there. Never refused for distance — motion toward
+        a far target is bounded by the servo limits, not rejected."""
     def submit_servo_ff(
         self,
         q: list[float],
@@ -204,12 +219,11 @@ class StreamCore:
         qdd: list[float],
         duration: float,
     ) -> int:
-        """Feed-forward servo: as :meth:`submit_servo`, but seeded with the caller's
-        target velocity and acceleration instead of inferring them. All three vectors
-        are length-6 radians (rad, rad/s, rad/s²). Seeding the derivatives lets the
-        online generator start from the caller's intended motion rather than
-        re-deriving it from successive positions, which removes the lag a
-        position-only servo shows when the caller already knows its own velocity."""
+        """As :meth:`submit_servo`; ``qd``/``qdd`` are accepted and CURRENTLY IGNORED.
+        All three vectors are length-6 radians (rad, rad/s, rad/s²). They previously
+        became Ruckig's target velocity/acceleration, but demanding an arrival velocity
+        made the command reverse against a forward-moving stream under clock drift —
+        see BEST EFFORT in ``src/cpp/tick_engine/servo.hpp``."""
 
     def submit_brake(self) -> int: ...
     def submit_hold(self) -> int: ...

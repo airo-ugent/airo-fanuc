@@ -44,8 +44,22 @@ them as binding: code that regresses one of these is a bug, not a refactor.
 ## Faults, getters, timestamps
 
 - **Getters never raise and never lie.** `get_state()` / `get_wrench()` /
-  `joints_at_wall()` / `timing_stats()` always return (value + age); `get_wrench()`
-  returns `None` when force telemetry is unavailable rather than fabricating zeros.
+  `joints_at_wall()` / `get_flange_pose()` / `timing_stats()` always return (value +
+  age); `get_wrench()` returns `None` when force telemetry is unavailable rather than
+  fabricating zeros.
+- **`get_tcp_pose()` is the one getter that BLOCKS**, and deliberately so. The Stream
+  Motion stream carries the *faceplate*, not the tool tip (measured — 175 mm apart on
+  this cell, `controller-notes.md` §1.10), so the tool tip can only come from the
+  controller's own `FRC_ReadCartesianPosition`: one RMI round trip, tens of ms, off the
+  125 Hz timeline. That keeps the tool definition where it belongs — in the control box,
+  not duplicated in driver config that could drift out of sync with the pendant. It
+  returns `None` on any RMI failure and **never substitutes the faceplate**: silently
+  answering with a point one tool-length away would be exactly the lie these getters
+  forbid. Do not call it per tick — a caller needing a TCP at tick rate applies its own
+  tool transform to `get_flange_pose()`. **The wheel ships no pose algebra**, for the
+  same reason it ships no kinematics: the controller already does this conversion, and a
+  second copy of the tool definition in driver code is a copy that can drift from the
+  pendant.
 - **Timestamps are absolute int64 ns; doubles are for differences only.**
 
 ## Force / grasping — this controller has no force telemetry
@@ -77,13 +91,19 @@ them as binding: code that regresses one of these is a bug, not a refactor.
   a watchdog process on the same host dies *with* the host, and is slower than the
   coast even when it survives. Any hard-exit / stop-on-exit belongs to the
   application entry point, not the library.
-- **`SUPERVISOR_LOST` and `DRIFT` are live, in-process, C++ RT-core faults.** The
-  supervisor beats a dedicated heartbeat thread (`Supervisor._heartbeat_loop`); a
-  lapse faults→HOLD. The drift guard faults on sustained commanded↔measured
-  divergence (the 22°-runaway guard, lag-aligned to the measured 25 ms servo lag).
-  Do not remove the heartbeat or the guard: they are the only fast reaction to a
-  wedged supervisor or a diverging robot, since the controller's own backstop is the
-  slow coast above.
+- **`SUPERVISOR_LOST` is a live, in-process, C++ RT-core fault.** The supervisor
+  beats a dedicated heartbeat thread (`Supervisor._heartbeat_loop`); a lapse
+  faults→HOLD. Do not remove the heartbeat: it is the only fast reaction to a wedged
+  supervisor, since the controller's own backstop is the slow coast above.
+- **Commanded↔measured divergence is the controller's to detect, not the driver's.**
+  There is deliberately no host-side divergence guard. An arm that stops following the
+  stream accrues position error until the controller's deviation monitor hard-stops it
+  and drops `motion_possible` / raises `in_error` — which the C++ tick reacts to within
+  one ITP, on the same gate path as an e-stop. That monitor is measured (71–121 ms,
+  overrun 2.10° @ 15.3 °/s / 4.63° @ 49.9 °/s — `controller-notes.md` §1.2), whereas a
+  host-side guard has to model the command→report offset to tell divergence from
+  ordinary lag, and that offset is itself unsettled (§1.9a). Anything reintroduced here
+  must be lag-aligned against a *measured* offset, not against `tracking_lag_s`.
 
 ## Backend / process hygiene
 

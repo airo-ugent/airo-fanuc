@@ -55,6 +55,7 @@ _BUILDERS: dict[str, Callable[..., dict[str, Any]]] = {
     "rmi_write_register_request": wire.rmi_write_register_request,
     "rmi_read_error_request": wire.rmi_read_error_request,
     "rmi_read_joint_angles_request": wire.rmi_read_joint_angles_request,
+    "rmi_read_cartesian_position_request": wire.rmi_read_cartesian_position_request,
     "rmi_continue_request": wire.rmi_continue_request,
     "rmi_call_request": wire.rmi_call_request,
 }
@@ -131,6 +132,13 @@ _RMI_GOLDENS: dict[str, tuple[str, dict[str, Any], str]] = {
         {},
         "FRC_ReadJointAngles (RMI §2.3.15, ReadJointAnglesPacket) — current joint "
         "angles over the RMI plane.",
+    ),
+    "read_cartesian_position": (
+        "rmi_read_cartesian_position_request",
+        {},
+        "FRC_ReadCartesianPosition (RMI §2.3.14, GetCartesianPositionPacket) — the "
+        "controller's own FK, tagged with the active UFRAME/UTOOL numbers that the "
+        "Stream Motion pose block carries no equivalent of.",
     ),
     "continue": (
         "rmi_continue_request",
