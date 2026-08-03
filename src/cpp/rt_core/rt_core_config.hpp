@@ -178,6 +178,9 @@ struct RtCoreConfig {
   // SAFETY_CLAMP threshold: a safety_scale under 5 % means the controller is
   // rescaling commanded motion so hard that the stream is no longer being tracked
   // in any useful sense, so treat it as a kill condition rather than slow motion.
+  // Safe to have armed from the very first tick: measured, an idle controller with
+  // no rescaling in effect reports safety_scale = 1.0, not 0.0, so the gate has no
+  // startup window in which it would trip on a not-yet-populated field.
   double safety_scale_min{0.05};
 
   // --- Preroll (SM handshake wait for motion_possible) ---

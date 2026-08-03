@@ -240,10 +240,10 @@ and/or a force option — confirm with FANUC.
 mirrored into `DriverConfig`, so a wrong value costs accuracy in the fake and in a printed
 comparison, not safety.
 
-#### 1.9a OPEN: the observed command-to-report offset is ~3.4× `tracking_lag_s` (2026-07-30)
+#### 1.9a OPEN: the observed command-to-report offset is 3–6× `tracking_lag_s`
 
-Every motion run on 2026-07-30 showed a steady `|q_cmd − q_meas|` far above what 25 ms predicts.
-Dividing by the concurrent measured speed expresses it as a time, which is comparable across runs:
+Every motion run, in two separate sessions, showed a steady `|q_cmd − q_meas|` far above what 25 ms
+predicts. Dividing by the concurrent measured speed expresses it as a time, comparable across runs:
 
 | Run | Peak speed | Peak \|q_cmd − q_meas\| | Implied offset |
 |---|---|---|---|
@@ -257,6 +257,34 @@ Dividing by the concurrent measured speed expresses it as a time, which is compa
 **82–104 ms across seven runs spanning a 3.3× speed range** — proportional to speed, which is what a
 fixed delay looks like and not what noise looks like.
 
+A later session, on the same controller and arm, measured the same metric **higher**:
+
+| Run | Peak speed | Implied offset |
+|---|---|---|
+| J6 +10° rest-to-rest, out / back | 3.92 / 3.90 °/s | 125 / 127 ms |
+| `move_j` J6 +20° at 12 °/s | 12.15 °/s | 138 ms |
+| `move_j` `--multi`, three joints | 12.07 °/s | 139 ms |
+| ±5° sine, all joints, 10 s period | 3.62 °/s | 121 ms |
+| ±10° sine, 6 s period | 10.55 °/s | 130 ms |
+| ±10° sine, 6 s period (repeat) | 10.95 °/s | 127 ms |
+
+**121–139 ms across six runs.** Two things to be careful about here. The values rise with speed
+within this table, but the spread *at one speed* in the table above (82–104 ms at ~3.7 °/s) is
+larger than the rise, so these data do not establish a speed dependence — a fixed delay remains
+consistent with both tables taken alone. What they do show is that **the two sessions disagree with
+each other**, 82–104 vs 121–139 ms, which no fixed property of the servo explains and which is now
+part of what needs resolving.
+
+**An independent corroboration of the second session's figure**, from a completely different
+observable. `stop_j()` fired at 10.43 °/s took 0.507 s and 3.367° to reach standstill. The brake is
+jerk-limited at these speeds — reaching `a_max` = 96 °/s² at `j` = 288 °/s³ would take 0.333 s and
+shed 16 °/s, more than the 10.43 on hand, so the accel ramp is purely triangular — giving a
+*commanded* stop of `2√(v/j)` = 0.381 s over `v·t/2` = 1.99°. Adding one 127 ms offset and the
+1.395° of standing lag the arm had to catch up predicts 0.508 s and 3.39°, against 0.507 s and
+3.367° measured. Two unrelated observables agreeing to ~1% is much stronger evidence for the
+offset's magnitude than the ratio metric alone, and it also confirms the brake profile is running
+at the `STOP_LIMIT_SCALE_J` clamps it is supposed to.
+
 The metric is an *instantaneous* offset between the setpoint for the current tick and the most recent
 status packet, so unlike the cross-correlation figure above it also contains the command→report
 pipeline (command buffering, the controller's own status generation, up to one ITP of packet age).
@@ -264,15 +292,16 @@ pipeline (command buffering, the controller's own status generation, up to one I
 **But the pipeline does not account for it.** The same metric against the FakeCRX, whose plant is a
 first-order lag with τ set to exactly `INTERIM_FACTS.tracking_lag_s` = 25 ms, reads **29 ms** — so
 this measurement over-reads a known 25 ms by only ~4 ms. Add the wire (ping RTT to this controller is
-1–6 ms) and the pipeline plausibly explains ~30 ms of the ~85 ms, leaving **~50 ms unaccounted for**.
-That is the part worth resolving, and it wants the xcorr method on logged series rather than this
-ratio.
+1–6 ms) and the pipeline plausibly explains ~30 ms of it, leaving **50–110 ms unaccounted for**
+depending on which session. That is the part worth resolving, and it wants the xcorr method on
+logged series rather than this ratio.
 
-**What it costs.** Nothing in the driver is gated on this number (see §1.9 **Uses**), so the ~50 ms
-is an accuracy question, not a safety one: the FakeCRX plant is τ = 25 ms where the real command→report
-path measures ~85 ms, and the examples' printed lag comparison is correspondingly optimistic. **To
-settle it:** log `q_cmd` and `q_meas` through a swept-speed move and cross-correlate, which separates
-the servo lag from the status pipeline instead of lumping them as this ratio does.
+**What it costs.** Nothing in the driver is gated on this number (see §1.9 **Uses**), so the gap is
+an accuracy question, not a safety one: the FakeCRX plant is τ = 25 ms where the real
+command→report path measures 82–139 ms, and the examples' printed lag comparison is correspondingly
+optimistic. **To settle it:** log `q_cmd` and `q_meas` through a swept-speed move and
+cross-correlate, which separates the servo lag from the status pipeline instead of lumping them as
+this ratio does, and would also show whether the between-session difference is real.
 
 ### 1.10 The streamed Cartesian pose is NOT the TCP (measured 2026-07-30)
 

@@ -180,13 +180,21 @@ joint-limit guard aborts before any motion if a swing would leave the soft limit
 ### Step 4 — the protective stop
 
 ```bash
-uv run python examples/sine_wave.py --ip <CONTROLLER_IP> --amplitude-deg 10 --period 6 --stop-after 3
+uv run python examples/sine_wave.py --ip <CONTROLLER_IP> --amplitude-deg 10 --period 6 --stop-after 1.5
 ```
 
 Calls `stop_j()` mid-motion — the universal preempt — and expects `STOPPED`, not
 `DONE`. It reports how long the arm took to reach standstill and how far it
 travelled getting there. Note this is the *driver's* brake, a limit-respecting decel
 on the 8 ms path; it is not the controller's own backstop and not an E-stop.
+
+**`--stop-after` must not be a multiple of half the period.** The path is
+`q₀ + A(1 − cos ωt)`, so its velocity zeros sit at `t = 0, T/2, T, …` — firing the
+preempt there brakes an arm that is already momentarily stationary at a turning point,
+and the run reports a flattering stop distance that measured almost nothing. At
+`--period 6`, `--stop-after 3` is exactly that mistake; `1.5` is the quarter-period,
+where the arm is at its `Aω` peak. Measured, the difference is 0.103° against 3.367°
+for the same nominal test — a factor of 33.
 
 ### Step 5 — the joint-limit guard, against the arm
 
@@ -382,3 +390,11 @@ the run did not finish what it set out to do.
 - Bring-up hangs or the driver never reaches streaming — `docs/controller-notes.md`
   §2 has the measured recovery procedures, including the Stream Motion daemon wedge
   that only a controller power-cycle clears.
+- **`MOTN-603 ST: Receiving interval over` on the pendant after a run ends** — expected,
+  and not a fault in the run that just finished. Closing the session sends the Stop
+  packet and then stops transmitting, and the controller posts this because command
+  packets ceased while `STREAM_MOTN` was still up (`FRC_Abort` does not terminate it —
+  `docs/controller-notes.md` §2.7). It clears on the next bring-up and needs no
+  operator action. Worth distinguishing from the same alarm appearing *during* a run,
+  which would mean the 8 ms deadline is genuinely being missed — check `tx interval`
+  and `skipped_tick_windows` in the run's own `rt health` block before assuming that.
