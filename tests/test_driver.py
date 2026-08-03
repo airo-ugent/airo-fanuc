@@ -316,6 +316,23 @@ def test_force_stop_rejected_without_force_telemetry(rig: DriverRig) -> None:
     assert rig.driver.move_trajectory(times, q, qd).wait(timeout=4.0) == MotionResult.DONE
 
 
+@pytest.mark.parametrize("guard", ["force_stop_n", "deadman_s"])
+@pytest.mark.parametrize("bad", [0.0, -5.0, float("nan"), float("inf")])
+def test_a_guard_that_cannot_trip_is_rejected(rig: DriverRig, guard: str, bad: float) -> None:
+    # Both guards are armed in C++ by `> 0.0` and tripped by `>` against the measured
+    # quantity: 0.0 is the disarmed encoding, a negative and NaN arm nothing, and +inf
+    # arms a guard no finite reading reaches. Accepting any of them reports a guard the
+    # driver does not have, which is worse than having none.
+    times, q, qd = _traj_from(rig.driver, 0.05)
+    with pytest.raises(TrajectoryValidationError, match="must be finite and > 0"):
+        rig.driver.move_trajectory(times, q, qd, **{guard: bad})
+    # move_j forwards both guards, so it inherits the same rejection.
+    with pytest.raises(TrajectoryValidationError, match="must be finite and > 0"):
+        rig.driver.move_j(rig.driver.get_state()["q_cmd"], **{guard: bad})
+    # None is how a caller asks for no guard, and stays accepted.
+    assert rig.driver.move_trajectory(times, q, qd).wait(timeout=4.0) == MotionResult.DONE
+
+
 # --------------------------------------------------------------------------- #
 # CAPTURE collision-check hook: the driver synthesizes the splice from the currently
 # commanded pose to the caller's first knot, so those knots are geometry the caller

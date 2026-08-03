@@ -72,7 +72,9 @@ def plan_joint_move(
     time-synchronization lands them together, so the joint travelling furthest runs at
     this speed and the rest scale down. ``<= 0`` means the config's own velocity limits.
     ``accel_scale`` / ``jerk_scale`` are FRACTIONS of the config's acceleration / jerk
-    limits (see ``controller_facts.MOVEJ_LIMIT_SCALE_A`` / ``_J``).
+    limits (see ``controller_facts.MOVEJ_LIMIT_SCALE_A`` / ``_J``) and must lie in
+    ``(0, 1]``: 1.0 is the arm's own envelope, and above it the plan exceeds the limits
+    the tick engine enforces with nothing downstream to re-time it.
 
     Pass the same :class:`RtCoreConfig` the core was constructed with. The core plays
     knots back with cubic Hermite and never re-times them, so the profile has to be
@@ -82,7 +84,7 @@ def plan_joint_move(
     the target) is stretched over one ITP rather than returning a degenerate timeline.
     The final knot is pinned exactly to ``q_target`` at zero velocity.
 
-    Raises ``ValueError`` on a malformed vector or a non-positive scale, ``RuntimeError``
+    Raises ``ValueError`` on a malformed vector or a scale outside ``(0, 1]``, ``RuntimeError``
     if Ruckig cannot plan the move.
     """
 

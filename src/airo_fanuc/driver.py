@@ -233,18 +233,35 @@ class FanucDriver:
         envelope. The CAPTURE collision-check hook runs when ``policy.capture_check``
         is set.
 
+        ``force_stop_n`` (N) and ``deadman_s`` (s) are optional guards, and both must be
+        finite and > 0 when given. A threshold that cannot trip is rejected rather than
+        armed. ``force_stop_n`` additionally needs live force telemetry, which a v3 /
+        type-202 controller does not provide.
+
         There is no speed-scale knob: the trajectory's own ``times`` and ``qd`` ARE the
-        speed. To replay a plan slower, stretch it — ``times / s`` with ``qd * s`` for
-        ``s < 1`` — which leaves the position path identical and is exactly what a scale
-        factor would have meant. Doing it caller-side is also strictly safer: it scales
-        the FIRST knot too, so the capture splice bridges to the velocity playback will
-        actually begin at. The core's scale factor did not (it built the splice from the
-        unscaled first knot and scaled only playback), which stepped the commanded
-        velocity at the handover — 5 °/s for a 10 °/s first knot at half speed.
+        speed. To replay a plan slower, stretch it caller-side — ``times / s`` with
+        ``qd * s`` for ``s < 1`` — which leaves the position path identical. That has to
+        happen caller-side, because scaling here could only scale playback: the capture
+        splice is built from the first knot, so a scaled playback bridged from an
+        unscaled first knot steps the commanded velocity at the handover.
         """
         self._require_commandable()
         assert self.core is not None
-        if force_stop_n is not None and force_stop_n > 0.0 and not self._force_telemetry_available():
+        # Both guards are armed in C++ by a bare `> 0.0` test and tripped by `>` against
+        # the measured quantity (tick_core.cpp), so 0.0 is the disarmed encoding — which
+        # is what None maps to below. A negative or NaN threshold fails that same arming
+        # comparison, and +inf arms a guard no finite reading reaches. Each of those asks
+        # for a guard and would silently get one that cannot fire, so each is refused at
+        # the call rather than accepted: an inert safety guard is worse than none, because
+        # the caller believes it has one.
+        for _name, _value in (("force_stop_n", force_stop_n), ("deadman_s", deadman_s)):
+            if _value is not None and not (math.isfinite(_value) and _value > 0.0):
+                raise TrajectoryValidationError(
+                    f"{_name} must be finite and > 0, got {_value}. This value would arm "
+                    f"nothing, or arm a guard nothing can reach. Pass None (the default) "
+                    f"to run without it."
+                )
+        if force_stop_n is not None and not self._force_telemetry_available():
             raise TrajectoryValidationError(
                 "force_stop_n was requested but this controller provides no force telemetry "
                 "(Stream Motion v3 / type-202: fs_type unavailable, wrench invalid). The C++ "

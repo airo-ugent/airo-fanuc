@@ -255,15 +255,26 @@ def test_a_start_faster_than_the_requested_speed_decelerates_instead_of_failing(
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "match"),
+    "kwargs",
     [
-        ({"accel_scale": 0.0}, "must be > 0"),
-        ({"jerk_scale": -1.0}, "must be > 0"),
+        {"accel_scale": 0.0},
+        {"jerk_scale": -1.0},
+        {"accel_scale": float("nan")},
+        {"accel_scale": 1.01},
+        {"jerk_scale": 2.0},
+        {"accel_scale": float("inf")},
     ],
 )
-def test_planner_rejects_non_positive_scales(kwargs: dict[str, float], match: str) -> None:
+def test_planner_rejects_scales_outside_the_unit_interval(kwargs: dict[str, float]) -> None:
+    """1.0 is the ceiling, not merely the default.
+
+    The scales multiply the config's a/j limits, the core replays the knots without
+    re-timing them, and its only per-tick clip on the command is positional — so a scale
+    above 1.0 puts a profile past the arm's acceleration on the wire with nothing left
+    to reshape it.
+    """
     args = {"accel_scale": _A_SCALE, "jerk_scale": _J_SCALE, **kwargs}
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ValueError, match=r"must be in \(0, 1\]"):
         _core.plan_joint_move([0.0] * _NDOF, [0.0] * _NDOF, [0.1] * _NDOF, _rt_cfg(), 0.5, **args)
 
 
