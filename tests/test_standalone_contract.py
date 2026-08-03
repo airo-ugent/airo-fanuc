@@ -1,20 +1,19 @@
-"""Guard the standalone-distribution contract that keeps this package upstreamable.
+"""Guard the numpy-only contract, the package's most important distribution property.
 
-``airo_fanuc`` is intended to be contributed to airo-mono
-(https://github.com/airo-ugent/airo-mono) as a FANUC CRX manipulator alongside the
-other ``airo_robots.manipulators.hardware`` drivers. That only stays cheap while the
-package installs and imports with **numpy alone**: no messaging middleware, no
-third-party logging shim, no planner or tensor stack, and — above all — nothing from
-whatever application happens to be deployed on top of the driver. The enforced list
-is :data:`_FORBIDDEN` below.
+``airo_fanuc`` installs and imports with **numpy alone**: no messaging middleware, no
+third-party logging shim, no planner or tensor stack, and nothing from whatever
+application is deployed on top of the driver. That is what lets any consumer adopt it
+without inheriting a dependency stack, and what keeps the environment-specific parts —
+a status sink, a collision checker, a kinematics provider — injected by the caller
+rather than imported here. The enforced list is :data:`_FORBIDDEN` below.
 
 Declared deps and docstrings cannot hold that line on their own: they say
 ``numpy>=1.26`` and "numpy only", but a single convenience
-``from loguru import logger`` breaks the contract silently, and the failure would
-surface only at upstreaming time.
+``from loguru import logger`` breaks the contract silently, and it would not surface
+in a dev venv that happens to have loguru installed.
 
-These are static (AST) checks on purpose — they cannot be satisfied by an
-import that merely happens to be installed in the dev venv.
+Static (AST) checks for exactly that reason — they cannot be satisfied by an import
+that merely happens to be importable where the suite runs.
 """
 
 from __future__ import annotations
@@ -64,8 +63,8 @@ def test_no_forbidden_imports(path: pathlib.Path) -> None:
     offenders = sorted(imported.intersection(_FORBIDDEN))
     assert not offenders, (
         f"{path.name} imports {offenders}, which breaks the standalone contract. "
-        "airo_fanuc must install and import with numpy alone so it can be "
-        "upstreamed to airo-mono; use stdlib logging or dependency injection."
+        "airo_fanuc must install and import with numpy alone; use stdlib logging "
+        "or dependency injection."
     )
 
 

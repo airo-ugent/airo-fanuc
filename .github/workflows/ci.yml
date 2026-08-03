@@ -105,6 +105,68 @@ jobs:
         # guard), which are silently inert if the plugin is not installed.
         run: uv run pytest
 
+  dist:
+    name: Distribution (sdist + wheel)
+    # The two artefacts have failure modes the pytest suite cannot see, because it
+    # runs against src/ rather than against anything installed: a CMake install()
+    # rule from a FetchContent dependency writing outside the package, and an sdist
+    # whose file list omits something the build needs. Both are only visible from
+    # the artefact itself.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Wheel contains nothing outside the package
+        # A dependency's install() rules run alongside ours unless the wheel install
+        # is restricted to our own CMake component, and what they write lands in the
+        # environment root — include/, lib/, share/ — where it collides with other
+        # packages and is removed by `pip uninstall airo-fanuc`.
+        run: |
+          uv run --no-project python - <<'PY'
+          import glob, sys, zipfile
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          stray = [n for n in names if not n.startswith(("airo_fanuc/", "airo_fanuc-"))]
+          if stray:
+              sys.exit("wheel writes outside the package: " + ", ".join(stray))
+          for required in ("airo_fanuc/py.typed", "airo_fanuc/_core.pyi"):
+              if required not in names:
+                  sys.exit(f"wheel is missing {required}")
+          print(f"{len(names)} entries, all inside the package")
+          PY
+
+      - name: sdist builds and imports standalone
+        # Compiles from the sdist's own file list in a venv that starts empty, which
+        # is the only check that the vendored headers the extension needs actually
+        # travel in it. Also asserts the numpy-only contract as an installed fact,
+        # which the AST sweep in tests/ cannot: that one reads source, this one reads
+        # what a user's environment ends up holding.
+        run: |
+          uv venv --python 3.13 /tmp/sdist-venv
+          VIRTUAL_ENV=/tmp/sdist-venv uv pip install --no-cache dist/*.tar.gz
+          /tmp/sdist-venv/bin/python - <<'PY'
+          import sys
+          from importlib.metadata import distributions, version
+          import airo_fanuc._core as core
+          print("imported _core", core.__version__)
+          assert core.__version__ == version("airo-fanuc"), "extension and dist versions disagree"
+          installed = {d.metadata["Name"].lower().replace("_", "-") for d in distributions()}
+          extra = installed - {"airo-fanuc", "numpy"}
+          if extra:
+              sys.exit("install pulled more than numpy: " + ", ".join(sorted(extra)))
+          print("numpy-only contract holds as installed")
+          PY
+
   cpp:
     name: C++ (gtest)
     runs-on: ubuntu-24.04
