@@ -1,37 +1,63 @@
 airo-fanuc
-Copyright 2026 AIRO — Ghent University
+Copyright 2026 IDLab-AIRO, Ghent University
 
-This product includes software developed by AIRO (Ghent University),
-licensed under the Apache License, Version 2.0 (see LICENSES/Apache-2.0.txt).
+Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 ------------------------------------------------------------------------
-Third-party components
+Third-party code redistributed in the source distribution
 ------------------------------------------------------------------------
 
 Stream Motion packet codec
 --------------------------
-This product vendors and compiles the Stream Motion packet-codec headers from
-FANUC's `fanuc_driver` project:
+The Stream Motion wire structs and byte-swap template are compiled from
+FANUC's `fanuc_driver` project, vendored as a submodule:
 
-    vendor/fanuc_driver/fanuc_libs/stream_motion/
-        include/stream_motion/packets.hpp    (#pragma pack(1) wire structs)
-        include/stream_motion/byte_ops.hpp    (endian swap template)
+    vendor/fanuc_driver/fanuc_libs/stream_motion/include/stream_motion/
+        packets.hpp     (#pragma pack(1) wire structs)
+        byte_ops.hpp    (endian swap template)
 
-    SPDX-FileCopyrightText: 2025-2026, FANUC America Corporation
-    SPDX-FileCopyrightText: 2025-2026, FANUC CORPORATION
+    SPDX-FileCopyrightText: 2025, FANUC America Corporation
+    SPDX-FileCopyrightText: 2025, FANUC CORPORATION
     SPDX-License-Identifier: Apache-2.0
 
-Only the packet structs and the byte-swap template are used. FANUC's socket
-layer (`stream.cpp`, sockpp), `fanuc_client`, and `rmi` libraries are NOT
-compiled or linked (see PATCHES.md).
+Only those two headers are used. FANUC's socket layer (`stream.cpp`, sockpp),
+`fanuc_client` and `rmi` libraries are neither compiled nor linked.
 
-Modifications to the vendored FANUC sources: NONE (as of this release). The
-codec is consumed header-only; any future patch is recorded in PATCHES.md with
-an SPDX "Modified by" note in the affected file.
+Modifications: none. The codec is consumed header-only.
+
+RMI error-code table
+--------------------
+`src/airo_fanuc/rmi_client.py` reproduces the 55-entry `kErrorCodes` table from
+`fanuc_libs/rmi/src/rmi.cpp` of the same project verbatim, transcribed into a
+Python dict. The mapping is kept byte-identical deliberately: a hand-curated
+copy drifts from 2556941 onward and then mislabels controller errors in logs.
+
+    SPDX-FileCopyrightText: 2025, FANUC America Corporation
+    SPDX-FileCopyrightText: 2025, FANUC CORPORATION
+    SPDX-License-Identifier: Apache-2.0
 
 ------------------------------------------------------------------------
-Build-time dependencies (fetched via CMake FetchContent; not redistributed
-in the wheel)
+Third-party code redistributed in the built wheel
 ------------------------------------------------------------------------
-  * pybind11  v2.13.6   — BSD-3-Clause  (https://github.com/pybind/pybind11)
-  * googletest v1.14.0  — BSD-3-Clause  (test-only; https://github.com/google/googletest)
+
+Both are fetched at build time by CMake FetchContent and end up compiled into
+`airo_fanuc/_core`, so the wheel is a binary redistribution of each.
+
+  * Ruckig v0.17.3 — MIT (see LICENSES/MIT.txt)
+    https://github.com/pantor/ruckig
+    Copyright (c) 2021 Lars Berscheid
+    Statically linked (BUILD_SHARED_LIBS=OFF).
+
+  * pybind11 v2.13.6 — BSD-3-Clause (see LICENSES/BSD-3-Clause.txt)
+    https://github.com/pybind/pybind11
+    Copyright (c) 2016 Wenzel Jakob
+    Header-only, so its code is compiled into the extension.
+
+------------------------------------------------------------------------
+Build-time only (not redistributed)
+------------------------------------------------------------------------
+
+  * googletest v1.14.0 — BSD-3-Clause
+    https://github.com/google/googletest
+    Fetched only for the C++ unit tests; wheel builds set
+    AIRO_FANUC_BUILD_TESTS=OFF, so it is not fetched and not linked.

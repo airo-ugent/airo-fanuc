@@ -2,9 +2,13 @@
 
 Tracks every modification we carry against the upstream FANUC `fanuc_driver`
 sources vendored under `vendor/fanuc_driver/`. The submodule points directly at
-`FANUC-CORPORATION/fanuc_driver` and is pinned by commit to tag `v2.2.0`; no
-`branch` is recorded in `.gitmodules`, so `git submodule update --remote` cannot
-move the pin silently — bumps are deliberate (see the procedure below).
+`FANUC-CORPORATION/fanuc_driver` and is pinned by commit to tag `v2.2.0`.
+
+A plain `git submodule update` (what `--recursive` clone and CI both do) checks
+out that exact commit. `git submodule update --remote` is the one command that
+moves it: with no `branch` key in `.gitmodules` it follows upstream's default
+branch, so it would fast-forward the pin off the tag and onto `main`. Bump the
+pin only through the procedure below, and never with `--remote`.
 
 Tracking upstream directly is only possible while the patch set below is empty.
 If a patch ever becomes necessary, the submodule must move to a fork carrying it.
@@ -42,8 +46,8 @@ If a patch ever becomes necessary, record it here as:
 > ### P-SM<n> — <one-line symptom>
 > - **Files:** `<paths>`
 > - **Symptom / why:** <what breaks without it>
-> - **Change:** <what the patch does> (+ SPDX `// Modified by AIRO, <date>: <reason>` in the file)
-> - **Upstream issue:** <link — file even though FANUC refuses external PRs; they reply in 2-6 days>
+> - **Change:** <what the patch does> (+ SPDX `// Modified by AIRO: <reason>` in the file)
+> - **Upstream report:** <link, if the same issue was reported upstream>
 > - **Re-validation tests:** <test ids that must pass after the patch>
 
 ## Build-integration notes (NOT source patches)
@@ -58,8 +62,10 @@ If a patch ever becomes necessary, record it here as:
 
 ## Submodule bump procedure
 
-1. Move the pin to the target upstream tag. If any P-SM patch exists, first create a fork
-   branch off that tag, cherry-pick the patches, and repoint the submodule at the fork.
+1. Check out the target upstream tag by commit (`git -C vendor/fanuc_driver checkout <tag>`),
+   not `--remote`. If any P-SM patch exists, first create a fork branch off that tag,
+   cherry-pick the patches, and repoint the submodule at the fork.
 2. Re-run the codec golden tests, the C++ unit tests and the FakeCRX integration matrix; fix drift.
 3. `sizeof` static-asserts in `tests/cpp/test_codec_smoke.cpp` guard silent struct-layout changes.
-4. Dedicated PR + HIL retest before the pin moves on `main`.
+4. Re-test against a real controller before the pin moves on `main`: a struct-layout change that
+   the goldens happen to agree with is still a wire change.

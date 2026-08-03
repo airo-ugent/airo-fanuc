@@ -1,21 +1,51 @@
 # SPDX-License-Identifier: Apache-2.0
 [build-system]
-requires = ["scikit-build-core>=0.10"]
+# 0.11 is the floor that can parse `license`/`license-files` in their PEP 639
+# form below; 0.10 rejects the SPDX string and the build fails outright.
+requires = ["scikit-build-core>=0.11"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "airo-fanuc"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "FANUC driver: C++17 real-time Stream Motion core behind a Python receive/control API"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
-license-files = ["LICENSES/*", "NOTICE"]
-authors = [{ name = "AIRO — Ghent University" }]
+# NOTICE is listed alongside the license texts because Apache-2.0 section 4(d)
+# requires it to travel with any redistribution, and it is where the vendored
+# FANUC codec, Ruckig and pybind11 are attributed.
+license-files = ["LICENSE", "LICENSES/*", "NOTICE"]
+authors = [{ name = "IDLab-AIRO, Ghent University" }]
 keywords = ["fanuc", "crx", "stream-motion", "robot", "manipulator", "real-time"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    # The RT thread is built on timerfd_create + epoll + SCHED_FIFO; there is no
+    # portable fallback, so Linux is not a preference here but a requirement.
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+]
+# No "License :: OSI Approved :: ..." classifier: PEP 639 replaced it with the
+# `license` field above, and declaring both is an error, not a duplication.
+
 # Runtime deps: numpy only. No airo-robots / zenoh / loguru — the wheel must
 # install standalone, so everything environment-specific (a messaging sink, a
 # collision checker, a kinematics provider) is injected by the caller instead.
 dependencies = ["numpy>=1.26"]
+
+[project.urls]
+Homepage = "https://github.com/airo-ugent/airo-fanuc"
+Source = "https://github.com/airo-ugent/airo-fanuc"
+Issues = "https://github.com/airo-ugent/airo-fanuc/issues"
 
 [project.optional-dependencies]
 # pytest-timeout is required, not optional: the deadlock-regression guards carry
@@ -41,7 +71,21 @@ minimum-version = "build-system.requires"
 wheel.packages = ["src/airo_fanuc"]
 # Stable, gitignored build dir so editable rebuilds reuse FetchContent deps.
 build-dir = "build/{wheel_tag}"
-sdist.include = ["src/cpp", "CMakeLists.txt", "vendor/fanuc_driver/fanuc_libs/stream_motion"]
+# The submodule is an entire ROS 2 workspace — hardware interface, MoveIt
+# configs, message definitions, a JPEG — of which we compile exactly two headers.
+# Excluding it wholesale and re-including those is what keeps the sdist from
+# carrying 176 files it cannot use; include wins over exclude, so the order of
+# the two lists does not matter. The headers cannot simply be dropped: without
+# them `pip install --no-binary airo-fanuc` has nothing to compile against.
+sdist.exclude = ["/build", "/dist", "/vendor/fanuc_driver"]
+sdist.include = [
+    "/vendor/fanuc_driver/fanuc_libs/stream_motion/include",
+    "/vendor/fanuc_driver/LICENSES",
+]
+# Install only our own install() rule (see the COMPONENT note in CMakeLists.txt).
+# Without this the wheel also carries Ruckig's install tree into the environment
+# root: include/ruckig/, lib/libruckig.a, lib/cmake/ruckig/, share/ruckig/.
+install.components = ["PythonModule"]
 
 [tool.scikit-build.cmake]
 version = ">=3.22"

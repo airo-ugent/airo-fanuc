@@ -140,7 +140,14 @@ target_compile_definitions(_core PRIVATE AIRO_FANUC_CORE_VERSION="${AIRO_FANUC_V
 
 # scikit-build-core installs CMake outputs into the wheel; place _core inside
 # the import package so it lands at airo_fanuc/_core*.so.
-install(TARGETS _core LIBRARY DESTINATION airo_fanuc)
+#
+# COMPONENT pairs with `install.components = ["PythonModule"]` in pyproject.toml.
+# Ruckig's own CMakeLists carries install() rules for its headers, its static
+# library and its CMake package config; a component-less wheel install runs them
+# too, and they land in the environment root as include/ruckig/, lib/libruckig.a
+# and share/ruckig/. Naming a component is what confines the wheel to this one
+# rule — the FetchContent dependencies get no component, so they are skipped.
+install(TARGETS _core LIBRARY DESTINATION airo_fanuc COMPONENT PythonModule)
 
 # ---------------------------------------------------------------------------
 # C++ tests (gtest). Default ON for standalone builds so `ctest` has targets;
