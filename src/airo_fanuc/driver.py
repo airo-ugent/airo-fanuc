@@ -5,8 +5,8 @@ The API takes the shape industrial-arm drivers usually take: a *receive* half (s
 getters that never block) and a *control* half (motion submission, usable blocking or
 non-blocking), both reachable through one object rather than two session handles. Over
 a FANUC arm that means: the constructor brings the robot up to *commandable*
-(or raises with a real reason), :meth:`move_trajectory` / :meth:`servo_j` are the only
-motion surfaces, :meth:`stop_j` is the universal preempt, and the getters never raise
+(or raises with a real reason), :meth:`move_trajectory` / :meth:`move_j` / :meth:`servo_j`
+are the only motion surfaces, :meth:`stop_j` is the universal preempt, and the getters never raise
 and never lie (value + age). The C++ ``StreamCore`` owns the 125 Hz timeline; the
 :class:`~airo_fanuc.supervisor.Supervisor` owns lifecycle/recovery policy; this
 class is the thin, honest facade over both.
@@ -274,6 +274,125 @@ class FanucDriver:
         assert self._supervisor is not None
         self._supervisor.set_active_handle(handle)
         return handle
+
+    def move_j(
+        self,
+        q: Sequence[float] | np.ndarray,
+        *,
+        joint_speed: float | None = None,
+        settle: SettlePolicy | None = None,
+        deadman_s: float | None = None,
+        force_stop_n: float | None = None,
+        asynchronous: bool = False,
+    ) -> MotionHandle:
+        """Point-to-point move to a joint configuration (rad) → :class:`MotionHandle`.
+
+        The convenience :meth:`move_trajectory` lacks: give it a target pose and a
+        speed, and it plans the profile to get there. It shapes a jerk-limited
+        point-to-point profile from the current COMMANDED state to ``q`` with
+        :func:`airo_fanuc._core.plan_joint_move` (offline Ruckig, under this driver's
+        own limits) and submits the resulting knots through :meth:`move_trajectory`, so
+        it inherits the capture gate, the collision hook, the settle policy and the
+        handle unchanged.
+
+        ``joint_speed`` (rad/s) is the LEADING-AXIS speed, the airo-robots convention:
+        it caps every joint and the profile is time-synchronized, so the joint with the
+        furthest to travel runs at ``joint_speed`` and the others scale down to land
+        with it. ``None`` uses ``MOVEJ_DEFAULT_SPEED_FRACTION`` of the profile's
+        slowest joint. Acceleration and jerk are not arguments: they come from
+        ``config.movej_scale_a`` / ``movej_scale_j`` as fractions of the arm's limits,
+        because a plan shaped at the limits themselves is one the tick engine clips.
+
+        The plan is anchored at ``q_cmd``, not ``q_meas``. Anchoring at the measured
+        pose would fold the servo tracking lag into the first knot as a step, and the
+        capture splice bridges from the commanded pose regardless.
+
+        Raises :class:`TrajectoryValidationError` for a target outside the profile's
+        position limits (the core would silently CLAMP it, and a clamped MoveJ reports
+        DONE somewhere other than where it was asked to go), for a speed above the
+        arm's limits, and for a start already moving faster than the capture envelope
+        — the splice cannot reach such a first knot, whatever the arm is doing. Brake
+        first (:meth:`stop_j` then :meth:`wait_until_steady`) in that last case; this
+        method does not brake on the caller's behalf, so it never preempts a motion
+        the caller did not know was running.
+        """
+        self._require_commandable()
+        assert self.core is not None
+
+        q_arr = np.asarray(q, dtype=np.float64).reshape(-1)
+        if q_arr.shape[0] != _NDOF:
+            raise TrajectoryValidationError(f"move_j expects {_NDOF} joint values, got {q_arr.shape[0]}")
+        if not np.all(np.isfinite(q_arr)):
+            raise TrajectoryValidationError("move_j target is not finite")
+
+        profile = self._cfg.profile
+        below = np.where(q_arr < profile.position_limits_lower)[0].tolist()
+        above = np.where(q_arr > profile.position_limits_upper)[0].tolist()
+        if below or above:
+            raise TrajectoryValidationError(
+                f"move_j target is outside the arm's position limits on joint(s) "
+                f"{sorted(below + above)}: {np.degrees(q_arr).round(3).tolist()}° against "
+                f"[{profile.position_limits_lower_deg.round(3).tolist()}, "
+                f"{profile.position_limits_upper_deg.round(3).tolist()}]°"
+            )
+
+        vlim = profile.velocity_limits
+        if joint_speed is None:
+            speed = float(np.min(vlim)) * cf.MOVEJ_DEFAULT_SPEED_FRACTION
+        else:
+            speed = float(joint_speed)
+            if not (speed > 0.0 and math.isfinite(speed)):
+                raise TrajectoryValidationError(f"move_j joint_speed must be finite and > 0, got {speed}")
+            if speed > float(np.min(vlim)) + 1e-9:
+                raise TrajectoryValidationError(
+                    f"move_j joint_speed {speed:.4f} rad/s ({math.degrees(speed):.2f}°/s) exceeds the "
+                    f"slowest joint's velocity limit {float(np.min(vlim)):.4f} rad/s "
+                    f"({math.degrees(float(np.min(vlim))):.2f}°/s). It is a LEADING-AXIS speed, so it "
+                    f"must be reachable by every joint."
+                )
+
+        snap = _snap(self.core)
+        q_cmd = [float(v) for v in snap["q_cmd"]]
+        qd_cmd = [float(v) for v in snap["qd_cmd"]]
+        capture_rate = float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
+        moving = np.abs(np.asarray(qd_cmd, dtype=np.float64))
+        if np.any(moving > capture_rate * (1.0 + 1e-9)):
+            over = np.where(moving > capture_rate * (1.0 + 1e-9))[0].tolist()
+            raise TrajectoryValidationError(
+                f"move_j cannot start while joint(s) {over} are moving faster than the "
+                f"{cf.CAPTURE_RATE_DEG_S:g}°/s capture envelope "
+                f"({np.rad2deg(moving).round(3).tolist()}°/s). The capture splice that bridges the "
+                f"commanded pose to the plan's first knot cannot reach that velocity. Call stop_j() "
+                f"and wait_until_steady() first, then plan from rest."
+            )
+
+        try:
+            plan = cast(
+                "dict[str, Any]",
+                _core.plan_joint_move(
+                    q_cmd,
+                    qd_cmd,
+                    q_arr.tolist(),
+                    self._rt_cfg,
+                    max_velocity_rad_s=speed,
+                    accel_scale=float(self._cfg.movej_scale_a),
+                    jerk_scale=float(self._cfg.movej_scale_j),
+                ),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise TrajectoryValidationError(
+                f"move_j could not plan a profile to {q_arr.tolist()}: {exc}"
+            ) from exc
+
+        return self.move_trajectory(
+            plan["times_ns"],
+            plan["q"],
+            plan["qd"],
+            settle=settle,
+            deadman_s=deadman_s,
+            force_stop_n=force_stop_n,
+            asynchronous=asynchronous,
+        )
 
     def servo_j(
         self,

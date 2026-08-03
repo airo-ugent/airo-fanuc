@@ -104,6 +104,17 @@ class DriverConfig:
     stop_scale_j: float = cf.STOP_LIMIT_SCALE_J
     slew_factor: float = cf.SLEW_FACTOR
 
+    # -- MoveJ planning envelope ----------------------------------------------
+    #: Fractions of the profile's acceleration / jerk limits that
+    #: :meth:`airo_fanuc.driver.FanucDriver.move_j` shapes its point-to-point profile
+    #: with. Python-only — not mirrored into the RT core, which clamps against the
+    #: full limits; these keep the PLAN clear of that ceiling. A cell that finds the
+    #: default too slow raises them here rather than editing the package. See
+    #: :mod:`airo_fanuc.controller_facts` for why jerk is scaled harder than
+    #: acceleration.
+    movej_scale_a: float = cf.MOVEJ_LIMIT_SCALE_A
+    movej_scale_j: float = cf.MOVEJ_LIMIT_SCALE_J
+
     # -- in-process safety watchdogs (mirror of controller_facts) --------------
     #: SUPERVISOR_LOST hold if the supervisor heartbeat lapses this long (s).
     supervisor_lost_s: float = cf.SUPERVISOR_LOST_S

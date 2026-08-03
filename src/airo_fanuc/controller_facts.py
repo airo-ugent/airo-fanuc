@@ -175,6 +175,27 @@ CAPTURE_RATE_DEG_S: float = 15.0  # starvation re-anchor rate; also the SAFE_FOL
 # GUARD in tick_engine/servo.hpp.
 SERVO_LIMIT_SCALE: float = 1.0
 
+# Point-to-point MoveJ planning envelope (FanucDriver.move_j). Like the brake scales
+# above, these are FRACTIONS of the profile's limits rather than limits themselves, so
+# they carry across arms unchanged.
+#
+# They are deliberately below 1.0. The profile's a/j are the ceiling the tick engine
+# REFUSES to pass a command through, so a plan shaped at the ceiling gets clipped by
+# ordinary numerical slop — and a clipped plan is no longer the profile that was
+# checked. Jerk is scaled harder than acceleration for the same reason the brake scales
+# it harder: the CRX collaborative-stop monitor infers contact force from motor
+# disturbance torque, so a sharp jerk ramp reads as a phantom contact mid-transit. Jerk
+# is the trip trigger; acceleration is not. 0.375 is the "~3x acceleration rather than
+# 8x" that examples/crx10ial.py prescribes for a planner feeding this driver, expressed
+# against the 8x jerk clamp that file derives.
+MOVEJ_LIMIT_SCALE_A: float = 0.5
+MOVEJ_LIMIT_SCALE_J: float = 0.375
+
+# Default MoveJ leading-axis speed, as a fraction of the profile's SLOWEST joint
+# velocity limit, when the caller names no speed. Matches airo-robots'
+# PositionManipulator default of min(max_joint_speeds) / 4.
+MOVEJ_DEFAULT_SPEED_FRACTION: float = 0.25
+
 # Graduated RX-silence response, mid-TRAJECTORY:
 RX_SILENCE_BLIND_HOLD_MS: float = 100.0  # → kill-type entry: blind qd-ramp to hold
 RX_SILENCE_QD_RAMP_MS: float = 60.0  # duration of the qd → 0 ramp

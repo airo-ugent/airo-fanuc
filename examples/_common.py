@@ -304,6 +304,13 @@ class Watch(NamedTuple):
     #: with it. Both ``None`` on a clean run.
     fault: str | None = None
     operator_hint: str | None = None
+    #: Worst COMMANDED joint speed over the run, in deg/s — what the driver put on the
+    #: wire, as opposed to ``max_speed_deg_s``, which is the core's estimate derived
+    #: from the measured position feed. The two answer different questions: whether the
+    #: driver obeyed a speed it was given is a fact about the command, and the estimate
+    #: carries the feed's quantization noise on top (measured ~2.5 deg/s of overshoot at
+    #: 15 deg/s against a commanded peak exact to the millidegree).
+    max_cmd_speed_deg_s: float = 0.0
 
 
 def watch(
@@ -332,6 +339,7 @@ def watch(
     slew_clips_0 = int(driver.get_state().get("total_slew_clips", 0))
     max_lag = 0.0
     max_speed = 0.0
+    max_cmd_speed = 0.0
     samples = 0
     stopped_at: float | None = None
     q_at_stop: np.ndarray | None = None
@@ -347,11 +355,13 @@ def watch(
         q_cmd = np.asarray(st.get("q_cmd", [0.0] * NDOF), dtype=float)[:NDOF]
         q_meas = np.asarray(st.get("q_meas", [0.0] * NDOF), dtype=float)[:NDOF]
         qd_est = np.asarray(st.get("qd_est", [0.0] * NDOF), dtype=float)[:NDOF]
+        qd_cmd = np.asarray(st.get("qd_cmd", [0.0] * NDOF), dtype=float)[:NDOF]
         lag_deg = float(np.max(np.abs(np.degrees(q_cmd - q_meas))))
         speed_deg_s = float(np.max(np.abs(np.degrees(qd_est))))
         elapsed = time.monotonic() - start
         max_lag = max(max_lag, lag_deg)
         max_speed = max(max_speed, speed_deg_s)
+        max_cmd_speed = max(max_cmd_speed, float(np.max(np.abs(np.degrees(qd_cmd)))))
         samples += 1
 
         # Formatted with an explicit fallback: a missing key must not crash the monitor
@@ -411,6 +421,7 @@ def watch(
         result=None if timed_out else handle.result(),
         max_lag_deg=max_lag,
         max_speed_deg_s=max_speed,
+        max_cmd_speed_deg_s=max_cmd_speed,
         slew_clips=int(driver.get_state().get("total_slew_clips", 0)) - slew_clips_0,
         samples=samples,
         elapsed_s=time.monotonic() - start,
@@ -426,7 +437,10 @@ def report_motion(w: Watch, *, expect_result: MotionResult) -> bool:
     print(rule("motion"))
     print(f"  result       : {w.result} (expected {expect_result})")
     print(f"  duration     : {w.elapsed_s:.2f}s over {w.samples} samples")
-    print(f"  peak speed   : {w.max_speed_deg_s:.2f} deg/s")
+    print(
+        f"  peak speed   : {w.max_speed_deg_s:.2f} deg/s measured, "
+        f"{w.max_cmd_speed_deg_s:.2f} deg/s commanded"
+    )
     lag_s = cf.INTERIM_FACTS.tracking_lag_s
     print(
         f"  peak lag     : {w.max_lag_deg:.3f} deg — the {lag_s * 1000:.0f} ms recorded servo lag "

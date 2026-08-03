@@ -7,8 +7,8 @@ The Python surface is split the conventional way for an industrial-arm client li
 *receive* half (state getters that never block, never raise, and never lie — every value comes
 with its age) and a *control* half (motion submission, usable blocking or non-blocking).
 `FanucDriver` presents both halves on one construct-and-go object: the constructor brings the
-robot up to *commandable* or raises with a real reason, `move_trajectory` / `servo_j` are the
-only motion surfaces, and `stop_j()` is the universal preempt.
+robot up to *commandable* or raises with a real reason, `move_trajectory` / `move_j` / `servo_j`
+are the only motion surfaces, and `stop_j()` is the universal preempt.
 
 Everything timing-critical lives in C++: the 125 Hz tick loop, cubic-Hermite trajectory
 playback, the Ruckig-based brake/servo/capture profiles, the slew clip and the safety state
@@ -301,10 +301,16 @@ full set is in `docs/successor-invariants.md`.
 increasing int64 nanosecond times (relative), joint positions and velocities in rad and rad/s.
 Every validation failure raises a typed error naming the offending joint or knot.
 
-A rest-to-rest point-to-point move is therefore just a **2-knot trajectory with zero endpoint
-velocities** — the C++ core cubic-Hermite-interpolates between the knots. There is deliberately
-no `move_to_joint_configuration` primitive; it would only be this, with a duration guessed on
-your behalf.
+A rest-to-rest point-to-point move can therefore be written as a **2-knot trajectory with zero
+endpoint velocities** — the C++ core cubic-Hermite-interpolates between the knots. That shape is
+fine for a slow nudge, but a single cubic segment steps the acceleration at both endpoints
+(`a(t) = 6Δq/T²·(1 − 2t/T)`, so jerk is an impulse there), which the core clips against the jerk
+clamp. `driver.move_j(q, joint_speed=...)` is the real point-to-point path: it shapes a
+jerk-limited profile from the current commanded state with `_core.plan_joint_move` (offline
+Ruckig, under this driver's own limits) and submits the knots through `move_trajectory`, so it
+inherits the capture gate, the collision hook and the settle policy unchanged. `joint_speed` is
+the **leading-axis** speed — it caps every joint and the profile is time-synchronised, so the
+joint travelling furthest runs at it and the rest scale down to land together.
 
 ```python
 import numpy as np

@@ -52,6 +52,40 @@ def generate_capture_path(
     length-6 radian knot vectors, ITP-spaced; ``q[0] == q_cmd``).
     """
 
+def plan_joint_move(
+    q0: list[float],
+    qd0: list[float],
+    q_target: list[float],
+    config: RtCoreConfig | None = None,
+    max_velocity_rad_s: float = 0.0,
+    accel_scale: float = 1.0,
+    jerk_scale: float = 1.0,
+) -> dict[str, object]:
+    """Plan a point-to-point joint move offline with Ruckig; return ITP-spaced knots.
+
+    All vectors are length-6 radians. Returns ``times_ns`` (strictly-increasing int64
+    ns, relative), ``q`` / ``qd`` (lists of length-6 radian knots), ``count`` and
+    ``duration_s`` — the argument shape :meth:`StreamCore.submit_trajectory` and
+    :meth:`airo_fanuc.FanucDriver.move_trajectory` take.
+
+    ``max_velocity_rad_s`` is the LEADING-AXIS speed: it caps every joint, and Ruckig's
+    time-synchronization lands them together, so the joint travelling furthest runs at
+    this speed and the rest scale down. ``<= 0`` means the config's own velocity limits.
+    ``accel_scale`` / ``jerk_scale`` are FRACTIONS of the config's acceleration / jerk
+    limits (see ``controller_facts.MOVEJ_LIMIT_SCALE_A`` / ``_J``).
+
+    Pass the same :class:`RtCoreConfig` the core was constructed with. The core plays
+    knots back with cubic Hermite and never re-times them, so the profile has to be
+    shaped by the limits the tick engine enforces or it gets clipped on the tick.
+
+    Always returns ≥2 knots: a plan shorter than one interpolation period (already at
+    the target) is stretched over one ITP rather than returning a degenerate timeline.
+    The final knot is pinned exactly to ``q_target`` at zero velocity.
+
+    Raises ``ValueError`` on a malformed vector or a non-positive scale, ``RuntimeError``
+    if Ruckig cannot plan the move.
+    """
+
 def decode_status_204(data: bytes) -> dict[str, object]:
     """Decode a Stream Motion type-204 RobotStatusPacket (416 B, big-endian).
 

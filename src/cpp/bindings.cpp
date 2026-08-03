@@ -6,7 +6,9 @@
 // oracle can byte-compare the C++ encoder/decoder against it) AND the real-time
 // StreamCore + RtCoreConfig + capture-path generator.
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -16,6 +18,7 @@
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <ruckig/ruckig.hpp>
 
 #include "codec/codec.hpp"
 #include "rt_core/realtime_core.hpp"
@@ -94,6 +97,123 @@ py::dict py_generate_capture_path(const std::vector<double>& q_cmd, const std::v
   }
   d["q"] = q_knots;
   d["qd"] = qd_knots;
+  return d;
+}
+
+// Offline point-to-point joint plan, for `FanucDriver.move_j`.
+//
+// The RT core plays a submitted trajectory back with cubic Hermite between the knots
+// it is given (see tick_engine/hermite.hpp) — it never re-times them. So a MoveJ is
+// entirely a matter of producing feasible knots, and this produces them with the SAME
+// Ruckig version, the SAME `Ruckig<6>` template and the SAME `cfg.limits` the brake
+// and servo run under. That is the `generate_capture_path` argument applied to the
+// planning side: a profile shaped here is one the tick engine can pass through
+// unclipped, rather than one shaped against a second, separately-maintained envelope.
+//
+// `max_velocity_rad_s` is the LEADING-AXIS speed: it caps every joint, and Ruckig's
+// default time-synchronization then lands them all together, so the joint with the
+// furthest to travel runs at this speed and the rest scale down. <= 0 means "the
+// config's own velocity limits". `accel_scale` / `jerk_scale` are FRACTIONS of
+// `cfg.limits.a` / `cfg.limits.j` (airo_fanuc.controller_facts.MOVEJ_LIMIT_SCALE_A/_J).
+py::dict py_plan_joint_move(const std::vector<double>& q0, const std::vector<double>& qd0,
+                            const std::vector<double>& q_target,
+                            const std::optional<airo_fanuc::rt_core::RtCoreConfig>& config,
+                            double max_velocity_rad_s, double accel_scale, double jerk_scale) {
+  namespace te = airo_fanuc::tick_engine;
+  auto to_vec6 = [](const std::vector<double>& v, const char* name) {
+    if (v.size() != static_cast<std::size_t>(te::kNumJoints)) {
+      throw std::invalid_argument(std::string(name) + " must have length " +
+                                  std::to_string(te::kNumJoints));
+    }
+    te::Vec6 out{};
+    for (std::size_t i = 0; i < out.size(); ++i) {
+      out[i] = v[i];
+    }
+    return out;
+  };
+  const te::Vec6 p0 = to_vec6(q0, "q0");
+  const te::Vec6 v0 = to_vec6(qd0, "qd0");
+  const te::Vec6 pt = to_vec6(q_target, "q_target");
+  // Same rule as generate_capture_path: pass the config the core was built from, or
+  // the plan is shaped by the synthetic C++ fallback envelope instead of the arm's.
+  const te::TickEngineConfig cfg = config ? config->tick : te::TickEngineConfig{};
+
+  if (!(accel_scale > 0.0) || !(jerk_scale > 0.0)) {
+    throw std::invalid_argument("accel_scale and jerk_scale must be > 0");
+  }
+  if (!(cfg.itp_s > 0.0)) {
+    throw std::invalid_argument("config.itp_s must be > 0");
+  }
+
+  ruckig::Ruckig<te::kNumJoints> otg(cfg.itp_s);
+  ruckig::InputParameter<te::kNumJoints> inp;
+  ruckig::Trajectory<te::kNumJoints> traj;
+
+  inp.control_interface = ruckig::ControlInterface::Position;
+  inp.synchronization = ruckig::Synchronization::Time;  // the leading-axis semantics
+  inp.current_position = p0;
+  inp.current_velocity = v0;
+  inp.current_acceleration = te::Vec6{};
+  inp.target_position = pt;
+  inp.target_velocity = te::Vec6{};
+  inp.target_acceleration = te::Vec6{};
+  for (std::size_t j = 0; j < static_cast<std::size_t>(te::kNumJoints); ++j) {
+    double v_max = cfg.limits.v[j];
+    if (max_velocity_rad_s > 0.0) {
+      v_max = std::min(v_max, max_velocity_rad_s);
+    }
+    // The ceiling is the REQUESTED speed even when the arm already exceeds it — a
+    // MoveJ issued while the arm still coasts must decelerate into the speed the
+    // caller asked for, not inherit the entry speed as its cruise. Ruckig permits
+    // this: `calculate` validates the TARGET state against the limits but not the
+    // current one, so an over-speed start is planned down rather than refused.
+    inp.max_velocity[j] = v_max;
+    inp.max_acceleration[j] = accel_scale * cfg.limits.a[j];
+    inp.max_jerk[j] = jerk_scale * cfg.limits.j[j];
+  }
+
+  const ruckig::Result r = otg.calculate(inp, traj);
+  if (r != ruckig::Result::Working && r != ruckig::Result::Finished) {
+    throw std::runtime_error("ruckig could not plan this joint move (Result=" +
+                             std::to_string(static_cast<int>(r)) + ")");
+  }
+
+  const double duration_s = traj.get_duration();
+  const std::int64_t itp_ns = static_cast<std::int64_t>(std::llround(cfg.itp_s * 1e9));
+  const std::int64_t plan_ns = static_cast<std::int64_t>(std::llround(duration_s * 1e9));
+  // The core cannot execute less than one tick, so that is the floor on the emitted
+  // timeline. A sub-tick plan (already at the target, or a hair away) is stretched
+  // over one ITP, which errs slow, and guarantees the strictly-increasing int64 times
+  // move_trajectory validates.
+  const std::int64_t exec_ns = std::max(plan_ns, itp_ns);
+  const int n_intervals = std::max(1, static_cast<int>(std::ceil(static_cast<double>(exec_ns) /
+                                                                 static_cast<double>(itp_ns))));
+
+  py::list times_ns;
+  py::list q_knots;
+  py::list qd_knots;
+  te::Vec6 p{};
+  te::Vec6 v{};
+  te::Vec6 a{};
+  for (int k = 0; k <= n_intervals; ++k) {
+    const double frac = static_cast<double>(k) / static_cast<double>(n_intervals);
+    traj.at_time(duration_s * frac, p, v, a);
+    times_ns.append(static_cast<std::int64_t>(std::llround(static_cast<double>(exec_ns) * frac)));
+    q_knots.append(std::vector<double>(p.begin(), p.end()));
+    qd_knots.append(std::vector<double>(v.begin(), v.end()));
+  }
+  // Pin the endpoint. Sampling at t=duration lands on the target to ~1e-12 rad, but
+  // the settle tolerance is measured against the pose the CALLER asked for, so the
+  // last knot states it exactly rather than to within float dust.
+  q_knots[n_intervals] = std::vector<double>(pt.begin(), pt.end());
+  qd_knots[n_intervals] = std::vector<double>(te::kNumJoints, 0.0);
+
+  py::dict d;
+  d["times_ns"] = times_ns;
+  d["q"] = q_knots;
+  d["qd"] = qd_knots;
+  d["count"] = n_intervals + 1;
+  d["duration_s"] = static_cast<double>(exec_ns) / 1e9;
   return d;
 }
 
@@ -366,6 +486,16 @@ PYBIND11_MODULE(_core, m) {
         "RtCoreConfig the core was constructed with — the splice is bounded by the arm limits it "
         "carries, so omitting it synthesizes under the synthetic C++ fallback envelope instead and "
         "matches only a core built from a default RtCoreConfig.");
+
+  m.def("plan_joint_move", &py_plan_joint_move, py::arg("q0"), py::arg("qd0"), py::arg("q_target"),
+        py::arg("config") = py::none(), py::arg("max_velocity_rad_s") = 0.0,
+        py::arg("accel_scale") = 1.0, py::arg("jerk_scale") = 1.0,
+        "Plan a point-to-point joint move offline with Ruckig and return ITP-spaced knots: "
+        "{times_ns, q, qd, count, duration_s}, ready for FanucDriver.move_trajectory. "
+        "max_velocity_rad_s is the LEADING-AXIS speed (<=0 = the config's velocity limits); "
+        "accel_scale / jerk_scale are fractions of the config's acceleration / jerk limits. "
+        "Pass the same RtCoreConfig the core was constructed with, so the profile is shaped by "
+        "the limits the tick engine actually enforces.");
 
   // -------------------------------------------------------------------------
   // RT core: StreamCore + RtCoreConfig + mode/fault/status enums.

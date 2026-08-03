@@ -27,9 +27,15 @@ The API is split into a receive side (state getters, never raise) and a control 
 (motion commands, blocking or non-blocking); this file is the joint-space slice of it:
 
     read the current configuration  -> driver.get_state()["q_meas"]   (rad)
-    move to a configuration         -> driver.move_trajectory(times, q, qd)   (this file)
+    execute a planned trajectory    -> driver.move_trajectory(times, q, qd)   (this file)
+    move to a configuration         -> driver.move_j(q, joint_speed=...)      (examples/move_j.py)
     servo towards a configuration   -> driver.servo_j(q, dt)
     (protective) stop               -> driver.stop_j()                (universal preempt)
+
+This file takes the trajectory route on purpose: it is the layer everything else is
+built on, so it is the one to prove first. ``move_j`` plans a jerk-limited profile and
+submits it through exactly this call — for a point-to-point move with a speed rather
+than a duration, reach for that instead of hand-building knots.
 
 TCP-pose moves are deliberately absent: the wheel is numpy-only and ships no
 kinematics, so IK/FK — and therefore any Cartesian move — belongs to the caller.

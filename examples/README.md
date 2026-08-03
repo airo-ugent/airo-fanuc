@@ -7,7 +7,7 @@
 > FANUC every assumption below is yours to check first — see
 > [What is specific to this arm](#what-is-specific-to-this-arm).
 
-Five runnable scripts. The first three are the ordered validation run: each connects,
+Six runnable scripts. The first four are the ordered validation run: each connects,
 prints what the controller told it, moves a little, and ends in an explicit
 `PASS`/`FAIL` verdict — so a run is something you can read rather than something you
 have to interpret. Exit code `0` means every check passed. The last two command nothing
@@ -17,6 +17,7 @@ the streamed Cartesian pose is in.
 | Script | What it proves |
 |---|---|
 | `move_joints.py` | The stack connects and executes one commanded move |
+| `move_j.py` | `move_j` plans that move for you, at a speed you name, and lands every joint together |
 | `sine_wave.py` | It *tracks* a continuous multi-joint path, and `stop_j()` stops it |
 | `servo_stream.py` | The same path *streamed* setpoint-by-setpoint through `servo_j` |
 | `check_joint_limits.py` | The recorded soft limits match the arm. Read-only, you move it |
@@ -51,13 +52,15 @@ against a live cell, and it is the first thing to run on an arm that is not this
 ```bash
 uv sync --extra dev                       # builds the C++ extension into the venv
 uv run python examples/move_joints.py --fake
+uv run python examples/move_j.py --fake
+uv run python examples/move_j.py --fake --multi
 uv run python examples/sine_wave.py --fake --period 4 --cycles 1
 uv run python examples/sine_wave.py --fake --period 8 --cycles 1 --stop-after 2
 uv run python examples/servo_stream.py --fake --period 4 --cycles 1
 uv run python examples/verify_tcp_frame.py --fake
 ```
 
-All five must end in `PASSED`. This is also the check to re-run after editing any
+All seven must end in `PASSED`. This is also the check to re-run after editing any
 C++: `uv run pytest` does **not** rebuild the extension, so run `uv sync --extra dev
 --reinstall-package airo-fanuc` first or you will be validating the old `_core`.
 
@@ -107,6 +110,39 @@ uv run python examples/move_joints.py --ip <CONTROLLER_IP> --joint 6 --delta-deg
 J6 is the default because a wrist-roll error is the cheapest kind. The run checks
 that the motion returned `DONE` and that the joint actually arrived within the
 settle tolerance — measured from outside the driver, in the degrees you asked for.
+
+### Step 2b — the same move, planned for you
+
+```bash
+uv run python examples/move_j.py --ip <CONTROLLER_IP> --joint 6 --delta-deg 20 --speed-scale 0.1 --return
+uv run python examples/move_j.py --ip <CONTROLLER_IP> --multi --speed-scale 0.1 --return
+```
+
+Step 2 hand-builds a 2-knot trajectory; this asks `move_j` for the journey and gives it
+a speed instead of a duration. `--speed-scale` is a fraction of the arm's slowest joint
+velocity limit — `0.1` is 12 deg/s on the CRX-10iA/L — so it means the same thing on
+any arm, and `1.0` is the fastest a leading-axis speed can be while every joint can
+still reach it. The run echoes the absolute deg/s it resolves to. (This is not the
+`speed_scale` `move_trajectory` used to take: that rescaled an already-built
+trajectory's playback but not its capture splice, stepping velocity at the handover.
+This one is applied before planning, so profile and splice agree.)
+
+`--multi` moves three joints unequal distances at once and times each one's arrival,
+which is how the leading-axis synchronisation shows up from outside — a 20 ms spread
+offline, against the ~1.5 s a sequential version would take.
+
+If a move is too short to reach the speed you asked for, the run says so and prints how
+much travel the accel and decel ramps need at that speed, rather than failing: at
+`--speed-scale 1.0` on this arm those ramps alone are ~100 deg, so a 20 deg move peaks
+near 47 deg/s no matter what you ask for.
+
+Two numbers decide whether the jerk-limited profile suits this arm: **slew clips** must
+stay at zero (a clip means the core trimmed the planned profile, so the executed path is
+not the planned one), and the run must not fault with `CONTACT_STOP` in a clear cell
+(the collaborative-stop monitor reading a jerk ramp as a collision). The acceleration
+and jerk numbers in `crx10ial.py` are derived, not measured, and `move_j` plans at
+`MOVEJ_LIMIT_SCALE_A` / `_J` of them — walking `--speed-scale` up while watching those
+two is how that fraction gets validated on real hardware.
 
 ### Step 3 — continuous tracking
 
