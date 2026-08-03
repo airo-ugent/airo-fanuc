@@ -77,7 +77,9 @@ build-dir = "build/{wheel_tag}"
 # carrying 176 files it cannot use; include wins over exclude, so the order of
 # the two lists does not matter. The headers cannot simply be dropped: without
 # them `pip install --no-binary airo-fanuc` has nothing to compile against.
-sdist.exclude = ["/build", "/dist", "/vendor/fanuc_driver"]
+# hardware_todo.md is a pre-release checklist for this cell, not documentation for
+# someone installing the package; it would read as an inventory of what is broken.
+sdist.exclude = ["/build", "/dist", "/vendor/fanuc_driver", "/hardware_todo.md"]
 sdist.include = [
     "/vendor/fanuc_driver/fanuc_libs/stream_motion/include",
     "/vendor/fanuc_driver/LICENSES",
@@ -90,6 +92,11 @@ install.components = ["PythonModule"]
 [tool.scikit-build.cmake]
 version = ">=3.22"
 build-type = "Release"
+
+[tool.scikit-build.cmake.define]
+# The wheel runtime never needs gtest; skip the googletest FetchContent. The
+# standalone `cmake -S ... && ctest` build leaves this ON (CMake default).
+AIRO_FANUC_BUILD_TESTS = "OFF"
 
 # ---------------------------------------------------------------------------
 # cibuildwheel: the published wheels. Without these, the only artifact PyPI would
@@ -119,11 +126,6 @@ test-command = [
     "python -c \"import airo_fanuc, airo_fanuc._core as c; print(airo_fanuc.__version__, c.__version__)\"",
     "python -m pytest -q {project}/tests/test_lifecycle.py {project}/tests/test_standalone_contract.py",
 ]
-
-[tool.scikit-build.cmake.define]
-# The wheel runtime never needs gtest; skip the googletest FetchContent. The
-# standalone `cmake -S ... && ctest` build leaves this ON (CMake default).
-AIRO_FANUC_BUILD_TESTS = "OFF"
 
 # ---------------------------------------------------------------------------
 # Lint / typecheck config (ruff + mypy).
