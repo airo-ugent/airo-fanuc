@@ -98,14 +98,14 @@ in a diff, and a run reproducible against a controller whose settings have since
 Read it before trusting the numbers anywhere. In summary: velocity is the controller's own
 `$PARAM_GROUP` value, which happens to match FANUC Europe datasheet **MDS-04018** exactly;
 acceleration and jerk are engineering *derivations* from it (2× velocity and 8× acceleration).
-FANUC does publish accelerations for this
-arm too — in a file inside this repo's own vendored submodule,
-`vendor/fanuc_driver/fanuc_moveit_config/config/joint_limits.yaml` — and those are 6–16× lower,
-with velocities matching exactly. The profile records why that is not simply a bug to patch:
-FANUC's figures are *planning* limits (a profile a planner shapes trajectories to) while these
-are *clamps* (the ceiling above which the RT core refuses to pass a command through), so they
-are deliberately looser. Whether the gap is the right size is an **open question** flagged there,
-to be resolved by measuring this controller rather than by picking one of the two numbers.
+Published accelerations for this arm also exist inside this repo's own vendored submodule,
+`vendor/fanuc_driver/fanuc_moveit_config/config/joint_limits.yaml`, and those are 6–16×
+lower, with velocities matching exactly. The profile records why the two are not
+comparable rather than one being wrong: those are *planning* limits — a profile a planner
+shapes trajectories to — while these are *clamps*, the ceiling above which the RT core
+refuses to pass a command through, so a looser number is the expected relationship.
+Whether this gap is the right size is an **open question** flagged there, to be resolved
+by measuring this controller rather than by picking one of the two numbers.
 
 One related caveat, also documented there: a planner feeding this driver should shape
 trajectories with a *softer* jerk than the clamp (~3× acceleration rather than 8×). The CRX

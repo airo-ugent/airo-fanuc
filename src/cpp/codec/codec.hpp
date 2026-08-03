@@ -75,8 +75,8 @@ struct RobotStatusView {
 // ║ but it is NOT unused: it is the `dataStyle` selector that tells the        ║
 // ║ controller how to interpret command_pos. 0xFFFF means "joint angles".      ║
 // ║                                                                            ║
-// ║ Write 0 (or leave it zero-initialised, which is what "unused" invites) and ║
-// ║ the controller reads the same six doubles as a Cartesian XYZWPR pose       ║
+// ║ Write 0 — which is what a zero-initialised struct gives you — and the      ║
+// ║ controller reads the same six doubles as a Cartesian XYZWPR pose           ║
 // ║ instead of joint angles. Joint values interpreted as millimetres and       ║
 // ║ Euler degrees describe a pose nowhere near the current one, so the arm     ║
 // ║ takes a full-speed slew toward it and the controller E-stops. This has     ║
@@ -85,8 +85,9 @@ struct RobotStatusView {
 // ║                                                                            ║
 // ║ The value is single-sourced as COMMAND_DATA_STYLE in                       ║
 // ║ `airo_fanuc.controller_facts`, mirrored by kCommandDataStyle in codec.cpp. ║
-// ║ Never hardcode it at a call site, and never "clean up" the field on the    ║
-// ║ grounds that FANUC calls it `unused`.                                      ║
+// ║ Never hardcode it at a call site, and never drop the write on the          ║
+// ║ strength of the field's name: it is load-bearing whatever the struct       ║
+// ║ calls it.                                                                  ║
 // ╚════════════════════════════════════════════════════════════════════════════╝
 //
 // version_no is pinned to stream_motion::kVersion (3). Version negotiation is not

@@ -73,7 +73,7 @@ SLEW_FACTOR: float = 1.2
 
 
 @dataclass(frozen=True)
-class P1Facts:
+class MeasuredFacts:
     """Controller facts measured on the physical CRX.
 
     Each field carries the observation that produced it. ``confirmed`` is ``True``
@@ -130,7 +130,7 @@ class P1Facts:
     # calibration HARD-REJECTS them (loud); on where it does not apply, every derived pose
     # is silently one J2 out. Settle it per cell with
     # `examples/verify_j2j3_coupling.py --move`, then construct facts with
-    # `dataclasses.replace(INTERIM_FACTS, rmi_to_stream_j3_plus_j2_verified=True)`.
+    # `dataclasses.replace(MEASURED_FACTS, rmi_to_stream_j3_plus_j2_verified=True)`.
     rmi_to_stream_j3_plus_j2_measured: bool = True  # MEASURED: the relation, and its form
     rmi_to_stream_j3_plus_j2_verified: bool = False  # per-installation: off until confirmed
 
@@ -152,9 +152,7 @@ class P1Facts:
 
 
 #: The measured fact set used throughout the codebase (single-sourced from here).
-#: Despite the ``INTERIM_FACTS`` name — stable because every call site imports it —
-#: these values are the hardware-measured ones, not placeholders.
-INTERIM_FACTS = P1Facts()
+MEASURED_FACTS = MeasuredFacts()
 
 
 @dataclass(frozen=True)

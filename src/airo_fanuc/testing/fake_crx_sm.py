@@ -413,7 +413,7 @@ class FakeStreamMotionServer:
             with self._state.lock:
                 self._state.tx_silent = True
             # Measured controller behavior (tx_silence_backstop_ok reads
-            # INTERIM_FACTS.tx_silence_backstop_ok = False): the controller coasts
+            # MEASURED_FACTS.tx_silence_backstop_ok = False): the controller coasts
             # at the last commanded velocity, it does not fast-decel.
             self._plant.silence_step(dt, backstop_ok=self._cfg.tx_silence_backstop_ok)
         else:

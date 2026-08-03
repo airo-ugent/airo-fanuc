@@ -23,7 +23,7 @@ bad sample — "surface latent issues loudly"):
 
 * **J2/J3 source gate.** RMI-sourced joints are tagged
   :data:`SOURCE_RMI_UNCONVERTED` and calibration **HARD-REJECTS** them while
-  ``controller_facts.INTERIM_FACTS.rmi_to_stream_j3_plus_j2_verified`` is
+  ``controller_facts.MEASURED_FACTS.rmi_to_stream_j3_plus_j2_verified`` is
   ``False``. On a controller serving the J2/J3-coupled representation RMI reports
   J3 one J2 below the Stream Motion value, so reaching the stream frame takes
   ``J3 += J2``; whether a controller does that is a per-installation
@@ -64,8 +64,8 @@ import numpy as np
 from airo_fanuc.controller_facts import (
     CALIB_LSQ_WINDOW_S,
     CALIB_STILLNESS_DEG_S,
-    INTERIM_FACTS,
-    P1Facts,
+    MEASURED_FACTS,
+    MeasuredFacts,
 )
 from airo_fanuc.exceptions import (
     CalibrationError,
@@ -91,7 +91,7 @@ SOURCE_RMI_CONVERTED = "rmi_converted"
 _DEFAULT_MIN_SAMPLES = 3  # a degree-1 fit needs >=2; 3 rejects a 2-point fluke
 _DEFAULT_MIN_SPAN_FRACTION = 0.8  # window must be ~covered (discrete sampling slack)
 # Minimum position change (deg) between two accepted calibration samples. Well
-# above RMI angle quantization (~0.001 deg, INTERIM_FACTS.rmi_angle_resolution_deg)
+# above RMI angle quantization (~0.001 deg, MEASURED_FACTS.rmi_angle_resolution_deg)
 # so a genuinely new jogged pose passes, but a byte-identical frozen feed (0.0
 # change — the frozen-feed signature) is caught.
 _DEFAULT_MIN_CHANGE_DEG = 0.05
@@ -140,7 +140,7 @@ class RmiClientJointReader:
 
     The tag is load-bearing: on a controller serving the J2/J3-coupled
     representation RMI J3 is one J2 below the Stream Motion value
-    (``controller_facts.INTERIM_FACTS.rmi_to_stream_j3_plus_j2_measured``), so
+    (``controller_facts.MEASURED_FACTS.rmi_to_stream_j3_plus_j2_measured``), so
     these joints are HARD-rejected for calibration by
     :meth:`FanucReceiveInterface._apply_source_policy` until the installation
     confirms it via ``rmi_to_stream_j3_plus_j2_verified``. This reader NEVER
@@ -223,7 +223,7 @@ class FanucReceiveInterface:
         min_samples: int = _DEFAULT_MIN_SAMPLES,
         min_span_fraction: float = _DEFAULT_MIN_SPAN_FRACTION,
         min_change_deg: float = _DEFAULT_MIN_CHANGE_DEG,
-        facts: P1Facts = INTERIM_FACTS,
+        facts: MeasuredFacts = MEASURED_FACTS,
         ring_size: int = 256,
         now_ns: Callable[[], int] = time.time_ns,
     ) -> None:

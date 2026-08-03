@@ -712,7 +712,7 @@ def rmi_read_joint_angles_request() -> dict[str, Any]:
     C++ default), so the request is the bare ``{"Command": "FRC_ReadJointAngles"}``.
 
     The reply's ``JointAngle`` block is UNCONVERTED — RMI reports J3 one J2 below
-    the Stream Motion value (``controller_facts.INTERIM_FACTS
+    the Stream Motion value (``controller_facts.MEASURED_FACTS
     .rmi_to_stream_j3_plus_j2_measured``), so joints read this way are tagged
     :data:`~airo_fanuc.receive_interface.SOURCE_RMI_UNCONVERTED` and hard-rejected
     for calibration until the ``J3 += J2`` conversion is verified at a second J2.

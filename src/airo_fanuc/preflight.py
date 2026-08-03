@@ -33,7 +33,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .controller_facts import INTERIM_FACTS
+from .controller_facts import MEASURED_FACTS
 from .controller_probe import (
     OPTION_EXTERNAL_CONTROL,
     ControllerFacts,
@@ -261,8 +261,8 @@ def _check_p_level(report: PreflightReport, facts: ControllerFacts) -> None:
         return
 
     got = p_level_key(order.deliver_version)
-    hard = p_level_key(INTERIM_FACTS.p_level_min_hard)
-    warn = p_level_key(INTERIM_FACTS.p_level_min_warn)
+    hard = p_level_key(MEASURED_FACTS.p_level_min_hard)
+    warn = p_level_key(MEASURED_FACTS.p_level_min_warn)
     if got is None:
         report.warnings.append(f"full preflight: unparseable Deliver Ver {order.deliver_version!r}")
         return
@@ -270,12 +270,12 @@ def _check_p_level(report: PreflightReport, facts: ControllerFacts) -> None:
     if hard is not None and got < hard:
         report.hard_blocks.append(
             f"controller software {order.deliver_version} is below the hard floor "
-            f"{INTERIM_FACTS.p_level_min_hard} — update the controller before streaming."
+            f"{MEASURED_FACTS.p_level_min_hard} — update the controller before streaming."
         )
     elif warn is not None and got < warn:
         report.warnings.append(
             f"controller software {order.deliver_version} is in the vibration-risk WARN band "
-            f"(< {INTERIM_FACTS.p_level_min_warn}); non-blocking"
+            f"(< {MEASURED_FACTS.p_level_min_warn}); non-blocking"
         )
 
     edition = facts.version.software_edition if facts.version else None

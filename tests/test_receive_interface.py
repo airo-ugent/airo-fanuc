@@ -16,7 +16,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from airo_fanuc.controller_facts import INTERIM_FACTS
+from airo_fanuc.controller_facts import MEASURED_FACTS
 from airo_fanuc.exceptions import (
     CalibrationError,
     CalibrationSourceError,
@@ -173,7 +173,7 @@ def test_rmi_accepted_once_conversion_verified() -> None:
     # representation would (docs/controller-notes.md §1.5): RMI joints become
     # acceptable and are converted + retagged via the single per-model policy point.
     clock = _Clock()
-    facts = replace(INTERIM_FACTS, rmi_to_stream_j3_plus_j2_verified=True)
+    facts = replace(MEASURED_FACTS, rmi_to_stream_j3_plus_j2_verified=True)
     ri = FanucReceiveInterface(now_ns=clock, facts=facts)
     _feed(ri, clock, _Q_A, [0.0] * 6, source=SOURCE_RMI_UNCONVERTED)
     sample = ri.capture_calibration_sample()
@@ -189,7 +189,7 @@ def test_rmi_conversion_is_off_by_default_so_the_values_are_never_touched() -> N
     # than joints that may or may not have had J2 folded into J3.
     clock = _Clock()
     ri = FanucReceiveInterface(now_ns=clock)
-    assert not INTERIM_FACTS.rmi_to_stream_j3_plus_j2_verified
+    assert not MEASURED_FACTS.rmi_to_stream_j3_plus_j2_verified
     _feed(ri, clock, _Q_A, [0.0] * 6, source=SOURCE_RMI_UNCONVERTED)
     with pytest.raises(CalibrationSourceError):
         ri.capture_calibration_sample()
@@ -197,7 +197,7 @@ def test_rmi_conversion_is_off_by_default_so_the_values_are_never_touched() -> N
 
 def test_no_mixing_sources_in_one_dataset() -> None:
     clock = _Clock()
-    facts = replace(INTERIM_FACTS, rmi_to_stream_j3_plus_j2_verified=True)
+    facts = replace(MEASURED_FACTS, rmi_to_stream_j3_plus_j2_verified=True)
     ri = FanucReceiveInterface(now_ns=clock, facts=facts)
     _feed(ri, clock, _Q_A, [0.0] * 6, source=SOURCE_STREAM)
     ri.capture_calibration_sample()  # accept a stream sample first

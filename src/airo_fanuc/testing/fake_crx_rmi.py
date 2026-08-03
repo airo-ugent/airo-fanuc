@@ -14,7 +14,7 @@ Emulates the controller's Remote Motion Interface as
   ``NextSequenceID``; an ``FRC_Call`` with a stale/duplicate SequenceID is
   silently dropped (no ack, no launch) — modeling why the driver must reseed
   from ``FRC_GetStatus.NextSequenceID`` after every Initialize/Reset.
-* **Single-session** (``INTERIM_FACTS.rmi_single_session``): a second concurrent
+* **Single-session** (``MEASURED_FACTS.rmi_single_session``): a second concurrent
   ``FRC_Connect_STMO`` while a session is live returns error ``2556954``.
 * **Error injection**: arm any command to return a specific ErrorID (2556938 TP
   not paused, 2556943 stale session, 2556954 multi-session, 2556934/2556936 →
@@ -184,7 +184,7 @@ class FakeRmiServer:
         with self._lock:
             if self._cfg.single_session and self._session_active:
                 # A second concurrent connect is refused: the controller serves
-                # one RMI session at a time (INTERIM_FACTS.rmi_single_session).
+                # one RMI session at a time (MEASURED_FACTS.rmi_single_session).
                 self._send(
                     conn,
                     {"Communication": "FRC_Connect_STMO", "ErrorID": ERR_ALREADY_CONNECTED},
@@ -314,7 +314,7 @@ class FakeRmiServer:
     def _handle_read_joint_angles(self, req: dict[str, Any]) -> dict[str, Any]:
         # The plant array is the Stream Motion frame (the SM plane streams it
         # unmodified), so this plane subtracts J2 to serve J3 in the RMI frame:
-        # RMI J3 = SM J3 − J2 (INTERIM_FACTS.rmi_to_stream_j3_plus_j2_measured), which
+        # RMI J3 = SM J3 − J2 (MEASURED_FACTS.rmi_to_stream_j3_plus_j2_measured), which
         # a reader must add back. Wired to the shared plant so the reply tracks
         # whatever the plant is currently at.
         with self._state.lock:

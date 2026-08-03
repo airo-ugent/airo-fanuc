@@ -7,12 +7,13 @@
 > FANUC every assumption below is yours to check first — see
 > [What is specific to this arm](#what-is-specific-to-this-arm).
 
-Six runnable scripts. The first four are the ordered validation run: each connects,
+Seven runnable scripts. The first four are the ordered validation run: each connects,
 prints what the controller told it, moves a little, and ends in an explicit
 `PASS`/`FAIL` verdict — so a run is something you can read rather than something you
-have to interpret. Exit code `0` means every check passed. The last two command nothing
-by default: one checks the guard table against the arm, the other resolves what frame
-the streamed Cartesian pose is in.
+have to interpret. Exit code `0` means every check passed. The last three command
+nothing by default: one checks the guard table against the arm, one resolves what frame
+the streamed Cartesian pose is in, and one settles whether this controller reports J3
+relative to J2.
 
 | Script | What it proves |
 |---|---|
@@ -61,9 +62,11 @@ uv run python examples/sine_wave.py --fake --period 4 --cycles 1
 uv run python examples/sine_wave.py --fake --period 8 --cycles 1 --stop-after 2
 uv run python examples/servo_stream.py --fake --period 4 --cycles 1
 uv run python examples/verify_tcp_frame.py --fake
+uv run python examples/verify_j2j3_coupling.py --fake
+uv run python examples/verify_j2j3_coupling.py --fake --move
 ```
 
-All seven must end in `PASSED`. This is also the check to re-run after editing any
+All nine must end in `PASSED`. This is also the check to re-run after editing any
 C++: `uv run pytest` does **not** rebuild the extension, so run `uv sync --extra dev
 --reinstall-package airo-fanuc` first or you will be validating the old `_core`.
 

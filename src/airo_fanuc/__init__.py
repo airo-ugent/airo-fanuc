@@ -17,6 +17,12 @@ CRX-10iA/L this driver has been run against.
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _metadata_version
 
+#: Re-exported from the extension because :meth:`FanucDriver.get_state` publishes
+#: ``mode`` and the condition mask as plain integers, and :class:`LifecycleState`
+#: deliberately collapses HOLD/CAPTURE/TRAJECTORY/SERVO/BRAKE into ``STREAMING`` — so
+#: without these a caller cannot decode values the driver hands it, and the examples
+#: had to reach into ``airo_fanuc._core`` to do it.
+from ._core import FaultReason, Mode
 from .config import DriverConfig, DriverPolicy, MotionResult, SettlePolicy
 from .driver import FanucDriver, MotionHandle
 from .exceptions import (
@@ -55,7 +61,9 @@ __all__ = [
     "FanucDriver",
     "FanucError",
     "FanucPreflightError",
+    "FaultReason",
     "LifecycleState",
+    "Mode",
     "MotionHandle",
     "MotionResult",
     "OwnershipError",

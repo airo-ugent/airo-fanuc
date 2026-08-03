@@ -78,7 +78,7 @@ from _common import (
     verdict,
     wait_streaming,
 )
-from airo_fanuc import FanucDriver
+from airo_fanuc import FanucDriver, FanucError
 
 #: Below this, "tracks J2" and "fixed offset" are not distinguishable and the run says so
 #: rather than guessing. The recorded measurement was taken at 2.595 deg, which is why one
@@ -186,20 +186,32 @@ def main(argv: list[str] | None = None) -> int:
 
     target = open_target(args)
     checks: list[tuple[str, bool]] = []
-    driver = None
-    try:
-        if args.move and not target.is_fake:
-            if not confirm(
-                [
-                    "THE ROBOT WILL MOVE.",
-                    f"J2 by {args.j2_delta_deg:+.1f} deg at {args.joint_speed_deg_s:.0f} deg/s, then back.",
-                    "Stand clear of the envelope. Keep the E-stop in hand.",
-                ]
-            ):
-                return 1
 
-        print(f"connecting to {target.ip} (construct-and-go: blocks until commandable or raises) ...")
+    if args.move and not target.is_fake:
+        if not confirm(
+            [
+                "THE ROBOT WILL MOVE.",
+                f"J2 by {args.j2_delta_deg:+.1f} deg at {args.joint_speed_deg_s:.0f} deg/s, then back.",
+                "Stand clear of the envelope. Keep the E-stop in hand.",
+            ]
+        ):
+            target.close()
+            return 1
+
+    print(f"connecting to {target.ip} (construct-and-go: blocks until commandable or raises) ...")
+    try:
         driver = FanucDriver(target.ip, build_policy(target))
+    except KeyboardInterrupt:
+        # The constructor's own cleanup already released the lock and stopped the core.
+        print("\naborted during bring-up")
+        target.close()
+        return 1
+    except FanucError as exc:
+        print(f"\nbring-up FAILED: {type(exc).__name__}: {exc}")
+        target.close()
+        return 2
+
+    try:
         report_bringup(driver, target.config)
         checks.append(("bring-up reached streaming", wait_streaming(driver)))
         if not checks[-1][1]:
@@ -270,8 +282,8 @@ def main(argv: list[str] | None = None) -> int:
             print("    point. To adopt it for THIS controller, enable it in your own")
             print("    configuration:")
             print("        from dataclasses import replace")
-            print("        from airo_fanuc.controller_facts import INTERIM_FACTS")
-            print("        facts = replace(INTERIM_FACTS, rmi_to_stream_j3_plus_j2_verified=True)")
+            print("        from airo_fanuc.controller_facts import MEASURED_FACTS")
+            print("        facts = replace(MEASURED_FACTS, rmi_to_stream_j3_plus_j2_verified=True)")
         elif which == "fixed":
             print("    THE OFFSET IS FIXED, not a J2 coupling. Do NOT apply q[2] += q[1] —")
             print(f"    it is a constant {off_a:+.4f} deg, which is a calibration offset on this")
@@ -296,12 +308,16 @@ def main(argv: list[str] | None = None) -> int:
 
         return verdict("verify_j2j3_coupling", checks, driver)
     except KeyboardInterrupt:
-        print("\ninterrupted — stopping")
-        if driver is not None:
-            driver.stop_j()
-            close_driver(driver)
-        return 1
+        # Ctrl-C mid-motion: brake first (stop_j is callable from any thread, takes
+        # effect within one tick and never raises), then still report what was read.
+        print("\ninterrupted — braking, then shutting down")
+        driver.stop_j()
+        checks.append(("interrupted by the operator", False))
+        return verdict("verify_j2j3_coupling", checks, driver)
     finally:
+        # close_driver() is idempotent, so this only does anything on a path that never
+        # reached a verdict.
+        close_driver(driver)
         target.close()
 
 

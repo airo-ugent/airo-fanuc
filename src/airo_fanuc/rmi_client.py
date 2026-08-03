@@ -240,7 +240,7 @@ class CartesianPosition:
 
     Unlike :meth:`RmiClient.read_joint_angles`, this read carries **no
     representation caveat**: the controller runs the FK internally, so the J2/J3
-    question (``controller_facts.INTERIM_FACTS.rmi_to_stream_j3_plus_j2_measured``)
+    question (``controller_facts.MEASURED_FACTS.rmi_to_stream_j3_plus_j2_measured``)
     cannot reach the result.
     """
 
@@ -635,7 +635,7 @@ class RmiClient:
         contiguous run starting at J1 (six or nine values).
 
         **UNCONVERTED joints.** RMI reports J3 one J2 below the Stream Motion
-        value (``controller_facts.INTERIM_FACTS.rmi_to_stream_j3_plus_j2_measured``),
+        value (``controller_facts.MEASURED_FACTS.rmi_to_stream_j3_plus_j2_measured``),
         so these are NOT interchangeable with Stream Motion joints: reaching that
         frame takes ``J3 += J2``. A caller feeding them to calibration must tag them
         :data:`~airo_fanuc.receive_interface.SOURCE_RMI_UNCONVERTED`

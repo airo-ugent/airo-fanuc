@@ -795,7 +795,7 @@ class FanucDriver:
         lock across a reopen ladder, so a poll issued while the session is being torn
         down or rebuilt would both compete with FRC_Reset / FRC_Call for that lock and
         be able to reopen the session under them. Reads at this rate are measured safe
-        during live motion (``controller_facts.INTERIM_FACTS.rmi_reads_ok_in_t1``:
+        during live motion (``controller_facts.MEASURED_FACTS.rmi_reads_ok_in_t1``:
         450/450 at 15 Hz).
         """
         rmi = self.rmi

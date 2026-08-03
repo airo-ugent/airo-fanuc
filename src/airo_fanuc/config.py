@@ -280,7 +280,7 @@ class DriverPolicy:
     #: the wedge rather than hammering the session. 0 disables the fallback (the
     #: ladder then simply dead-ends on RmiSessionDown).
     recovery_reconnect_attempts: int = 1
-    estop_continuation_path: str = cf.INTERIM_FACTS.estop_continuation_path
+    estop_continuation_path: str = cf.MEASURED_FACTS.estop_continuation_path
 
     # -- ARM gate --------------------------------------------------------
     #: When True, recovery from an e-stop / operator-required fault ends in

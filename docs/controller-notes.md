@@ -61,9 +61,11 @@ Two details worth knowing:
   three quantities in radians and RO (the model master).** The probe reads both and reports any
   disagreement rather than picking a side — on this controller they agree exactly.
 * **The order file and `version.dg` disagree about the P-level** (V9.40/P82 vs V9.40P/84), and so
-  does the FTP login banner (`[LR V9.40P/84]`). The gate bands on the order file's Deliver Ver,
-  which is the value this section records; the probe reports the divergence rather than quietly
-  taking the more flattering number.
+  does the FTP login banner (`[LR V9.40P/84]`). They describe different components — the order
+  file's Deliver Ver is the system software, `version.dg` and the banner report the pendant
+  firmware. The gate bands on Deliver Ver, which is the value this section records, and the
+  probe reports all of them rather than picking one, because which component a P-level refers
+  to is exactly what a single reported number loses.
 
 **Still not on the controller in any form:** the **acceleration and jerk clamps**. Nothing here
 publishes a clamp equivalent, so those remain a decision — derived from the measured velocity at
@@ -231,7 +233,7 @@ and/or a force option — confirm with FANUC.
 | Fact | Value |
 |------|-------|
 | Measured tracking lag (ms) | **25.0 ms** (xcorr; a later verify run gave 20 ms → ~20–25 ms) |
-| `INTERIM_FACTS.tracking_lag_s` | **0.025** |
+| `MEASURED_FACTS.tracking_lag_s` | **0.025** |
 | Amplitude ratio | **1.000** (commanded 10.000° pk-pk, measured 9.997°) |
 | Post-stop settle: overshoot / time-to-rest | **NOT captured** — the lag measurement samples during motion only (~1 post-end sample). During-motion tracking is clean. Settle defaults (0.5° / 2 °/s / 2 s) stand pending a dedicated move-then-observe capture. |
 
@@ -290,7 +292,7 @@ status packet, so unlike the cross-correlation figure above it also contains the
 pipeline (command buffering, the controller's own status generation, up to one ITP of packet age).
 
 **But the pipeline does not account for it.** The same metric against the FakeCRX, whose plant is a
-first-order lag with τ set to exactly `INTERIM_FACTS.tracking_lag_s` = 25 ms, reads **29 ms** — so
+first-order lag with τ set to exactly `MEASURED_FACTS.tracking_lag_s` = 25 ms, reads **29 ms** — so
 this measurement over-reads a known 25 ms by only ~4 ms. Add the wire (ping RTT to this controller is
 1–6 ms) and the pipeline plausibly explains ~30 ms of it, leaving **50–110 ms unaccounted for**
 depending on which session. That is the part worth resolving, and it wants the xcorr method on

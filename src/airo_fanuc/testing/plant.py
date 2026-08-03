@@ -21,15 +21,15 @@ controller:
 
 * **First-order servo lag** — ``q_meas`` relaxes toward ``q_cmd`` with time
   constant ``tau_s`` (measured servo lag: 25 ms, held in
-  ``INTERIM_FACTS.tracking_lag_s``).
+  ``MEASURED_FACTS.tracking_lag_s``).
 * **Deviation watchdog** — a commanded per-tick position *step* larger than
-  ``deviation_watchdog_deg`` (``INTERIM_FACTS.deviation_watchdog_deg`` = 5.0 deg;
+  ``deviation_watchdog_deg`` (``MEASURED_FACTS.deviation_watchdog_deg`` = 5.0 deg;
   worst measured overrun was 4.63° at 49.9°/s, so 5.0° is well-supported) trips a
   controller fault. This emulates the CRX deviation watchdog that the per-tick
   slew clip + C1-continuity exist to avoid; a smooth ramp (small per-tick delta)
   never trips it, an un-ramped step does.
 * **TX-silence backstop** — with no fresh command, the controller does NOT
-  fast-decel (measured: ``INTERIM_FACTS.tx_silence_backstop_ok`` is False). It
+  fast-decel (measured: ``MEASURED_FACTS.tx_silence_backstop_ok`` is False). It
   coasts at the last commanded velocity ~120 ms then hard-stops on the deviation
   watchdog. The knob defaults to the measured (coast) case; set it True only to
   model a hypothetical fast-backstop controller.
@@ -47,7 +47,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from airo_fanuc.controller_facts import INTERIM_FACTS, ITP_S
+from airo_fanuc.controller_facts import ITP_S, MEASURED_FACTS
 
 # CRX-10iA/L is 6-DOF; Stream Motion carries 9 axes (MAX_AXES) with the trailing
 # three zero-padded. The plant works in the 9-axis wire frame so the SM server
@@ -128,19 +128,19 @@ class JointPlant:
         itp_s: float = ITP_S,
         initial_q_deg: np.ndarray | list[float] | None = None,
     ) -> None:
-        # τ — servo tracking lag; reads INTERIM_FACTS.tracking_lag_s
+        # τ — servo tracking lag; reads MEASURED_FACTS.tracking_lag_s
         # (measured servo lag: 25 ms).
-        self.tau_s: float = float(tau_s if tau_s is not None else INTERIM_FACTS.tracking_lag_s)
+        self.tau_s: float = float(tau_s if tau_s is not None else MEASURED_FACTS.tracking_lag_s)
         if self.tau_s <= 0.0:
             raise ValueError(f"tau_s must be > 0 (got {self.tau_s})")
 
         # Deviation-watchdog per-tick step threshold; reads
-        # INTERIM_FACTS.deviation_watchdog_deg (5.0°; worst measured overrun
+        # MEASURED_FACTS.deviation_watchdog_deg (5.0°; worst measured overrun
         # 4.63° at 49.9°/s). Modeled as a per-tick step bound.
         self.deviation_watchdog_deg: float = float(
             deviation_watchdog_deg
             if deviation_watchdog_deg is not None
-            else INTERIM_FACTS.deviation_watchdog_deg
+            else MEASURED_FACTS.deviation_watchdog_deg
         )
         self.deviation_watchdog_enabled = bool(deviation_watchdog_enabled)
         self.silence_decel_ticks = max(1, int(silence_decel_ticks))

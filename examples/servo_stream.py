@@ -76,13 +76,12 @@ from _common import (
     verdict,
     wait_streaming,
 )
-from airo_fanuc import FanucDriver, FanucError, MotionResult, RobotFaultedError
-from airo_fanuc import controller_facts as cf
 
-# Private, because the package publishes no spelling of the core's mode: get_state() carries
-# "mode" as a bare int, and LifecycleState collapses HOLD/PREROLL/CAPTURE/TRAJECTORY/SERVO/
-# BRAKE into one STREAMING. Telling SERVO apart is what this script's first check asserts.
-from airo_fanuc._core import Mode
+# Mode, because get_state() carries "mode" as a bare int and LifecycleState collapses
+# HOLD/PREROLL/CAPTURE/TRAJECTORY/SERVO/BRAKE into one STREAMING. Telling SERVO apart is
+# what this script's first check asserts.
+from airo_fanuc import FanucDriver, FanucError, Mode, MotionResult, RobotFaultedError
+from airo_fanuc import controller_facts as cf
 
 
 def _sine_setpoint(q_start: np.ndarray, joint_idx: list[int], amp_rad: float, omega: float, t: float):
@@ -383,7 +382,7 @@ def report_stream(s: Stream, *, rate_hz: float, plan_peak_deg_s: float) -> None:
         )
 
     print(f"  peak speed   : {s.max_speed_deg_s:.2f} deg/s (measured)")
-    lag_s = cf.INTERIM_FACTS.tracking_lag_s
+    lag_s = cf.MEASURED_FACTS.tracking_lag_s
     print(
         f"  peak lag     : {s.max_lag_deg:.3f} deg — the {lag_s * 1000:.0f} ms recorded servo lag "
         f"accounts for {s.max_speed_deg_s * lag_s:.3f} deg at this peak speed"

@@ -447,7 +447,7 @@ def report_motion(w: Watch, *, expect_result: MotionResult) -> bool:
         f"  peak speed   : {w.max_speed_deg_s:.2f} deg/s measured, "
         f"{w.max_cmd_speed_deg_s:.2f} deg/s commanded"
     )
-    lag_s = cf.INTERIM_FACTS.tracking_lag_s
+    lag_s = cf.MEASURED_FACTS.tracking_lag_s
     print(
         f"  peak lag     : {w.max_lag_deg:.3f} deg — the {lag_s * 1000:.0f} ms recorded servo lag "
         f"accounts for {w.max_speed_deg_s * lag_s:.3f} deg at this peak speed"

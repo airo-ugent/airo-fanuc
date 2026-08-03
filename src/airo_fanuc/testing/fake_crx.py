@@ -38,7 +38,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from airo_fanuc.controller_facts import INTERIM_FACTS, ITP_S
+from airo_fanuc.controller_facts import ITP_S, MEASURED_FACTS
 from airo_fanuc.testing import wire
 from airo_fanuc.testing.fake_crx_rmi import FakeRmiServer
 from airo_fanuc.testing.fake_crx_sm import FakeStreamMotionServer, StrictConformanceError
@@ -62,21 +62,21 @@ class FakeCRXConfig:
     # Stream Motion capability negotiation.
     available_version: int = 3  # set 4 to exercise the FSConfig / force path
 
-    # Plant. tau_s reads INTERIM_FACTS.tracking_lag_s (measured servo lag: 25 ms).
-    tau_s: float = INTERIM_FACTS.tracking_lag_s
-    # deviation_watchdog_deg reads INTERIM_FACTS.deviation_watchdog_deg (measured: 5.0°).
-    deviation_watchdog_deg: float = INTERIM_FACTS.deviation_watchdog_deg
+    # Plant. tau_s reads MEASURED_FACTS.tracking_lag_s (measured servo lag: 25 ms).
+    tau_s: float = MEASURED_FACTS.tracking_lag_s
+    # deviation_watchdog_deg reads MEASURED_FACTS.deviation_watchdog_deg (measured: 5.0°).
+    deviation_watchdog_deg: float = MEASURED_FACTS.deviation_watchdog_deg
     deviation_watchdog_enabled: bool = True
     silence_decel_ticks: int = 3
 
-    # TX-silence. tx_silence_backstop_ok reads INTERIM_FACTS.tx_silence_backstop_ok
+    # TX-silence. tx_silence_backstop_ok reads MEASURED_FACTS.tx_silence_backstop_ok
     # (measured False: the controller coasts, it does not fast-decel).
-    tx_silence_backstop_ok: bool = INTERIM_FACTS.tx_silence_backstop_ok
+    tx_silence_backstop_ok: bool = MEASURED_FACTS.tx_silence_backstop_ok
     tx_silence_threshold_ticks: int = 2
 
-    # RMI. single_session reads INTERIM_FACTS.rmi_single_session (measured: the
+    # RMI. single_session reads MEASURED_FACTS.rmi_single_session (measured: the
     # controller serves one RMI session at a time).
-    single_session: bool = INTERIM_FACTS.rmi_single_session
+    single_session: bool = MEASURED_FACTS.rmi_single_session
     seq_seed: int = 1  # controller NextSequenceID seed (persists across sessions)
     major_version: int = 9
     minor_version: int = 40
