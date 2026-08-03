@@ -161,9 +161,19 @@ not "a measured width was reached".
 
 ### Installing the released package
 
-**It builds from source.** There are no pre-built wheels: the only runtime dependency is
-numpy, but the real-time core is a compiled extension, and `pip install airo-fanuc` compiles
-it on your machine. That needs, beyond a Python toolchain:
+```bash
+pip install airo-fanuc
+```
+
+That is a download on **Linux x86_64 and aarch64, CPython 3.10-3.13** — the published
+wheels carry the compiled real-time core, so no compiler, no CMake and no headers are
+involved. numpy is the only thing installed alongside it.
+
+Linux only, and not a preference: the RT thread is `timerfd_create` + `epoll` +
+`SCHED_FIFO`, with no portable fallback. That is why the sole OS classifier is
+POSIX/Linux.
+
+Anywhere else, pip falls back to the sdist and **compiles the extension**, which needs:
 
 - a **C++20-capable compiler** — GCC 10+ or Clang 10+. Our own code targets C++17, but
   ruckig requires C++20 and propagates it to everything that links it.
@@ -171,9 +181,7 @@ it on your machine. That needs, beyond a Python toolchain:
 - **Python development headers** (`python3-dev` / `python3-devel`). pip's build isolation
   does not supply these.
 - **`git` and network access to github.com.** ruckig and pybind11 are fetched at configure
-  time by CMake's `FetchContent`, so a fully offline or hash-pinned install will fail.
-- **Linux.** The RT thread is `timerfd_create` + `epoll` + `SCHED_FIFO`; there is no
-  portable fallback, which is why the only OS classifier is POSIX/Linux.
+  time by CMake's `FetchContent`, so a fully offline or hash-pinned install cannot work.
 
 The package also deliberately ships **no arm profile** — you must supply a `RobotProfile`,
 and `examples/crx10ial.py` is a worked one. See *Robot profile* below.

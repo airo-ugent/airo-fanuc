@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Release artifacts for airo-fanuc: the manylinux wheels plus the sdist.
+#
+# WHY THIS EXISTS SEPARATELY FROM ci.yml. A plain build of this project produces a
+# `linux_x86_64` wheel, which PyPI refuses, so without a manylinux build the only
+# publishable artifact is the sdist — and then every `pip install airo-fanuc` compiles
+# the C++ extension, needing a C++20 compiler, CMake, the Python development headers and
+# network access to fetch pybind11 and Ruckig. Any one of those missing is an install
+# failure for a user who only wanted to talk to a robot. Building here instead makes the
+# common case a download.
+#
+# Nothing is published unless a `v*` tag is pushed. `workflow_dispatch` builds and
+# uploads the artifacts to the run, so the matrix can be exercised without a release.
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    name: Wheels (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # Native runners for both architectures; no QEMU, so an aarch64 wheel costs the
+        # same as an x86_64 one. Each builds cp310-cp313 for its own arch.
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # CMakeLists.txt reads two headers out of vendor/fanuc_driver and raises a
+          # configure-time FATAL_ERROR without them.
+          submodules: recursive
+
+      - uses: pypa/cibuildwheel@v3.1.4
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.runner }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    name: Sdist
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build the sdist
+        run: uv build --sdist
+
+      # A source install is the fallback for any platform the matrix above does not
+      # cover, so the sdist has to carry the vendored codec headers — the submodule is
+      # not fetched by pip. Their absence is a configure-time error at install time,
+      # which is far too late to find out.
+      - name: Check the sdist carries what a from-source build needs
+        run: |
+          tar tzf dist/*.tar.gz | grep -q 'vendor/fanuc_driver/fanuc_libs/stream_motion/include/stream_motion/packets.hpp'
+          tar tzf dist/*.tar.gz | grep -q 'vendor/fanuc_driver/fanuc_libs/stream_motion/include/stream_motion/byte_ops.hpp'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish:
+    name: Publish to PyPI
+    needs: [wheels, sdist]
+    # Tag-only. A manual dispatch builds and keeps the artifacts without releasing them.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      # Trusted publishing: PyPI verifies this workflow's OIDC identity, so there is no
+      # API token in the repository's secrets to leak or rotate. Requires a one-time
+      # publisher configured on PyPI for this repo, workflow and environment.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: "{wheels-*,sdist}"
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

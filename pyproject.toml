@@ -91,6 +91,35 @@ install.components = ["PythonModule"]
 version = ">=3.22"
 build-type = "Release"
 
+# ---------------------------------------------------------------------------
+# cibuildwheel: the published wheels. Without these, the only artifact PyPI would
+# accept is the sdist — a plain `uv build` produces a `linux_x86_64` tag, which PyPI
+# refuses — and every `pip install airo-fanuc` would compile the extension, needing a
+# C++20 compiler, CMake, the Python headers and network access to fetch pybind11 and
+# Ruckig. Building inside the manylinux image is what turns that into a download.
+# ---------------------------------------------------------------------------
+[tool.cibuildwheel]
+# One wheel per interpreter: pybind11 does not build against the stable ABI, so there
+# is no single abi3 wheel to publish instead. The range matches requires-python.
+build = "cp310-* cp311-* cp312-* cp313-*"
+# musl is not built: the RT thread's timerfd/epoll/SCHED_FIFO path has only ever run on
+# glibc, and shipping an untested musl wheel would let pip prefer it over the sdist a
+# musl user would otherwise build and can at least see fail.
+skip = "*-musllinux_*"
+# 2.28 (glibc 2.28) rather than the older default: the C++20 the build needs comes from
+# the toolchain in this image, and 2.28 still covers every distribution in support.
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+# The wheel is worthless if it cannot be imported on the machine that installs it, and
+# a missing or mis-tagged extension shows up nowhere else — the build itself succeeds.
+# The two suites are the fast ones with no timing assertions: the config/enum surface
+# that crosses the pybind11 boundary, and the numpy-only dependency contract.
+test-requires = ["pytest>=8", "pytest-timeout>=2.3"]
+test-command = [
+    "python -c \"import airo_fanuc, airo_fanuc._core as c; print(airo_fanuc.__version__, c.__version__)\"",
+    "python -m pytest -q {project}/tests/test_lifecycle.py {project}/tests/test_standalone_contract.py",
+]
+
 [tool.scikit-build.cmake.define]
 # The wheel runtime never needs gtest; skip the googletest FetchContent. The
 # standalone `cmake -S ... && ctest` build leaves this ON (CMake default).
