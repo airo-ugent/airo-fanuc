@@ -22,11 +22,14 @@ the streamed Cartesian pose is in.
 | `servo_stream.py` | The same path *streamed* setpoint-by-setpoint through `servo_j` |
 | `check_joint_limits.py` | The recorded soft limits match the arm. Read-only, you move it |
 | `verify_tcp_frame.py` | Which frame `get_tcp_pose()` is in — read-only unless `--move` |
+| `verify_j2j3_coupling.py` | Whether the RMI plane's J3 offset tracks J2 or is fixed — read-only unless `--move` |
 
 The motion scripts take `--fake`, which stands up an in-process fake controller and
 needs no hardware (`check_joint_limits.py` has nothing to fake — it needs a real arm to
 move; the fake serves `verify_tcp_frame.py` one injected pose on both planes, so a
-`--fake` PASS there proves the comparison runs, never the frame). `--help` lists every
+`--fake` PASS there proves the comparison runs, never the frame; likewise
+`verify_j2j3_coupling.py` under `--fake` proves the classifier detects a J2-tracking
+offset, because the fake implements one, not that your controller has one). `--help` lists every
 knob. Shared connection/reporting plumbing lives in `_common.py`; each script keeps its
 own trajectory construction inline, which is the part worth copying into your own code.
 
