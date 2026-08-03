@@ -380,11 +380,14 @@ real controller.
 | `src/cpp/codec/` | Wrapper TU compiled against the vendored FANUC Stream Motion headers |
 | `vendor/fanuc_driver/` | FANUC's driver as a submodule; two headers compiled (see `PATCHES.md`) |
 | `examples/` | Runnable validation scripts (`--fake` or real hardware) + the bring-up procedure |
+| `tests/` | Hardware-free pytest suite against `FakeCRX`, wire goldens, and the C++ gtests under `tests/cpp/` |
 | `docs/invariants.md` | The driver's binding safety / motion invariants |
 | `docs/controller-notes.md` | Measured controller behaviour, alarm texts, recovery procedures |
 | `deploy/GRPRUN.LS` | Teach-pendant launcher that RUN-forks `GRIPDISP` |
 
 ## License
 
-Apache-2.0 (`LICENSES/Apache-2.0.txt`). The vendored FANUC Stream Motion codec headers are
-Apache-2.0 and attributed in `NOTICE`; modifications to them: none — see `PATCHES.md`.
+Apache-2.0 — see `LICENSE`. The vendored FANUC Stream Motion codec headers are Apache-2.0 too,
+with no modifications (`PATCHES.md`). Ruckig (MIT) and pybind11 (BSD-3-Clause) are compiled into
+the `_core` extension, so the wheel redistributes both; their texts are in `LICENSES/` and every
+component is attributed in `NOTICE`.
