@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Verify the recorded joint position limits against the actual robot. NO MOTION.
+"""Validation step 5: verify the recorded joint position limits against the actual robot. NO MOTION.
 
 WRITTEN FOR ONE SPECIFIC ROBOT: a FANUC CRX-10iA/L. The table it checks against is
 ``_common.LIMIT_LOWER_DEG`` / ``LIMIT_UPPER_DEG``, measured on our controller and

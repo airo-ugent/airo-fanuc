@@ -25,6 +25,24 @@ relative to J2.
 | `verify_tcp_frame.py` | Which frame `get_tcp_pose()` is in — read-only unless `--move` |
 | `verify_j2j3_coupling.py` | Whether the RMI plane's J3 offset tracks J2 or is fixed — read-only unless `--move` |
 
+The ordered run is eight steps over five of those scripts plus one drill with no script,
+and each script's docstring names its step:
+
+| Step | Script | What it adds |
+|---|---|---|
+| 1 | `move_joints.py --no-move` | The whole bring-up ladder, nothing moving |
+| 2 | `move_joints.py` | One commanded joint, from a hand-built trajectory |
+| 2b | `move_j.py` | The same move, planned for you, at a named speed |
+| 3 | `sine_wave.py` | Continuous multi-joint tracking |
+| 4 | `sine_wave.py --stop-after` | `stop_j()` mid-motion |
+| 5 | `check_joint_limits.py` | The guard table, against the arm you actually have |
+| 6 | *(no script)* | An E-stop, on purpose, and the recovery after it |
+| 7 | `servo_stream.py` | The same path streamed setpoint-by-setpoint |
+
+`verify_tcp_frame.py` and `verify_j2j3_coupling.py` sit outside the ladder: they answer
+questions about *this* controller's configuration rather than validating the driver, and
+either can be run at any point once step 1 passes.
+
 The motion scripts take `--fake`, which stands up an in-process fake controller and
 needs no hardware (`check_joint_limits.py` has nothing to fake — it needs a real arm to
 move; the fake serves `verify_tcp_frame.py` one injected pose on both planes, so a
@@ -345,7 +363,7 @@ for a different FANUC it is the file to copy. What is left:
 
 ## What these scripts deliberately do not cover
 
-Passing all seven steps validates the motion path end to end. It does not validate:
+Passing the eight steps validates the motion path end to end. It does not validate:
 
 - **The gripper.** Every script runs `enable_gripper=False`. The `GRPRUN`/`GRIPDISP`
   path is the one part of this package specific to a particular end effector, and it
