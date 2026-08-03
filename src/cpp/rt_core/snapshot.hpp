@@ -40,8 +40,9 @@ struct StateSnapshot {
   std::uint32_t tx_seq{0};
   // Which tick the q_cmd/qd_cmd/qdd_cmd in this snapshot were commanded on. Monotonic from
   // core construction, one per TickCore::tick, independent of TX (a parked tick counts).
-  // A caller echoes it back as Target::plan_tick so the core can tell how many ticks of
-  // its own motion happened between the read and the submission.
+  // Because it counts ticks rather than transmissions, it is the one published field that
+  // distinguishes a loop that is running and choosing not to send from one that has
+  // stopped: a caller polling snapshots sees this advance in the first case only.
   std::uint64_t cmd_tick{0};
   std::uint32_t ctrl_time_stamp_ms{0};
   std::int64_t rx_mono_ns{0};    // CLOCK_MONOTONIC at last RX ingest

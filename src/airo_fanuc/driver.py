@@ -321,20 +321,16 @@ class FanucDriver:
         settle: SettlePolicy | None = None,
         deadman_s: float | None = None,
         force_stop_n: float | None = None,
-        plan_tick: int | None = None,
         asynchronous: bool = False,
     ) -> MotionHandle:
         """Submit ONE whole trajectory (rad, ns-relative int64 times) — CAPTURE-or-REJECT
         splice, Hermite playback, settle → :class:`MotionHandle`.
 
-        ``plan_tick`` declares WHICH commanded state the first knot was built from: the
-        ``cmd_tick`` of the snapshot it was read from. Given one, the core joins the plan
-        at the phase the elapsed ticks imply instead of splicing back to a knot the arm
-        has already passed — which is what makes a replan while moving land smoothly
-        rather than as a bridge back to a stale pose. Omit it when the first knot is meant
-        literally (a plan in absolute joint space, or a replay); the core then joins at
-        knot 0. It is not inferred here, because only the caller knows which state its
-        planner started from.
+        The first knot is taken LITERALLY: the core bridges the commanded pose to it with a
+        bounded capture splice, or refuses the submission. It never advances into the plan
+        to meet the arm, so a plan whose opening the arm has already passed must be
+        replanned rather than joined part-way — see :meth:`move_j`, which reads the
+        commanded state and plans from it immediately for exactly that reason.
 
         Validation — every violation raises its own typed error naming the offending
         joint/knot, never a generic reject: strictly-increasing int64 ns times, ≥2
@@ -395,7 +391,6 @@ class FanucDriver:
             settle_timeout_s=float(settle.timeout_s),
             force_stop_n=float(force_stop_n) if force_stop_n is not None else 0.0,
             deadman_s=float(deadman_s) if deadman_s is not None else 0.0,
-            plan_tick=int(plan_tick) if plan_tick is not None else 0,
         )
         handle = MotionHandle(self.core, mid, time.monotonic_ns())
         assert self._supervisor is not None
@@ -412,7 +407,8 @@ class FanucDriver:
         force_stop_n: float | None = None,
         asynchronous: bool = False,
     ) -> MotionHandle:
-        """Point-to-point move to a joint configuration (rad) → :class:`MotionHandle`.
+        """Point-to-point move to a joint configuration (rad), FROM REST →
+        :class:`MotionHandle`.
 
         The convenience :meth:`move_trajectory` lacks: give it a target pose and a
         speed, and it plans the profile to get there. It shapes a jerk-limited
@@ -434,14 +430,21 @@ class FanucDriver:
         pose would fold the servo tracking lag into the first knot as a step, and the
         capture splice bridges from the commanded pose regardless.
 
+        THE ARM MUST BE AT REST. A profile planned from a moving anchor depends on how
+        many ticks the submission itself took — the anchor advances while the plan is in
+        flight — so the same call would produce a different motion under a different
+        scheduling delay. Requiring rest makes the plan's first knot describe the
+        commanded pose whenever the core reaches it, which is what makes this call
+        repeatable. :meth:`servo_j` is the mode for steering an arm that is already
+        moving.
+
         Raises :class:`TrajectoryValidationError` for a target outside the profile's
         position limits (the core would silently CLAMP it, and a clamped MoveJ reports
         DONE somewhere other than where it was asked to go), for a speed above the
-        arm's limits, and for a start already moving faster than the capture envelope
-        — the splice cannot reach such a first knot, whatever the arm is doing. Brake
-        first (:meth:`stop_j` then :meth:`wait_until_steady`) in that last case; this
-        method does not brake on the caller's behalf, so it never preempts a motion
-        the caller did not know was running.
+        arm's limits, and for an arm that is not at rest. Brake first (:meth:`stop_j`
+        then :meth:`wait_until_steady`) in that last case; this method does not brake on
+        the caller's behalf, so it never preempts a motion the caller did not know was
+        running.
         """
         self._require_commandable()
         assert self.core is not None
@@ -481,16 +484,30 @@ class FanucDriver:
         snap = _snap(self.core)
         q_cmd = [float(v) for v in snap["q_cmd"]]
         qd_cmd = [float(v) for v in snap["qd_cmd"]]
-        capture_rate = float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
+        # move_j STARTS FROM REST, and this is the check that makes that a fact rather than
+        # a hope. The threshold is the core's own not-moving one, so "at rest" here means
+        # what it means everywhere else in the driver.
+        #
+        # The reason is not that a moving start cannot be bridged — the capture splice
+        # bridges gaps up to the whole capture window. It is that a moving start makes the
+        # motion depend on HOW LONG THE SUBMISSION TOOK. The plan is anchored at the
+        # commanded state read here; the core consumes it some ticks later, by which time a
+        # moving anchor has advanced and knot 0 describes a pose the arm has passed, so the
+        # splice bridges backwards and the executed motion varies with Python scheduling. At
+        # rest the anchor does not move: knot 0 still describes the commanded pose whenever
+        # the core gets to it, the splice has nothing to bridge, and the same call produces
+        # the same motion every time. Redirecting a moving arm is what servo_j is for.
+        rest_eps = float(np.deg2rad(cf.SettlePolicy().vel_eps_deg_s))
         moving = np.abs(np.asarray(qd_cmd, dtype=np.float64))
-        if np.any(moving > capture_rate * (1.0 + 1e-9)):
-            over = np.where(moving > capture_rate * (1.0 + 1e-9))[0].tolist()
+        if np.any(moving > rest_eps * (1.0 + 1e-9)):
+            over = np.where(moving > rest_eps * (1.0 + 1e-9))[0].tolist()
             raise TrajectoryValidationError(
-                f"move_j cannot start while joint(s) {over} are moving faster than the "
-                f"{cf.CAPTURE_RATE_DEG_S:g}°/s capture envelope "
-                f"({np.rad2deg(moving).round(3).tolist()}°/s). The capture splice that bridges the "
-                f"commanded pose to the plan's first knot cannot reach that velocity. Call stop_j() "
-                f"and wait_until_steady() first, then plan from rest."
+                f"move_j requires a stationary arm, but joint(s) {over} are commanded at "
+                f"{np.rad2deg(moving).round(3).tolist()}°/s, above the "
+                f"{cf.SettlePolicy().vel_eps_deg_s:g}°/s at-rest threshold. A point-to-point move "
+                f"planned from a moving anchor depends on how long the submission takes, so it is "
+                f"refused rather than made non-repeatable. Call stop_j() and wait_until_steady() "
+                f"first, or use servo_j() to redirect an arm that is already moving."
             )
 
         try:
@@ -515,9 +532,6 @@ class FanucDriver:
                 f"move_j could not plan a profile to {q_arr.tolist()}: {exc}"
             ) from exc
 
-        # The plan is anchored at the commanded state `snap` carries, so its tick is the
-        # one the core needs to know which phase of this plan belongs to the tick that
-        # consumes it.
         return self.move_trajectory(
             plan["times_ns"],
             plan["q"],
@@ -525,7 +539,6 @@ class FanucDriver:
             settle=settle,
             deadman_s=deadman_s,
             force_stop_n=force_stop_n,
-            plan_tick=int(snap["cmd_tick"]),
             asynchronous=asynchronous,
         )
 
@@ -555,13 +568,12 @@ class FanucDriver:
         ``policy.capture_check``), and the only bound on a wrong setpoint is the servo
         limits. Streaming setpoints into an occupied workspace is the caller's risk.
 
-        ``qd`` / ``qdd`` (rad/s, rad/s²) are accepted and CURRENTLY IGNORED. They were
-        previously used as Ruckig's target velocity/acceleration; demanding an arrival
-        velocity is what made the command reverse against a forward-moving stream when
-        the caller's clock and the tick clock drifted (see BEST EFFORT in
-        ``src/cpp/tick_engine/servo.hpp``). The arguments are kept because a future
-        tracking law can use them as a lookahead — the way UR's ``servoj`` uses velocity
-        — rather than as an arrival state.
+        ``qd`` / ``qdd`` (rad/s, rad/s²) are accepted and CURRENTLY IGNORED. They are not
+        used as Ruckig's target velocity/acceleration, because demanding an arrival velocity
+        makes the command reverse against a forward-moving stream when the caller's clock
+        and the tick clock drift (see BEST EFFORT in ``src/cpp/tick_engine/servo.hpp``). The
+        arguments are kept because a tracking law can use them as a lookahead — the way
+        UR's ``servoj`` uses velocity — rather than as an arrival state.
         """
         self._require_commandable()
         assert self.core is not None
@@ -1042,7 +1054,7 @@ class FanucDriver:
         lock = self._ownership
         if lock is None or lock.fd is None:
             return None
-        return {"pid": None, "mode": lock.mode, "since": lock.since}
+        return {"pid": lock.pid, "mode": lock.mode, "since": lock.since}
 
     def _verify_controller_itp(self) -> None:
         """Check the configured interpolation period against the controller's own.

@@ -12,7 +12,7 @@ byte-compares against).
 
 from __future__ import annotations
 
-import enum
+from typing import ClassVar
 
 __version__: str
 
@@ -125,42 +125,82 @@ def decode_status_v3(data: bytes) -> dict[str, object]:
 # happens inside the C++ core.
 # ---------------------------------------------------------------------------
 
-class Mode(enum.IntEnum):
-    STREAM_DOWN = ...
-    PREROLL = ...
-    HOLD = ...
-    CAPTURE = ...
-    TRAJECTORY = ...
-    SERVO = ...
-    BRAKE = ...
-    SAFE_FOLLOW = ...
-    RX_SILENT = ...
+class _CoreEnum:
+    """Base of the three core enums. NOT an :class:`enum.IntEnum`, and not an ``int``.
 
-class FaultReason(enum.IntEnum):
-    NONE = ...
-    E_STOP = ...
-    IN_ERROR = ...
-    MOTION_NOT_POSSIBLE = ...
-    TEACH_MODE = ...
-    CONTACT_STOP = ...
-    SAFETY_CLAMP = ...
-    RX_SILENT = ...
-    RX_DEGRADED = ...
-    WATCHDOG_EXPIRED = ...
-    FORCE_GUARD = ...
-    REJECTED_START_MISMATCH = ...
-    SUPERVISOR_LOST = ...
-    INTERNAL = ...
+    These are pybind11 enumerations, whose members do not derive from ``int``. That
+    matters because :meth:`StreamCore.get_snapshot` publishes ``mode``, ``fault`` and
+    ``active_motion_status`` as plain integers, and the obvious way to read one is wrong::
 
-class MotionStatus(enum.IntEnum):
-    PENDING = ...
-    RUNNING = ...
-    DONE = ...
-    SETTLE_TIMEOUT = ...
-    STOPPED = ...
-    PREEMPTED = ...
-    FAULTED = ...
-    REJECTED = ...
+        snap["mode"] == Mode.HOLD             # ALWAYS False — different types
+        Mode(int(snap["mode"])) == Mode.HOLD  # this is the comparison you want
+
+    Declaring these as ``IntEnum`` here would make a type checker bless the first line.
+    ``int(member)``, ``member.value``, ``member.name`` and ``Mode(2)`` all work; ``<``,
+    arithmetic, and iterating the class do not. Compare with ``==``, not ``is``: converting
+    from an int builds a new object rather than returning the class attribute.
+    """
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def value(self) -> int: ...
+    def __int__(self) -> int: ...
+    def __init__(self, value: int) -> None: ...
+
+class Mode(_CoreEnum):
+    STREAM_DOWN: ClassVar[Mode]
+    PREROLL: ClassVar[Mode]
+    HOLD: ClassVar[Mode]
+    CAPTURE: ClassVar[Mode]
+    TRAJECTORY: ClassVar[Mode]
+    SERVO: ClassVar[Mode]
+    BRAKE: ClassVar[Mode]
+    SAFE_FOLLOW: ClassVar[Mode]
+    RX_SILENT: ClassVar[Mode]
+
+class FaultReason(_CoreEnum):
+    NONE: ClassVar[FaultReason]
+    E_STOP: ClassVar[FaultReason]
+    IN_ERROR: ClassVar[FaultReason]
+    MOTION_NOT_POSSIBLE: ClassVar[FaultReason]
+    TEACH_MODE: ClassVar[FaultReason]
+    CONTACT_STOP: ClassVar[FaultReason]
+    SAFETY_CLAMP: ClassVar[FaultReason]
+    RX_SILENT: ClassVar[FaultReason]
+    RX_DEGRADED: ClassVar[FaultReason]
+    WATCHDOG_EXPIRED: ClassVar[FaultReason]
+    FORCE_GUARD: ClassVar[FaultReason]
+    REJECTED_START_MISMATCH: ClassVar[FaultReason]
+    SUPERVISOR_LOST: ClassVar[FaultReason]
+    INTERNAL: ClassVar[FaultReason]
+
+class Condition(_CoreEnum):
+    """Bit flags, not ordinals: the snapshot's ``conditions`` is a SET, because several
+    can be live at once (an e-stop while in TEACH). Bound with pybind11's ``arithmetic``
+    tag, so ``mask & Condition.E_STOP`` works. ``SUSTAINED_SLEW`` is diagnostic and never
+    faults, so a non-zero mask does not by itself mean the arm is in trouble."""
+
+    NONE: ClassVar[Condition]
+    E_STOP: ClassVar[Condition]
+    IN_ERROR: ClassVar[Condition]
+    MOTION_NOT_POSSIBLE: ClassVar[Condition]
+    TEACH: ClassVar[Condition]
+    CONTACT_STOP: ClassVar[Condition]
+    SAFETY_CLAMP: ClassVar[Condition]
+    RX_DEGRADED: ClassVar[Condition]
+    RX_SILENT: ClassVar[Condition]
+    SUSTAINED_SLEW: ClassVar[Condition]
+
+class MotionStatus(_CoreEnum):
+    PENDING: ClassVar[MotionStatus]
+    RUNNING: ClassVar[MotionStatus]
+    DONE: ClassVar[MotionStatus]
+    SETTLE_TIMEOUT: ClassVar[MotionStatus]
+    STOPPED: ClassVar[MotionStatus]
+    PREEMPTED: ClassVar[MotionStatus]
+    FAULTED: ClassVar[MotionStatus]
+    REJECTED: ClassVar[MotionStatus]
 
 class RtCoreConfig:
     """RT core knobs (mirror of ``airo_fanuc.controller_facts``;
@@ -183,7 +223,8 @@ class RtCoreConfig:
     rx_silence_qd_ramp_ms: float
     rx_silent_park_ms: float
     antiflap_dwell_ms: float
-    max_plan_stale_ms: float
+    servo_limit_scale: float
+    qd_end_blend_min_s: float
     #: The capture window, and the envelope the splice into knot 0 runs at.
     #: ``move_trajectory`` refuses a submission against the ``controller_facts`` values,
     #: so ``DriverConfig.to_rt_core_config`` sets these from the same constants — the
@@ -250,7 +291,6 @@ class StreamCore:
         settle_timeout_s: float = 2.0,
         force_stop_n: float = 0.0,
         deadman_s: float = 0.0,
-        plan_tick: int = 0,
     ) -> int:
         """Submit ONE whole trajectory (radians). CAPTURE-or-REJECT splice from
         the commanded pose. Returns a motion_id. ``force_stop_n`` arms the C++
@@ -307,8 +347,9 @@ class StreamCore:
         """Seqlock read; never raises. Keys include mode/fault/conditions/epoch,
         q_meas/qd_est/q_cmd/qd_cmd/qdd_cmd (length-6), cart, status bits, wrench,
         active_motion_id/status, rx_age_ms, total_slew_clips, and ``cmd_tick`` — the
-        tick the commanded state was commanded on, which
-        :meth:`submit_trajectory` takes back as ``plan_tick``."""
+        tick the commanded state was commanded on, which advances once per tick whether
+        or not that tick transmitted, so a stalled value means the RT loop is not
+        ticking."""
 
     def poll_events(self) -> list[dict[str, object]]:
         """Drain the RT event ring (mode/epoch/fault/motion events)."""

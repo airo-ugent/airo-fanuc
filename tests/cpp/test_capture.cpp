@@ -181,22 +181,44 @@ TEST(Capture, GateIsDirectionFree) {
 }
 
 // *** COMPATIBILITY INVARIANT — read before adding any term to this gate. ***
-// A join-at-phase submission targets the trajectory at the phase the arm has actually
-// reached, so its target IS the current commanded state: gap 0.000 and |dqd| 0.000, by
-// construction. The gate must not refuse it. Any directional term, and any lower floor on
-// the gap, breaks this — that is why neither is here.
-TEST(Capture, GateDoesNotRefuseAJoinAtPhaseSubmission) {
+// A submission whose first knot continues the motion the arm is already commanded to make
+// has gap 0.000 and |dqd| 0.000, and asks nothing of the geometry. The gate must not
+// refuse it. Any DIRECTIONAL term, and any lower floor on the gap, breaks that — which is
+// why neither is here: staleness guarantees a negative gap, so a signed form would refuse
+// every replan.
+TEST(Capture, GateDoesNotRefuseAMatchedContinuation) {
   TickEngineConfig cfg;
-  for (const double v : {0.0, 0.05, 0.2, 0.8, 2.0}) {
+  // Up to the arrival rate the splice itself may run at — past that the gate refuses on
+  // velocity alone, which is the next test.
+  for (const double v : {0.0, 0.05, 0.2, cfg.capture_rate_rad_s}) {
     Vec6 qdc{};
     qdc[0] = v;
     // Target == current state, exactly.
     const CaptureGate g = capture_gate(kQCmd, qdc, kQCmd, qdc, cfg);
     EXPECT_FALSE(g.reject)
-        << "a continuation whose target is the current commanded state was refused at "
-        << v << " rad/s — this is the submission a phase join exists to make work";
+        << "a continuation whose target is the current commanded state was refused at " << v
+        << " rad/s";
     EXPECT_FALSE(g.tol_exceeded);
     EXPECT_EQ(g.reject_mask, 0u);
     EXPECT_EQ(g.shed_travel[0], 0.0);
   }
+}
+
+// The generator runs at max_velocity = capture_rate_rad_s, and Ruckig rejects a
+// target_velocity above max_velocity as INVALID INPUT. Unless the gate tests that too, the
+// gate passes a submission the generator then fails — and a failed generation can only be
+// reported as INTERNAL, not as the typed start-mismatch the caller can act on.
+TEST(Capture, GateRefusesAnArrivalVelocityTheSpliceCannotReach) {
+  TickEngineConfig cfg;
+  Vec6 qd0{};
+  qd0[3] = cfg.capture_rate_rad_s * 1.5;
+  // Zero gap and zero commanded velocity: nothing but the arrival rate can refuse this.
+  const CaptureGate g = capture_gate(kQCmd, Vec6{}, kQCmd, qd0, cfg);
+  EXPECT_TRUE(g.reject);
+  EXPECT_FALSE(g.tol_exceeded) << "the endpoint window is not what is violated here";
+  EXPECT_EQ(g.reject_mask, 1u << 3u) << "the refusal must name the offending joint";
+
+  // And it is the RATE that is the ceiling, not a margin below it.
+  qd0[3] = cfg.capture_rate_rad_s;
+  EXPECT_FALSE(capture_gate(kQCmd, Vec6{}, kQCmd, qd0, cfg).reject);
 }

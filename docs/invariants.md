@@ -96,18 +96,25 @@ them as binding: code that regresses one of these is a bug, not a refactor.
   safety concern and not merely an accuracy one.
 - **The capture gate is direction-free and has no gap floor.** It tests whether the
   endpoint window can absorb the velocity change at the brake-class clamps. A joint
-  whose commanded velocity already matches the knot's asks nothing of the geometry, so
-  a phase-matched submission is admissible at any speed and any gap. Reintroducing a
-  signed gap term refuses *every* stale replan, because staleness guarantees the gap is
-  negative — mid-flight replanning is a capability of this driver, not an edge case.
-- **A joined submission skips only knots the arm has already made.** When a caller
-  declares which tick its first knot was planned from, the join target is a **knot** —
-  never an interpolation — so it is a pose the caller's own collision check has already
-  seen, and the skipped prefix is a prefix of the caller's own checked trajectory. Where
-  the commanded state already continues the plan, no bridge is synthesized at all and
-  the executed path is the caller's trajectory and nothing else. This narrows what the
-  driver invents rather than widening it. Beyond a staleness ceiling the phase is
-  refused rather than guessed at.
+  whose commanded velocity already matches the knot's asks nothing of the geometry, so a
+  matched continuation is admissible at any gap within the window. Reintroducing a signed
+  gap term refuses *every* stale replan, because staleness guarantees the gap is
+  negative.
+- **The gate also bounds the arrival velocity, at the rate the splice itself runs at.**
+  `capture_rate_rad_s` is the generator's own `max_velocity`, and Ruckig rejects a
+  target velocity above `max_velocity` as invalid input. A gate that tested only the
+  geometry would therefore pass submissions the generator then fails, and a failed
+  generation carries no information about which joint or which quantity was at fault —
+  it can only be reported as an internal error. Testing the rate in the gate is what
+  makes it a typed start-mismatch the caller can act on. It is the same ceiling
+  `_validate_trajectory` holds a first knot's velocity to, deliberately.
+- **A submission's first knot is taken literally.** The core bridges the commanded pose
+  to knot 0 or refuses; it never advances into a plan to meet a moving arm. Advancing
+  would make the executed path depend on how many ticks the submission took to arrive,
+  and would decouple the splice the core builds from the one the caller's collision hook
+  checked — which is knot 0, unconditionally. `move_j` therefore requires the arm to be
+  at rest, because a stationary anchor is one that still describes the commanded pose
+  whenever the core reaches it. `servo_j` is the mode for steering a moving arm.
 
 ## Bring-up
 

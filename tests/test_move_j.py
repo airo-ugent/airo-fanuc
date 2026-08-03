@@ -400,29 +400,29 @@ def test_move_j_rejects_a_malformed_target(rig: DriverRig, bad: list[float], mat
 
 
 @pytest.mark.timeout(30)
-def test_move_j_refuses_to_start_faster_than_the_capture_envelope(rig: DriverRig) -> None:
-    """The capture splice bridges the commanded pose to the plan's first knot and
-    cannot reach an arbitrary velocity, so a MoveJ issued mid-flight is a typed
-    refusal naming the remedy — never a REJECTED motion the caller has to decode."""
+def test_move_j_refuses_to_start_from_a_moving_arm(rig: DriverRig) -> None:
+    """A point-to-point profile planned from a moving anchor depends on how many ticks the
+    submission took, so ``move_j`` requires rest and says so — a typed refusal naming the
+    remedy, never a REJECTED motion the caller has to decode, and never a motion whose
+    shape depends on Python scheduling."""
     start = _q_cmd(rig)
     target = start.copy()
     target[0] += 1.0
-    # A 1 rad move in 1 s peaks near 1.5 rad/s, far above the 15°/s envelope.
     times = [0, 1_000_000_000]
     q = [start.tolist(), target.tolist()]
     qd = [[0.0] * _NDOF, [0.0] * _NDOF]
     handle = rig.driver.move_trajectory(times, q, qd, asynchronous=True)
 
-    capture_rate = math.radians(cf.CAPTURE_RATE_DEG_S)
+    rest_eps = math.radians(cf.SettlePolicy().vel_eps_deg_s)
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
-        if np.max(np.abs(_q_cmd_velocity(rig))) > capture_rate:
+        if np.max(np.abs(_q_cmd_velocity(rig))) > rest_eps:
             break
         time.sleep(0.005)
     else:  # pragma: no cover - the fake would have to stall for this
-        pytest.fail("the in-flight trajectory never exceeded the capture envelope")
+        pytest.fail("the in-flight trajectory never left the at-rest threshold")
 
-    with pytest.raises(TrajectoryValidationError, match="capture envelope"):
+    with pytest.raises(TrajectoryValidationError, match="requires a stationary arm"):
         rig.driver.move_j(target)
 
     rig.driver.stop_j()

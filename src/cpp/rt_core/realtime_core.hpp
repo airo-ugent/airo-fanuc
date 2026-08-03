@@ -107,12 +107,10 @@ class RealtimeCore {
   bool wait_ready(double timeout_s);
 
   // --- submission (any thread; serialised by submit_mu_) ---
-  // `plan_tick` is the StateSnapshot::cmd_tick the caller's first knot was built from;
-  // 0 (the default) means "not declared" and joins the plan at knot 0.
   std::uint64_t submit_trajectory(const std::vector<std::int64_t>& times_ns, const std::vector<Vec6>& q,
                                   const std::vector<Vec6>& qd, double speed_scale, double settle_tol_rad,
                                   double settle_vel_eps_rad_s, double settle_timeout_s, double force_stop_n,
-                                  double deadman_s, std::uint64_t plan_tick = 0);
+                                  double deadman_s);
   std::uint64_t submit_servo(const Vec6& q, double duration_s);
   // Feed-forward overload: qd/qdd are accepted and currently ignored (see the
   // Target::servo_qd note). Identical behaviour to the position-only overload.

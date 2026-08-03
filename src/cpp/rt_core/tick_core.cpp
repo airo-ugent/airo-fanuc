@@ -478,59 +478,17 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
         emit(EventType::kMotionRejected, fault_, 0, t.motion_id);
         return r;
       }
-      // JOIN PHASE — which knot of this plan belongs to the tick before this one.
-      //
-      // `plan_tick` names the tick whose published commanded state the plan's first knot
-      // was built from. Consuming happens strictly later, so the commanded state has
-      // advanced along whatever was running: knot 0 describes where the arm WAS, and the
-      // plan's state for the previous tick — the one q_cmd_ should match — is
-      // (n_stale − 1) ticks in. That knot is the join target, and playback starts one
-      // tick past it. n_stale == 1, a submission consumed on the tick after its snapshot,
-      // lands on knot 0.
-      //
-      // The target is always a KNOT, never an interpolation, so it is a pose the caller's
-      // own collision check has already seen, and the knots skipped are a prefix of the
-      // caller's own checked trajectory. The only motion no planner produced remains the
-      // bridge below, which the gate bounds — so joining at phase narrows what is
-      // synthesized rather than widening it.
-      const std::int64_t itp_ns_j = static_cast<std::int64_t>(std::llround(itp() * 1e9));
-      const double s_v_j = t.speed_scale > 0.0 ? t.speed_scale : 1.0;
-      int join_idx = 0;
-      if (t.plan_tick != 0 && tick_no_ > t.plan_tick) {
-        const std::uint64_t n_stale = tick_no_ - t.plan_tick;
-        if (n_stale > static_cast<std::uint64_t>(ms_to_ticks(cfg_.max_plan_stale_ms))) {
-          // Beyond the ceiling, joining would skip more of the plan than the caller can
-          // have accounted for, and the plan's opening is no longer evidence of where the
-          // arm has been. Refuse rather than pick a phase on faith.
-          r.rejected_capture = true;
-          active_motion_id_ = t.motion_id;
-          active_status_ = MotionStatus::REJECTED;
-          emit(EventType::kCaptureRejected, FaultReason::REJECTED_START_MISMATCH, 0, t.motion_id);
-          emit(EventType::kMotionRejected, FaultReason::REJECTED_START_MISMATCH, 0, t.motion_id);
-          return r;
-        }
-        // Quantized DOWN to a knot; the remainder is one term of the handover deviation
-        // tested below. Stops at n-2 so at least one segment is left to play.
-        const std::int64_t want = static_cast<std::int64_t>(n_stale - 1) * itp_ns_j;
-        while (join_idx + 2 < t.n &&
-               static_cast<std::int64_t>(
-                   static_cast<double>(t.times_ns[join_idx + 1] - t.times_ns[0]) / s_v_j) <= want) {
-          ++join_idx;
-        }
-      }
-      join_tau_ns_ = static_cast<std::int64_t>(
-          static_cast<double>(t.times_ns[join_idx] - t.times_ns[0]) / s_v_j);
-      const Vec6& q0 = t.q[join_idx];
-      const Vec6& qd0 = t.qd[join_idx];
+      const Vec6& q0 = t.q[0];
+      const Vec6& qd0 = t.qd[0];
       // CAPTURE-or-REJECT: |q_cmd − q0|∞ > capture_tol → typed reject. Either the
       // gap to the trajectory start is small enough to be bridged by a bounded
       // capture splice, or the caller planned from a stale pose and must replan —
       // there is no third option that silently moves the arm to meet the plan.
       // The gate is the endpoint window AND whether the window can absorb the velocity
-      // change at the brake-class clamps. Evaluated BEFORE generating, so an infeasible
-      // splice resolves as REJECTED_START_MISMATCH below rather than reaching the
-      // generator and failing its 300-knot ceiling, which the `!capture_.ok()` branch can
-      // only report as INTERNAL.
+      // change at the brake-class clamps, at the same arrival rate the generator is
+      // bounded by. Evaluated BEFORE generating, so an infeasible splice resolves as
+      // REJECTED_START_MISMATCH here rather than reaching the generator, whose failures
+      // the `!ok()` branch below can only report as INTERNAL.
       if (tick_engine::capture_would_reject(q_cmd_, qd_cmd_, q0, qd0, cfg_.tick)) {
         r.rejected_capture = true;
         active_motion_id_ = t.motion_id;
@@ -539,89 +497,20 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
         emit(EventType::kMotionRejected, FaultReason::REJECTED_START_MISMATCH, 0, t.motion_id);
         return r;
       }
-      // SPLICE, OR JOIN THE PLAN DIRECTLY? The gate's own numbers decide, and this is
-      // the one place they are used to choose a mechanism rather than to refuse.
-      //
-      // A splice is a position profile to a FIXED point at a fixed arrival velocity. It
-      // is monotone only if that point is far enough ahead to absorb the velocity change
-      // on the way there — shed_travel is exactly that distance, at the brake-class
-      // clamps the splice runs under — with one tick of travel as the floor for a joint
-      // that is moving, because a target its anchor reaches this tick leaves the profile
-      // nowhere to go and it has to leave and come back. Where the gap covers that,
-      // splice: a shaped bridge whose knots the collision hook sees is the better
-      // instrument.
-      //
-      // Where it does not, there is nothing a splice can usefully do, so the plan is
-      // JOINED DIRECTLY: no bridge is generated, and the first command is the plan's own
-      // next sample. That is the case a phase-matched join produces by construction — the
-      // arm is already where the plan says it should be, and a splice asked to bridge
-      // zero distance at an unchanged velocity is the one geometry a fixed-point profile
-      // cannot express.
-      //
-      // A direct join is admissible only when that sample continues the motion the arm is
-      // already commanded to make, to within capture_rate·itp — one tick of travel at the
-      // capture envelope's own rate, which is the per-tick position change the splice is
-      // itself bounded by (test_capture pins that). So a join is only ever taken where the
-      // step it commands is one the splice could have commanded, and the ceiling is the
-      // same number _validate_trajectory already holds a first knot's velocity to.
-      const tick_engine::CaptureGate join_gate =
-          tick_engine::capture_gate(q_cmd_, qd_cmd_, q0, qd0, cfg_.tick);
-      // The playback sampler's own arithmetic, on a local non-owning view, so the step
-      // tested here IS the step the first playing tick commands. sampler_ still holds the
-      // outgoing motion and must not be rebound before this submission is accepted.
-      tick_engine::TrajectorySampler join_probe;
-      join_probe.bind(t.times_ns, t.q, t.qd, t.n);
-      const tick_engine::HermiteSample join_next =
-          join_probe.sample(join_tau_ns_ + itp_ns_j, t.speed_scale);
-      bool splice = true;
-      bool join_ok = true;
-      for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
-        // A joint at rest at BOTH ends — by settle_vel_eps, the core's own not-moving
-        // threshold — asks nothing of the geometry: there is no direction for a target to
-        // be "ahead" in, and no velocity to shed. Exempting it is what keeps this decision
-        // off the sign of a float residue. A submission out of HOLD has a zero gap and a
-        // commanded velocity that is zero only to within the dust the brake left behind,
-        // and it must splice, as it always has.
-        const double v_cmd = std::abs(qd_cmd_[j]);
-        const double v_knot = std::abs(qd0[j]);
-        if (std::max(v_cmd, v_knot) > cfg_.tick.settle_vel_eps_rad_s) {
-          const double dir = v_cmd > cfg_.tick.settle_vel_eps_rad_s
-                                 ? (qd_cmd_[j] > 0.0 ? 1.0 : -1.0)
-                                 : (qd0[j] > 0.0 ? 1.0 : -1.0);
-          const double d_req = std::max(v_cmd * itp(), join_gate.shed_travel[j]);
-          if ((q0[j] - q_cmd_[j]) * dir < d_req) {
-            splice = false;
-          }
-        }
-        const double resid = join_next.q[j] - q_cmd_[j] - qd_cmd_[j] * itp();
-        if (std::abs(resid) > cfg_.tick.capture_rate_rad_s * itp()) {
-          join_ok = false;
-        }
+      // Generate the bounded capture splice (commanded → (q0, qd0)). Into the PENDING
+      // buffer: this submission may still be rejected on the next line, and a motion in
+      // flight is playing `capture_` back (see the member's declaration).
+      tick_engine::generate_capture_path(q_cmd_, qd_cmd_, q0, qd0, cfg_.tick, capture_pending_);
+      if (!capture_pending_.ok()) {
+        r.rejected_capture = true;
+        active_motion_id_ = t.motion_id;
+        active_status_ = MotionStatus::REJECTED;
+        emit(EventType::kMotionRejected, FaultReason::INTERNAL, 0, t.motion_id);
+        return r;
       }
-      if (!splice && !join_ok) {
-        // Neither mechanism fits: the anchor is further from this plan than a tick of
-        // capture motion, and no phase of the plan was declared that would explain why.
-        // The splice is then the only instrument left, and it is the one this submission
-        // has always been given — so it is generated, and the excursion a target behind a
-        // moving anchor costs is the caller's to avoid by declaring plan_tick or by
-        // planning from a fresher pose. Nothing that is accepted today is refused here.
-        splice = true;
-      }
-      if (splice) {
-        // Generate the bounded capture splice (commanded → (q0, qd0)).
-        tick_engine::generate_capture_path(q_cmd_, qd_cmd_, q0, qd0, cfg_.tick, capture_);
-        if (!capture_.ok()) {
-          r.rejected_capture = true;
-          active_motion_id_ = t.motion_id;
-          active_status_ = MotionStatus::REJECTED;
-          emit(EventType::kMotionRejected, FaultReason::INTERNAL, 0, t.motion_id);
-          return r;
-        }
-      } else {
-        // No bridge exists for this submission. clear() also zeroes residue_ns, which
-        // install_trajectory adds to the playback start.
-        capture_.clear();
-      }
+      // ACCEPTED from here — no path below returns without running the motion, so this is
+      // the first point at which state belonging to the outgoing motion may be written.
+      capture_ = capture_pending_;
       // Preempt any current motion, then arm capture → trajectory.
       resolve_active(MotionStatus::PREEMPTED);
       captured_target_ = t;
@@ -641,24 +530,16 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
       ticks_since_kick_ = 0;
       force_armed_ = (t.force_stop_n > 0.0);
       force_stop_n_ = t.force_stop_n;
-      if (splice) {
-        mode_ = Mode::CAPTURE;
-        // Playback starts at knot 1. Knot 0 IS the anchor (q_cmd, qd_cmd) the generator
-        // was seeded with — the position already commanded last tick — so dispatching it
-        // re-sends that position and steps the commanded velocity to 0 for one tick
-        // whenever qd_cmd != 0. Same off-by-one, same reasoning, as install_trajectory's
-        // tau = itp start. `count >= 2` whenever `ok()`, which is checked above:
-        // CapturePath::finished is only ever set inside the generator's loop at k >= 1.
-        // Knot 0 keeps its role as the anchor that the brake seed and the Python
-        // collision check read; it is simply no longer re-commanded.
-        capture_idx_ = 1;
-      } else {
-        // Straight into playback at the join phase. There is no CAPTURE phase to pass
-        // through, because there is nothing between the commanded state and the plan: the
-        // executed path is the caller's checked trajectory and nothing else. Dispatch runs
-        // later in this same tick, so this tick already commands the plan's next sample.
-        install_trajectory(captured_target_);
-      }
+      mode_ = Mode::CAPTURE;
+      // Playback starts at knot 1. Knot 0 IS the anchor (q_cmd, qd_cmd) the generator
+      // was seeded with — the position already commanded last tick — so dispatching it
+      // re-sends that position and steps the commanded velocity to 0 for one tick
+      // whenever qd_cmd != 0. Same off-by-one, same reasoning, as install_trajectory's
+      // tau = itp start. `count >= 2` whenever `ok()`, which is checked above:
+      // CapturePath::finished is only ever set inside the generator's loop at k >= 1.
+      // Knot 0 keeps its role as the anchor that the brake seed and the Python
+      // collision check read; it is simply no longer re-commanded.
+      capture_idx_ = 1;
       active_motion_id_ = t.motion_id;
       active_status_ = MotionStatus::RUNNING;
       emit(EventType::kMotionRunning, FaultReason::NONE, 0, t.motion_id);
@@ -679,12 +560,8 @@ void TickCore::install_trajectory(const Target& t) {
   traj_end_tau_ns_ = speed_scale_ > 0.0 ? static_cast<std::int64_t>(static_cast<double>(dur) / speed_scale_) : dur;
   // Resume playback ONE TICK PAST WHERE THE SPLICE LEFT OFF.
   //
-  // Three terms, and they are separate reasons:
+  // Two terms, and they are separate reasons:
   //
-  //   join_tau   — the wire-elapsed time of the knot this plan was JOINED at, 0 for knot 0
-  //                (see the join-phase note in consume). A submission whose declared
-  //                anchor is several ticks old is joined further in, because those ticks
-  //                are motion the arm has already made.
   //   itp        — not tau=0. tau=0 hits the sampler's before-start branch (the first
   //                knot at REST, qd=0), which steps the commanded velocity to 0 for a
   //                tick whenever qd0 != 0.
@@ -697,11 +574,10 @@ void TickCore::install_trajectory(const Target& t) {
   //                up to the whole commanded velocity, sized by nothing but where the
   //                duration fell between two ticks.
   //
-  // itp and residue are the same off-by-one as the one at the head of this phase, and
-  // none of the three shortens the motion: the trajectory is played from its start to its
-  // end either way, and join_tau skips only ticks the arm has already made.
+  // Neither shortens the motion: residue is time the SPLICE already covered on the
+  // trajectory's behalf, and the trajectory is played from its start to its end.
   const std::int64_t itp_ns = static_cast<std::int64_t>(std::llround(itp() * 1e9));
-  tau_ns_ = join_tau_ns_ + itp_ns + capture_.residue_ns;
+  tau_ns_ = itp_ns + capture_.residue_ns;
   traj_phase_ = TrajPhase::kPlaying;
   mode_ = Mode::TRAJECTORY;
 }

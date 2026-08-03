@@ -125,8 +125,10 @@ class TrajectoryValidationError(FanucError):
 
     Per-violation typed error for the Python-side validation that mirrors the
     C++ defense: times not strictly increasing, <2 knots, non-finite q/qd,
-    ``|s·qd| > v_lim``, or ``s > 1.0``. Raised synchronously so callers never
-    submit an unsafe timeline.
+    ``|qd| > v_lim``, a first knot above the capture envelope, a non-finite or
+    non-positive ``force_stop_n``/``deadman_s``, and — from ``move_j`` — a target outside
+    the position limits or an arm that is not at rest. Raised synchronously so callers
+    never submit an unsafe timeline.
     """
 
 

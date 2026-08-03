@@ -94,6 +94,16 @@ CaptureGate capture_gate(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& q0, 
       g.reject = true;
     }
 
+    // (1b) arrival velocity vs the rate the splice itself may run at. capture_rate_rad_s
+    // is the generator's own max_velocity, and Ruckig refuses a target_velocity above
+    // max_velocity as invalid input — so without this test the gate passes a submission
+    // the generator then fails, and a failed generation can only be reported as INTERNAL.
+    // Testing it here is what makes the arrival rate a typed REJECTED_START_MISMATCH.
+    if (std::abs(qd0[j]) > cfg.capture_rate_rad_s) {
+      g.reject_mask |= (1u << static_cast<unsigned>(j));
+      g.reject = true;
+    }
+
     // (2) can the window absorb the velocity change? Mean speed over a monotone velocity
     // change is (|v0| + |v1|)/2, so the travel it costs is that times its duration. Zero
     // whenever the endpoint velocities match — including the case where both are zero,

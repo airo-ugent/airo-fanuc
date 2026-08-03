@@ -94,12 +94,3 @@ gtest_discover_tests(test_motion_profile)
 add_executable(test_capture_seam test_capture_seam.cpp)
 target_link_libraries(test_capture_seam PRIVATE rt_core GTest::gtest_main)
 gtest_discover_tests(test_capture_seam)
-
-# ---------------------------------------------------------------------------
-# Joining a submitted plan at the phase the caller's declared staleness implies: that a
-# continuation replan is joined with no splice at all, that a reachable gap still
-# splices, and the staleness ceiling. Same rt_core link surface as the tests above.
-# ---------------------------------------------------------------------------
-add_executable(test_join_phase test_join_phase.cpp)
-target_link_libraries(test_join_phase PRIVATE rt_core GTest::gtest_main)
-gtest_discover_tests(test_join_phase)
