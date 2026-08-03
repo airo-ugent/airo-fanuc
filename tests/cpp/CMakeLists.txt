@@ -54,3 +54,22 @@ endforeach()
 add_executable(test_stop_precedence test_stop_precedence.cpp)
 target_link_libraries(test_stop_precedence PRIVATE rt_core GTest::gtest_main)
 gtest_discover_tests(test_stop_precedence)
+
+# ---------------------------------------------------------------------------
+# Ingest finiteness gate: a status packet carrying a non-finite wire float is
+# dropped at ingest, so no NaN reaches the clamps and thresholds that cannot
+# reject one. Drives the full RealtimeCore over UDP loopback, like
+# test_rt_loopback, against a peer that poisons individual fields.
+# ---------------------------------------------------------------------------
+add_executable(test_rx_finiteness test_rx_finiteness.cpp)
+target_link_libraries(test_rx_finiteness PRIVATE rt_core GTest::gtest_main)
+gtest_discover_tests(test_rx_finiteness)
+
+# ---------------------------------------------------------------------------
+# Exactly-once tick-core invariants: one SUPERVISOR_LOST fault per heartbeat
+# lapse, a stop_j answered in BRAKE, and a terminal event for every motion that
+# consume displaces from the single active-motion slot.
+# ---------------------------------------------------------------------------
+add_executable(test_latch_and_handles test_latch_and_handles.cpp)
+target_link_libraries(test_latch_and_handles PRIVATE rt_core GTest::gtest_main)
+gtest_discover_tests(test_latch_and_handles)

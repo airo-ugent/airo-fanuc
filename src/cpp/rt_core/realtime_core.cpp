@@ -79,6 +79,33 @@ MotionStatus event_to_status(EventType t) {
   }
 }
 
+// Finiteness gate for a decoded status packet, applied before any field reaches the
+// control path. Checks exactly the wire floats the core consumes, over the six axes the
+// arm has: what a controller writes into the three unused axis slots or into `current`
+// is not something this driver reads, so it is not made a condition for using a packet.
+//
+// This is the only place a non-finite value can be stopped. std::clamp, std::min,
+// std::max and a bare `>` comparison all pass a NaN through: the +-position clamp does
+// not clip it, the slew clip's two comparisons are both false so it emits the value and
+// adopts it as the next reference, `safety_scale < safety_scale_min` is false so the
+// SAFETY_CLAMP kill gate reads clear, and `|F| > force_stop_n` is false so the force
+// guard reads untripped.
+bool rx_floats_finite(const codec::RobotStatusView& v) {
+  for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
+    if (!std::isfinite(v.joint_angle[j]) || !std::isfinite(v.position[j])) {
+      return false;
+    }
+  }
+  if (!std::isfinite(v.safety_scale)) {
+    return false;
+  }
+  if (v.fs_type == 1u || v.fs_type == 2u) {
+    return std::isfinite(v.force_x) && std::isfinite(v.force_y) && std::isfinite(v.force_z) &&
+           std::isfinite(v.moment_x) && std::isfinite(v.moment_y) && std::isfinite(v.moment_z);
+  }
+  return true;
+}
+
 bool is_resolution_event(EventType t) {
   switch (t) {
     case EventType::kMotionDone:
@@ -392,6 +419,20 @@ void RealtimeCore::rt_main_() {
           } else {
             continue;  // not a status packet we understand
           }
+          // A status carrying a non-finite float is DROPPED, exactly like a status that
+          // never arrived, and never latches a fault. Dropping is already handled end to
+          // end: the graduated RX-silence ladder absorbs an isolated loss at no cost and
+          // escalates a persistent one to SAFE_FOLLOW and then to a parked TX. If the
+          // very FIRST packet is affected, begin_streaming simply never runs and the
+          // preroll timeout reports that the controller never became ready. Faulting
+          // instead would turn one corrupt datagram — an IPv4 UDP checksum is optional
+          // and commonly zero — into an operator-required recovery, and on that first
+          // packet it would enter SAFE_FOLLOW with the commanded anchor still at its
+          // default zero vector and no measurement to re-anchor onto.
+          if (!rx_floats_finite(v)) {
+            rx_nonfinite_drops_.fetch_add(1, std::memory_order_relaxed);
+            continue;
+          }
           // deg → rad measured.
           Vec6 q_meas{};
           for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
@@ -462,8 +503,14 @@ void RealtimeCore::rt_main_() {
       continue;
     }
 
-    // PLL phase servo → next tick.
-    const std::int64_t next_tick = pll_.next_tick(scheduled_tick, have_rx, last_rx_mono);
+    // PLL phase servo → next tick. `now` is what lets the servo re-base a deadline the
+    // clock has already passed, instead of handing arm_timer_abs_ a past time, which
+    // fires immediately and turns one lost window into a catch-up burst.
+    const std::int64_t next_tick = pll_.next_tick(scheduled_tick, have_rx, last_rx_mono, now_ns());
+    if (pll_.last_skipped_windows() > 0) {
+      skipped_tick_windows_.fetch_add(static_cast<std::uint64_t>(pll_.last_skipped_windows()),
+                                     std::memory_order_relaxed);
+    }
     scheduled_tick = next_tick;
     arm_timer_abs_(next_tick);
 
@@ -862,6 +909,8 @@ TimingStats RealtimeCore::timing() const {
   s.parked_ticks = parked_ticks_.load(std::memory_order_relaxed);
   s.missed_rx_ticks = missed_rx_ticks_.load(std::memory_order_relaxed);
   s.rx_seq_gaps = rx_seq_gaps_.load(std::memory_order_relaxed);
+  s.rx_nonfinite_drops = rx_nonfinite_drops_.load(std::memory_order_relaxed);
+  s.skipped_tick_windows = skipped_tick_windows_.load(std::memory_order_relaxed);
   s.double_send_guard = double_send_guard_.load(std::memory_order_relaxed);
   s.cpu_migrations = cpu_migrations_.load(std::memory_order_relaxed);
   return s;

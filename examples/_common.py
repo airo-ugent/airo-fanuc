@@ -505,7 +505,11 @@ def report_rt_health(driver: Any, config: DriverConfig) -> bool:
     missed_pct = 100.0 * int(ts["missed_rx_ticks"]) / ticks
     print(
         f"  rx quality   : missed_rx_ticks={ts['missed_rx_ticks']} ({missed_pct:.2f}% of ticks) "
-        f"rx_seq_gaps={ts['rx_seq_gaps']}"
+        f"rx_seq_gaps={ts['rx_seq_gaps']} rx_nonfinite_drops={ts['rx_nonfinite_drops']}"
+    )
+    print(
+        f"  loop         : skipped_tick_windows={ts['skipped_tick_windows']} — windows whose deadline "
+        f"had already passed, dropped rather than replayed (nonzero = the RT thread was preempted)"
     )
     print(
         f"  cpu          : migrations={ts['cpu_migrations']} — this driver sets no CPU affinity, so any "

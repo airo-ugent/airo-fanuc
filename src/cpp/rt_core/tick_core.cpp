@@ -108,9 +108,10 @@ void TickCore::begin_streaming(const Vec6& q_meas) {
   ticks_since_rx_ = 0;
   // Supervisor-liveness state (fresh streaming session). Do NOT clear
   // supervisor_hb_armed_: once the supervisor has beaten it stays armed across
-  // re-handshakes; we only reset the elapsed counter so a re-stream never trips
-  // on a stale count.
+  // re-handshakes; we only reset the elapsed counter and the per-lapse latch so a
+  // re-stream never trips on a stale count.
   ticks_since_heartbeat_ = 0;
+  supervisor_lost_latched_ = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,11 +302,18 @@ void TickCore::handle_supervisor_liveness() {
   if (!streaming_ || !supervisor_hb_armed_) {
     return;
   }
-  if (fault_ == FaultReason::SUPERVISOR_LOST) {
-    return;  // already latched — do not re-fault every tick
+  // One fault per lapse, latched in a dedicated flag rather than by testing fault_.
+  // Every gate entry, the RX-silence park and the recovery dwell also write fault_, and
+  // ticks_since_heartbeat_ stays over the threshold until the next beat — so any of
+  // those writers re-opens a fault_-based gate on the following tick, and the RX park
+  // does it every silent tick, which bumps the epoch twice per tick and rejects every
+  // submitted Target for as long as it lasts.
+  if (supervisor_lost_latched_) {
+    return;
   }
   ++ticks_since_heartbeat_;
   if (static_cast<double>(ticks_since_heartbeat_) * itp() >= cfg_.supervisor_lost_s) {
+    supervisor_lost_latched_ = true;
     enter_fault(FaultReason::SUPERVISOR_LOST, BumpReason::kSupervisorLost, MotionStatus::FAULTED);
     emit(EventType::kSupervisorLost, FaultReason::SUPERVISOR_LOST);
   }
@@ -382,6 +390,11 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
 
   switch (t.kind) {
     case TargetKind::kHold: {
+      // Preempt whatever is running before the single active-motion slot is overwritten.
+      // begin_brake also resolves, but only for the three moving modes; a submitted Brake
+      // still RUNNING in BRAKE mode would otherwise lose its only terminal event and
+      // leave its handle PENDING forever. resolve_active is idempotent.
+      resolve_active(MotionStatus::PREEMPTED);
       if (mode_ == Mode::CAPTURE || mode_ == Mode::TRAJECTORY || mode_ == Mode::SERVO) {
         begin_brake(MotionStatus::PREEMPTED, FaultReason::NONE);
       }
@@ -416,6 +429,13 @@ ConsumeResult TickCore::consume(const Target& t, bool superseded_by_stop) {
       // No distance guard: a servo target is tracked however far away it is, bounded
       // by the servo limits rather than refused (servo.hpp, NO DISTANCE GUARD). The
       // only servo rejection left is the faulted/following/parked case above.
+      //
+      // Preempt the motion this target replaces before the single active-motion slot is
+      // overwritten. A servo stream submits one target per tick, so nothing coalesces in
+      // the mailbox and RealtimeCore's synthetic preempt — which covers only targets that
+      // never reach consume — never fires: every id but the last resolves here or nowhere.
+      // Placed after both rejection branches, because a rejected target preempts nothing.
+      resolve_active(MotionStatus::PREEMPTED);
       if (mode_ != Mode::SERVO) {
         servo_.start(q_cmd_, qd_cmd_, qdd_cmd_);
         mode_ = Mode::SERVO;
@@ -714,6 +734,15 @@ Command TickCore::tick(const RxSample* rx, const Target* pending, bool consume_s
     stop_requested_ = false;
     if (mode_ == Mode::HOLD || mode_ == Mode::CAPTURE || mode_ == Mode::TRAJECTORY || mode_ == Mode::SERVO) {
       begin_brake(MotionStatus::STOPPED, FaultReason::NONE);
+    } else if (mode_ == Mode::BRAKE) {
+      // Already decelerating to rest, so the planned profile is left exactly as it is:
+      // Brake::seed would reset elapsed_ticks_ (restarting the brake_max_duration_s cap)
+      // and recompute max_velocity from the already-decayed qd_cmd, so re-seeding is not
+      // a no-op on the deceleration. What the stop still owes the caller is the OUTCOME —
+      // a submitted Brake is the tracked motion, and without this it reaches rest and
+      // reports DONE for a motion the caller explicitly stopped.
+      resolve_active(MotionStatus::STOPPED);
+      brake_is_motion_ = false;
     }
   }
   if (hold_requested_) {
@@ -730,6 +759,7 @@ Command TickCore::tick(const RxSample* rx, const Target* pending, bool consume_s
     heartbeated_ = false;
     supervisor_hb_armed_ = true;  // arm the SUPERVISOR_LOST watchdog on the first beat
     ticks_since_heartbeat_ = 0;
+    supervisor_lost_latched_ = false;  // the lapse ended — a later one may fault again
   }
 
   // 3) graduated RX-silence escalation.
@@ -760,6 +790,11 @@ Command TickCore::tick(const RxSample* rx, const Target* pending, bool consume_s
         recover_pending_ = false;
         all_clear_ticks_ = 0;
         rx_degraded_entered_ = false;
+        // Clearing the fault re-arms the watchdog. SUPERVISOR_LOST has no bit in
+        // kKillMask, so this dwell can complete with the supervisor still dead;
+        // ticks_since_heartbeat_ is deliberately NOT reset, so that case re-faults on the
+        // next tick rather than buying another supervisor_lost_s of unwatched streaming.
+        supervisor_lost_latched_ = false;
         go_hold();
         emit(EventType::kRecoveryComplete);
       }

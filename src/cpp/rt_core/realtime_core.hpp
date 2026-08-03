@@ -73,6 +73,15 @@ struct TimingStats {
   std::uint64_t parked_ticks{0};
   std::uint64_t missed_rx_ticks{0};
   std::uint64_t rx_seq_gaps{0};
+  // Status packets dropped at ingest for carrying a non-finite float (see
+  // rx_floats_finite). Also shows up in rx_seq_gaps, since a dropped status leaves a
+  // hole in the sequence; this counter is what says the hole was ours.
+  std::uint64_t rx_nonfinite_drops{0};
+  // Tick windows whose deadline had already passed when the loop reached them, which
+  // the PLL therefore dropped rather than replayed. Non-zero means the RT thread lost
+  // whole windows to preemption; no command is emitted for a dropped window, which is
+  // what keeps consecutive sends one cadence apart.
+  std::uint64_t skipped_tick_windows{0};
   std::uint64_t double_send_guard{0};
   std::uint64_t cpu_migrations{0};
 };
@@ -230,6 +239,8 @@ class RealtimeCore {
   std::atomic<std::uint64_t> parked_ticks_{0};
   std::atomic<std::uint64_t> missed_rx_ticks_{0};
   std::atomic<std::uint64_t> rx_seq_gaps_{0};
+  std::atomic<std::uint64_t> rx_nonfinite_drops_{0};
+  std::atomic<std::uint64_t> skipped_tick_windows_{0};
   std::atomic<std::uint64_t> double_send_guard_{0};
   std::atomic<std::uint64_t> cpu_migrations_{0};
   // Histograms are RT-thread-owned; timing() reads them racily (a torn bucket
@@ -246,7 +257,13 @@ class RealtimeCore {
     std::atomic<std::uint64_t> id{0};
     std::atomic<std::uint32_t> status{0};
   };
-  static constexpr int kResolutions = 64;
+  // A recent-resolutions cache, not a permanent record: it is circular, so a handle
+  // whose resolution has been displaced reads PENDING again and must be polled before
+  // that happens. Sized against the worst producer — a servo stream resolves one motion
+  // per tick, so at 125 Hz this is 8.2 s of continuous servoing, where 64 slots would
+  // be 0.5 s. 16 KB of static storage buys the difference between "any reasonable poll
+  // loop" and "only a tight one".
+  static constexpr int kResolutions = 1024;
   std::array<ResolutionSlot, kResolutions> resolutions_{};
   int resolution_head_{0};  // RT-owned
   std::atomic<std::uint64_t> active_id_pub_{0};

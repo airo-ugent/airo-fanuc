@@ -227,6 +227,7 @@ class TickCore {
   bool heartbeated_{false};          // beat drained at tick start
   bool supervisor_hb_armed_{false};  // armed after the supervisor's FIRST beat
   int ticks_since_heartbeat_{0};
+  bool supervisor_lost_latched_{false};  // this lapse has already faulted (cleared by a beat)
 
   // --- force-guard ---
   bool force_armed_{false};

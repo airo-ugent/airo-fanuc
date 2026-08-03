@@ -138,8 +138,15 @@ py::dict py_plan_joint_move(const std::vector<double>& q0, const std::vector<dou
   // the plan is shaped by the synthetic C++ fallback envelope instead of the arm's.
   const te::TickEngineConfig cfg = config ? config->tick : te::TickEngineConfig{};
 
-  if (!(accel_scale > 0.0) || !(jerk_scale > 0.0)) {
-    throw std::invalid_argument("accel_scale and jerk_scale must be > 0");
+  // Both are FRACTIONS of cfg.limits, so 1.0 is the ceiling, not just the default. The
+  // core replays these knots with cubic Hermite and never re-times them, and the only
+  // per-tick clip on the command is positional (an acceleration cap there is banned —
+  // slew.hpp), so a profile planned above the arm's a/j reaches the wire unreshaped.
+  // NaN fails both bounds.
+  if (!(accel_scale > 0.0 && accel_scale <= 1.0) || !(jerk_scale > 0.0 && jerk_scale <= 1.0)) {
+    throw std::invalid_argument(
+        "accel_scale and jerk_scale must be in (0, 1]: they are fractions of the config's "
+        "acceleration / jerk limits");
   }
   if (!(cfg.itp_s > 0.0)) {
     throw std::invalid_argument("config.itp_s must be > 0");
@@ -444,6 +451,8 @@ class StreamCore {
     d["parked_ticks"] = t.parked_ticks;
     d["missed_rx_ticks"] = t.missed_rx_ticks;
     d["rx_seq_gaps"] = t.rx_seq_gaps;
+    d["rx_nonfinite_drops"] = t.rx_nonfinite_drops;
+    d["skipped_tick_windows"] = t.skipped_tick_windows;
     d["double_send_guard"] = t.double_send_guard;
     d["cpu_migrations"] = t.cpu_migrations;
     return d;
@@ -493,7 +502,8 @@ PYBIND11_MODULE(_core, m) {
         "Plan a point-to-point joint move offline with Ruckig and return ITP-spaced knots: "
         "{times_ns, q, qd, count, duration_s}, ready for FanucDriver.move_trajectory. "
         "max_velocity_rad_s is the LEADING-AXIS speed (<=0 = the config's velocity limits); "
-        "accel_scale / jerk_scale are fractions of the config's acceleration / jerk limits. "
+        "accel_scale / jerk_scale are fractions of the config's acceleration / jerk limits, "
+        "in (0, 1]. "
         "Pass the same RtCoreConfig the core was constructed with, so the profile is shaped by "
         "the limits the tick engine actually enforces.");
 

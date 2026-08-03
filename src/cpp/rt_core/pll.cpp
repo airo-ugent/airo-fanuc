@@ -15,7 +15,8 @@ inline std::int64_t clamp_i64(std::int64_t v, std::int64_t lo, std::int64_t hi) 
 Pll::Pll(std::int64_t rx_lead_ns, double kp, std::int64_t tick_ns, std::int64_t cap_ns)
     : rx_lead_ns_(rx_lead_ns), kp_(kp), tick_ns_(tick_ns), cap_ns_(cap_ns) {}
 
-std::int64_t Pll::next_tick(std::int64_t scheduled_tick_ns, bool have_fresh_rx, std::int64_t last_rx_mono_ns) {
+std::int64_t Pll::next_tick(std::int64_t scheduled_tick_ns, bool have_fresh_rx, std::int64_t last_rx_mono_ns,
+                            std::int64_t now_mono_ns) {
   std::int64_t next;
   if (have_fresh_rx) {
     // Phase error: how far the scheduled tick is AHEAD of (rx + lead). Pulling
@@ -33,6 +34,21 @@ std::int64_t Pll::next_tick(std::int64_t scheduled_tick_ns, bool have_fresh_rx, 
   // Never schedule at/behind the just-fired deadline.
   if (next <= scheduled_tick_ns) {
     next = scheduled_tick_ns + 1;
+  }
+  // Re-base onto the clock when the loop is already a whole window late. Both branches
+  // above are relative to `scheduled_tick_ns`, so they carry the lateness forward
+  // unchanged: a deadline behind `now_mono_ns` means the loop lost at least one full
+  // tick_ns, and arming an absolute timer there re-enters the loop immediately.
+  // Re-basing keeps consecutive sends tick_ns apart — the passed-over windows are
+  // dropped, so the motion clock advances once per window actually served rather than
+  // once per iteration of a catch-up burst. This cannot fire on an on-time tick: `next`
+  // is a full tick_ns ± cap_ns ahead of the deadline that just fired, so `now_mono_ns`
+  // reaching it requires that much wake latency. Re-locking the phase afterwards costs
+  // at most cap_ns per tick, the same slew a reconnect takes.
+  last_skipped_windows_ = 0;
+  if (next <= now_mono_ns) {
+    last_skipped_windows_ = static_cast<int>((now_mono_ns - next) / tick_ns_) + 1;
+    next = now_mono_ns + tick_ns_;
   }
   return next;
 }

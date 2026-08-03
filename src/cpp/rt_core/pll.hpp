@@ -51,12 +51,28 @@ class Pll {
   // Compute the next absolute tick time from the just-fired scheduled tick.
   //   have_fresh_rx : did a fresh RX arrive since the previous tick?
   //   last_rx_mono_ns : monotonic arrival time of that RX (ignored if !fresh).
+  //   now_mono_ns : CLOCK_MONOTONIC as read by the caller. This class reads no clock
+  //              of its own; it needs the caller's `now` because the two terms above
+  //              are relative to the previous deadline alone, so a preemption longer
+  //              than one tick yields a deadline that is already in the past. An
+  //              absolute timer armed there fires immediately, and the loop then
+  //              ticks — and sends — once per elapsed window with no spacing, which
+  //              is the velocity step the correction cap exists to prevent. A deadline
+  //              at or behind `now_mono_ns` is therefore re-based to now + tick_ns:
+  //              the windows whose deadlines went by are dropped and counted (see
+  //              last_skipped_windows), never replayed.
   // When no fresh RX arrived, free-runs at nominal cadence (no phase correction).
-  // The result is guaranteed strictly greater than `scheduled_tick_ns`.
-  std::int64_t next_tick(std::int64_t scheduled_tick_ns, bool have_fresh_rx, std::int64_t last_rx_mono_ns);
+  // The result is guaranteed strictly greater than both `scheduled_tick_ns` and
+  // `now_mono_ns`.
+  std::int64_t next_tick(std::int64_t scheduled_tick_ns, bool have_fresh_rx, std::int64_t last_rx_mono_ns,
+                         std::int64_t now_mono_ns);
 
   // Last applied phase correction (ns), signed, clamped to ±cap. Diagnostic.
   std::int64_t last_correction_ns() const { return last_correction_ns_; }
+
+  // Whole tick windows the last next_tick() dropped by re-basing onto the clock; 0
+  // whenever the computed deadline was still ahead of `now_mono_ns`. Diagnostic.
+  int last_skipped_windows() const { return last_skipped_windows_; }
 
   std::int64_t tick_ns() const { return tick_ns_; }
   std::int64_t cap_ns() const { return cap_ns_; }
@@ -67,6 +83,7 @@ class Pll {
   std::int64_t tick_ns_;
   std::int64_t cap_ns_;
   std::int64_t last_correction_ns_{0};
+  int last_skipped_windows_{0};
 };
 
 }  // namespace airo_fanuc::rt_core
