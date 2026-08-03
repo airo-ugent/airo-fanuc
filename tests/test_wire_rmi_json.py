@@ -112,14 +112,12 @@ _RMI_GOLDENS: dict[str, tuple[str, dict[str, Any], str]] = {
     "write_register_integer": (
         "rmi_write_register_request",
         {"register_number": 2, "value": 1},
-        "FRC_WriteRegister R[2] = 1 — an int value carries DataType 'integer' "
-        "(lowercase).",
+        "FRC_WriteRegister R[2] = 1 — an int value carries DataType 'integer' (lowercase).",
     ),
     "write_register_float": (
         "rmi_write_register_request",
         {"register_number": 1, "value": 1.5},
-        "FRC_WriteRegister R[1] = 1.5 — a float value carries DataType 'float' "
-        "(lowercase).",
+        "FRC_WriteRegister R[1] = 1.5 — a float value carries DataType 'float' (lowercase).",
     ),
     "read_error": (
         "rmi_read_error_request",
@@ -130,8 +128,7 @@ _RMI_GOLDENS: dict[str, tuple[str, dict[str, Any], str]] = {
     "read_joint_angles": (
         "rmi_read_joint_angles_request",
         {},
-        "FRC_ReadJointAngles (RMI §2.3.15, ReadJointAnglesPacket) — current joint "
-        "angles over the RMI plane.",
+        "FRC_ReadJointAngles (RMI §2.3.15, ReadJointAnglesPacket) — current joint angles over the RMI plane.",
     ),
     "read_cartesian_position": (
         "rmi_read_cartesian_position_request",
@@ -143,8 +140,7 @@ _RMI_GOLDENS: dict[str, tuple[str, dict[str, Any], str]] = {
     "continue": (
         "rmi_continue_request",
         {},
-        "FRC_Continue (RMI §2.3.4, ContinuePacket) — resumes a paused "
-        "Remote-Motion TP program.",
+        "FRC_Continue (RMI §2.3.4, ContinuePacket) — resumes a paused Remote-Motion TP program.",
     ),
     "call_stream_motn": (
         "rmi_call_request",

@@ -87,6 +87,13 @@ jobs:
         # `--fake` locally instead (see examples/README.md).
         run: uv run ruff check --output-format=github src tests examples
 
+      - name: Format (ruff format --check)
+        # --check reports without rewriting, so the job fails rather than
+        # committing a reformat. ruff is pinned to a minor in [dev] because the
+        # formatter's output changes across minors and this gate would otherwise
+        # depend on whichever version the runner resolved.
+        run: uv run ruff format --check src tests examples
+
       - name: Type check (mypy)
         # Packages, mypy_path and python_version all come from [tool.mypy].
         run: uv run mypy

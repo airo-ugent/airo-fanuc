@@ -618,8 +618,7 @@ def main() -> int:
             crept = float(np.max(np.abs(after_deg - braked_deg)))
             checks.append(
                 (
-                    f"the arm stayed stopped for a further 1.0s — nothing resumed it "
-                    f"(crept {crept:.3f} deg)",
+                    f"the arm stayed stopped for a further 1.0s — nothing resumed it (crept {crept:.3f} deg)",
                     crept <= policy.settle.tol_deg,
                 )
             )

@@ -299,7 +299,9 @@ def test_preflight_hard_block_raises(tmp_path: Any) -> None:
     controller.arm_syst_348(on="FRC_Initialize")  # also raises the SYST-348 alarm text
     cfg = DriverConfig(
         profile=TEST_PROFILE,
-        sm_port=controller.sm_port, rmi_port=controller.rmi_port, preroll_timeout_s=_READY_TIMEOUT_S
+        sm_port=controller.sm_port,
+        rmi_port=controller.rmi_port,
+        preroll_timeout_s=_READY_TIMEOUT_S,
     )
     policy = DriverPolicy(config=cfg, connect_retries=2, lock_path=str(tmp_path / "owner.lock"))
     try:
@@ -324,7 +326,9 @@ def test_ownership_conflict_raises(tmp_path: Any) -> None:
     controller2.start_realtime(speed=1.0)
     cfg = DriverConfig(
         profile=TEST_PROFILE,
-        sm_port=controller2.sm_port, rmi_port=controller2.rmi_port, preroll_timeout_s=_READY_TIMEOUT_S
+        sm_port=controller2.sm_port,
+        rmi_port=controller2.rmi_port,
+        preroll_timeout_s=_READY_TIMEOUT_S,
     )
     policy = DriverPolicy(config=cfg, connect_retries=1, lock_path=lock_path)
     try:
@@ -365,8 +369,10 @@ def test_grprun_fork_at_most_once_across_failed_retries(tmp_path: Any) -> None:
     controller.start()  # RMI + SM sockets bound; NOTE: start_realtime() intentionally NOT called
     cfg = DriverConfig(
         profile=TEST_PROFILE,
-        sm_port=controller.sm_port, rmi_port=controller.rmi_port,
-        preroll_timeout_s=0.3, gripdisp_probe_timeout_s=0.3,
+        sm_port=controller.sm_port,
+        rmi_port=controller.rmi_port,
+        preroll_timeout_s=0.3,
+        gripdisp_probe_timeout_s=0.3,
     )
     policy = DriverPolicy(config=cfg, connect_retries=3, enable_gripper=True, hold_wait_s=0.3)
     rmi = RmiClient(
@@ -436,13 +442,17 @@ def test_gripper_bringup_skips_fork_when_gripdisp_already_running(tmp_path: Any)
     controller.rmi._gripdisp_running = True  # noqa: SLF001 - test-only state injection
     cfg = DriverConfig(
         profile=TEST_PROFILE,
-        sm_port=controller.sm_port, rmi_port=controller.rmi_port,
-        preroll_timeout_s=0.3, gripdisp_probe_timeout_s=0.3,
+        sm_port=controller.sm_port,
+        rmi_port=controller.rmi_port,
+        preroll_timeout_s=0.3,
+        gripdisp_probe_timeout_s=0.3,
     )
     policy = DriverPolicy(config=cfg, connect_retries=1, enable_gripper=True, hold_wait_s=0.3)
     rmi = RmiClient(
-        "127.0.0.1", controller.rmi_port,
-        connect_timeout=cfg.rmi_connect_timeout, request_timeout=cfg.rmi_request_timeout,
+        "127.0.0.1",
+        controller.rmi_port,
+        connect_timeout=cfg.rmi_connect_timeout,
+        request_timeout=cfg.rmi_request_timeout,
     )
     core = StreamCore("127.0.0.1", controller.sm_port, cfg.to_rt_core_config())
     sup = Supervisor(core, rmi, policy)

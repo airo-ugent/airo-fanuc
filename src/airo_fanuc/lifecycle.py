@@ -102,6 +102,7 @@ ARM_FAULTS: frozenset[FaultReason] = frozenset(
     }
 )
 
+
 def needs_rmi_ladder(fault: FaultReason) -> bool:
     """True if clearing ``fault`` needs the RMI reset/relaunch ladder (vs a pure
     condition-exit the controller manages)."""

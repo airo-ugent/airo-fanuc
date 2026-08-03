@@ -45,11 +45,11 @@ class TestRecoverEscalation:
 
     def test_escalates_to_reconnect_on_recoverable_fault(self) -> None:
         d = _bare_driver()
-        d._supervisor = SimpleNamespace(
-            recover=lambda timeout_s=None: False, is_commandable=lambda: True
-        )
+        d._supervisor = SimpleNamespace(recover=lambda timeout_s=None: False, is_commandable=lambda: True)
         d.get_state = lambda: {  # type: ignore[method-assign]
-            "e_stopped": False, "tp_enabled": False, "operator_required": False
+            "e_stopped": False,
+            "tp_enabled": False,
+            "operator_required": False,
         }
         called: list[str] = []
         d.reconnect = lambda: called.append("reconnect")  # type: ignore[method-assign]
@@ -59,9 +59,7 @@ class TestRecoverEscalation:
     @pytest.mark.parametrize("flag", ["e_stopped", "tp_enabled", "operator_required"])
     def test_no_reconnect_for_human_required_fault(self, flag: str) -> None:
         d = _bare_driver()
-        d._supervisor = SimpleNamespace(
-            recover=lambda timeout_s=None: False, is_commandable=lambda: True
-        )
+        d._supervisor = SimpleNamespace(recover=lambda timeout_s=None: False, is_commandable=lambda: True)
         state = {"e_stopped": False, "tp_enabled": False, "operator_required": False}
         state[flag] = True
         d.get_state = lambda: state  # type: ignore[method-assign]
@@ -73,24 +71,24 @@ class TestRecoverEscalation:
     def test_escalate_reconnect_false_never_reconnects(self) -> None:
         # Calibration free-drive heal opts out: light ladder only, no cold reconnect.
         d = _bare_driver()
-        d._supervisor = SimpleNamespace(
-            recover=lambda timeout_s=None: False, is_commandable=lambda: True
-        )
+        d._supervisor = SimpleNamespace(recover=lambda timeout_s=None: False, is_commandable=lambda: True)
         called: list[str] = []
         d.reconnect = lambda: called.append("reconnect")  # type: ignore[method-assign]
         d.get_state = lambda: {  # type: ignore[method-assign]
-            "e_stopped": False, "tp_enabled": False, "operator_required": False
+            "e_stopped": False,
+            "tp_enabled": False,
+            "operator_required": False,
         }
         assert d.recover(escalate_reconnect=False) is False
         assert called == []
 
     def test_reconnect_failure_returns_false(self) -> None:
         d = _bare_driver()
-        d._supervisor = SimpleNamespace(
-            recover=lambda timeout_s=None: False, is_commandable=lambda: True
-        )
+        d._supervisor = SimpleNamespace(recover=lambda timeout_s=None: False, is_commandable=lambda: True)
         d.get_state = lambda: {  # type: ignore[method-assign]
-            "e_stopped": False, "tp_enabled": False, "operator_required": False
+            "e_stopped": False,
+            "tp_enabled": False,
+            "operator_required": False,
         }
 
         def _boom() -> None:

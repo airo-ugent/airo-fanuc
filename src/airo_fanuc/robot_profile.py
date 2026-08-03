@@ -107,8 +107,7 @@ class RobotProfile:
             if np.any(arr <= 0.0):
                 bad = np.where(arr <= 0.0)[0].tolist()
                 raise ProfileError(
-                    f"profile {self.name!r}: {attr} must be positive on every joint; "
-                    f"joint(s) {bad} are ≤ 0"
+                    f"profile {self.name!r}: {attr} must be positive on every joint; joint(s) {bad} are ≤ 0"
                 )
 
         crossed = np.where(self.position_limits_lower >= self.position_limits_upper)[0].tolist()

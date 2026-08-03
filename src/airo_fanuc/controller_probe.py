@@ -392,8 +392,7 @@ class ControllerLimits:
             for j in range(min(n, len(active), len(master))):
                 if abs(active[j] - master[j]) > tol_deg:
                     out.append(
-                        f"{label} J{j + 1}: $PARAM_GROUP {active[j]:.4f}° vs "
-                        f"$MRR_GRP {master[j]:.4f}°"
+                        f"{label} J{j + 1}: $PARAM_GROUP {active[j]:.4f}° vs $MRR_GRP {master[j]:.4f}°"
                     )
         return out
 

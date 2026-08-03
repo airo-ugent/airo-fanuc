@@ -259,12 +259,16 @@ class Supervisor:
             if self._gripdisp_alive():
                 logger.info(
                     "airo_fanuc: GRIPDISP already running (probe: R[%d] auto-cleared) — "
-                    "skipping GRPRUN fork (cross-process anti-stacking)", REG_CMD)
+                    "skipping GRPRUN fork (cross-process anti-stacking)",
+                    REG_CMD,
+                )
                 self._grprun_forked = True  # known-present; no re-probe/fork on retries
             else:
                 logger.info(
-                    "airo_fanuc: no GRIPDISP detected (probe: R[%d] not cleared in %.1fs) — "
-                    "forking GRPRUN", REG_CMD, self._cfg.gripdisp_probe_timeout_s)
+                    "airo_fanuc: no GRIPDISP detected (probe: R[%d] not cleared in %.1fs) — forking GRPRUN",
+                    REG_CMD,
+                    self._cfg.gripdisp_probe_timeout_s,
+                )
                 self._rmi.program_call(_GRPRUN)
                 self._grprun_forked = True  # latch BEFORE the flush: the fork is now irrevocable
                 time.sleep(0.2)
@@ -321,7 +325,8 @@ class Supervisor:
             self._rmi.write_register(REG_CMD, 1)
         except (RmiError, RmiSessionDown, OSError) as exc:
             logger.warning(
-                "airo_fanuc: GRIPDISP liveliness probe write failed (%s) — treating as absent", exc)
+                "airo_fanuc: GRIPDISP liveliness probe write failed (%s) — treating as absent", exc
+            )
             return False
         deadline = time.monotonic() + float(self._cfg.gripdisp_probe_timeout_s)
         while time.monotonic() < deadline:
@@ -331,7 +336,8 @@ class Supervisor:
                     return True
             except (RmiError, RmiSessionDown, OSError) as exc:
                 logger.warning(
-                    "airo_fanuc: GRIPDISP liveliness probe read failed (%s) — treating as absent", exc)
+                    "airo_fanuc: GRIPDISP liveliness probe read failed (%s) — treating as absent", exc
+                )
                 return False
         return False
 
@@ -566,7 +572,8 @@ class Supervisor:
             return False
         except RmiSessionDown as exc:
             logger.warning(
-                "airo_fanuc: RMI session down during recovery (%s) — full RMI reconnect", exc,
+                "airo_fanuc: RMI session down during recovery (%s) — full RMI reconnect",
+                exc,
             )
             if not self._relaunch_stream_motn_via_reconnect():
                 return False
@@ -722,17 +729,22 @@ class Supervisor:
                     return False
                 logger.warning(
                     "airo_fanuc: RMI reconnect attempt %d/%d failed (ErrorID): %s",
-                    attempt, self._policy.recovery_reconnect_attempts, exc,
+                    attempt,
+                    self._policy.recovery_reconnect_attempts,
+                    exc,
                 )
                 continue
             except (FanucConnectionError, RmiSessionDown) as exc:
                 logger.warning(
                     "airo_fanuc: RMI reconnect attempt %d/%d failed (session): %s",
-                    attempt, self._policy.recovery_reconnect_attempts, exc,
+                    attempt,
+                    self._policy.recovery_reconnect_attempts,
+                    exc,
                 )
                 continue
             logger.info(
-                "airo_fanuc: RMI reconnect (attempt %d) relaunched STREAM_MOTN", attempt,
+                "airo_fanuc: RMI reconnect (attempt %d) relaunched STREAM_MOTN",
+                attempt,
             )
             return True
         logger.error(

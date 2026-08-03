@@ -312,9 +312,7 @@ def _check_external_control(report: PreflightReport, facts: ControllerFacts) -> 
     )
 
 
-def _cross_check_profile(
-    report: PreflightReport, facts: ControllerFacts, profile: RobotProfile
-) -> None:
+def _cross_check_profile(report: PreflightReport, facts: ControllerFacts, profile: RobotProfile) -> None:
     """Compare the arm profile against the limits the controller says it enforces.
 
     Divergence is reported, never adopted: the controller's numbers are authoritative
@@ -355,12 +353,10 @@ def _cross_check_profile(
         for j in np.where(np.abs(delta) > _LIMIT_TOL_DEG)[0]:
             outside = (delta[j] < 0) if label == "lower" else (delta[j] > 0)
             note = (
-                f"WIDER than the controller ({wide} its own limit) — a planned pose there is a "
-                f"limit alarm"
+                f"WIDER than the controller ({wide} its own limit) — a planned pose there is a limit alarm"
                 if outside
                 else "narrower than the controller (conservative)"
             )
             report.warnings.append(
-                f"profile {label} limit J{j + 1} {prof_arr[j]:.3f}° vs controller "
-                f"{ctrl_arr[j]:.3f}°: {note}"
+                f"profile {label} limit J{j + 1} {prof_arr[j]:.3f}° vs controller {ctrl_arr[j]:.3f}°: {note}"
             )
