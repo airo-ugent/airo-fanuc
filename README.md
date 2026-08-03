@@ -281,12 +281,13 @@ Before running against a real robot:
 - **`GRIPDISP` on controller flash** if you want the gripper; otherwise
   `DriverPolicy(enable_gripper=False)`.
 
-Two binding behaviours worth reading before an operator is at the pendant. After an E-stop or an
-OPERATOR_REQUIRED (SYST-348) recovery the driver ends in `MOTION_INHIBITED` and motion methods
-raise `RobotFaultedError` until an explicit `driver.arm()` — never auto-`arm()` in a retry loop.
-And contact detection on a v3 controller relies on the controller's collaborative contact-stop:
-the motion resolves `FAULTED` with reason `CONTACT_STOP`, not on a numeric force threshold. The
-full set is in `docs/successor-invariants.md`.
+Two binding behaviours worth reading before an operator is at the pendant. An E-stop, a latched
+controller alarm or an OPERATOR_REQUIRED (SYST-348) condition sets `MOTION_INHIBITED` the moment
+the driver observes it, and motion methods raise `RobotFaultedError` until an explicit
+`driver.arm()` — so `driver.recover()` returning True means "back to STREAMING", not "commandable",
+and nothing may auto-`arm()` in a retry loop. And contact detection on a v3 controller relies on
+the controller's collaborative contact-stop: the motion resolves `FAULTED` with reason
+`CONTACT_STOP`, not on a numeric force threshold. The full set is in `docs/invariants.md`.
 
 ---
 
@@ -379,7 +380,7 @@ real controller.
 | `src/cpp/codec/` | Wrapper TU compiled against the vendored FANUC Stream Motion headers |
 | `vendor/fanuc_driver/` | FANUC's driver as a submodule; two headers compiled (see `PATCHES.md`) |
 | `examples/` | Runnable validation scripts (`--fake` or real hardware) + the bring-up procedure |
-| `docs/successor-invariants.md` | The driver's binding safety / motion invariants |
+| `docs/invariants.md` | The driver's binding safety / motion invariants |
 | `docs/controller-notes.md` | Measured controller behaviour, alarm texts, recovery procedures |
 | `deploy/GRPRUN.LS` | Teach-pendant launcher that RUN-forks `GRIPDISP` |
 

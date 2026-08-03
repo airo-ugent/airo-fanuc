@@ -52,7 +52,7 @@ py::bytes py_encode_command_packet(std::uint32_t sequence_no, bool is_last_comma
 // Expose the deterministic CAPTURE-splice generator so the Python driver can
 // collision-check the EXACT knots the RT core will execute ("the checked path IS
 // the executed path" — see the capture.hpp header note and
-// docs/successor-invariants.md, "Collision-check hook"). The caller passes the same
+// docs/invariants.md, "Collision-check hook"). The caller passes the same
 // RtCoreConfig the core was built from, so the splice is synthesized under the
 // arm's own limits rather than the C++ fallback defaults.
 py::dict py_generate_capture_path(const std::vector<double>& q_cmd, const std::vector<double>& qd_cmd,

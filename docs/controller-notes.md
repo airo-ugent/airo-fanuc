@@ -96,7 +96,7 @@ cross-check against the J519 manual (§3).
 > coast as the host-death backstop** and wires an **in-process C++ RT-core guard**
 > (`SUPERVISOR_LOST`, see `rt_core_config.hpp`) rather than an external RMI-abort
 > watchdog: a watchdog process on the same host dies *with* the host and is slower than
-> the coast even when it survives (see `docs/successor-invariants.md` "Host-death &
+> the coast even when it survives (see `docs/invariants.md` "Host-death &
 > liveness watchdogs"). DCS zone tightening (§1.1 envelope) remains available as a
 > further mitigation but is not wired.
 >
@@ -211,7 +211,7 @@ and/or a force option — confirm with FANUC.
 > false so `get_wrench()` returns `None`. `move_trajectory(force_stop_n>0)` is
 > **rejected** (`TrajectoryValidationError`) when force is unavailable, and grasps
 > terminate on the collaborative **contact-stop** bit instead — see
-> `docs/successor-invariants.md` (Force / grasping).
+> `docs/invariants.md` (Force / grasping).
 
 ### 1.9 Servo lag
 
