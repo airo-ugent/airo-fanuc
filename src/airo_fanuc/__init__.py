@@ -14,15 +14,22 @@ through :class:`DriverConfig`. ``examples/crx10ial.py`` builds one for the FANUC
 CRX-10iA/L this driver has been run against.
 """
 
-from importlib.metadata import PackageNotFoundError
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _metadata_version
 
 #: Re-exported from the extension because :meth:`FanucDriver.get_state` publishes
-#: ``mode`` and the condition mask as plain integers, and :class:`LifecycleState`
-#: deliberately collapses HOLD/CAPTURE/TRAJECTORY/SERVO/BRAKE into ``STREAMING`` — so
-#: without these a caller cannot decode values the driver hands it, and the examples
-#: had to reach into ``airo_fanuc._core`` to do it.
-from ._core import FaultReason, Mode
+#: ``mode``, ``fault``, ``active_motion_status`` and the ``conditions`` bitmask as plain
+#: integers, and :class:`LifecycleState` deliberately collapses
+#: STREAM_DOWN/PREROLL/HOLD/CAPTURE/TRAJECTORY/SERVO/BRAKE into ``STREAMING`` — so without
+#: these a caller cannot decode values the driver hands it, and the examples had to reach
+#: into ``airo_fanuc._core`` to do it. One decoder each: ``Mode`` for ``mode``,
+#: ``FaultReason`` for ``fault``, ``MotionStatus`` for ``active_motion_status``, and
+#: ``Condition`` — bit flags, not ordinals — for ``conditions``.
+#:
+#: These are pybind11 enumerations and NOT ``int`` subclasses, so ``snap["mode"] ==
+#: Mode.HOLD`` is always False. Convert first, and compare with ``==`` rather than ``is``:
+#: ``Mode(int(snap["mode"])) == Mode.HOLD``.
+from ._core import Condition, FaultReason, Mode, MotionStatus
 from .config import DriverConfig, DriverPolicy, MotionResult, SettlePolicy
 from .driver import FanucDriver, MotionHandle
 from .exceptions import (
@@ -48,13 +55,14 @@ from .robot_profile import ProfileError, RobotProfile
 #: tree, where there is no metadata to read.
 try:
     __version__ = _metadata_version("airo-fanuc")
-except PackageNotFoundError:  # pragma: no cover - only when not installed at all
+except _PackageNotFoundError:  # pragma: no cover - only when not installed at all
     __version__ = "0.0.0+unknown"
 
 __all__ = [
     "CalibrationError",
     "CalibrationSourceError",
     "CalibrationVelocityUnavailable",
+    "Condition",
     "DriverConfig",
     "DriverPolicy",
     "FanucConnectionError",
@@ -66,6 +74,7 @@ __all__ = [
     "Mode",
     "MotionHandle",
     "MotionResult",
+    "MotionStatus",
     "OwnershipError",
     "ProfileError",
     "RejectedStartMismatch",

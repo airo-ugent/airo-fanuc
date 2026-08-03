@@ -107,6 +107,13 @@ class OwnershipLock:
         return self._path
 
     @property
+    def pid(self) -> int:
+        """The pid recorded as the holder — the same value written into the holder file, so
+        a consumer reading ``owner.pid`` off a published snapshot sees what a second process
+        would be told is holding the lock."""
+        return self._pid
+
+    @property
     def fd(self) -> int | None:
         """The open lock fd while held (``None`` otherwise). Exposed for tests
         (O_CLOEXEC assertion)."""

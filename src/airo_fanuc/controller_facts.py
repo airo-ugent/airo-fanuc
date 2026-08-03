@@ -6,9 +6,10 @@ Two kinds of constant live here, and neither is a property of the *arm*:
 * **Measured controller facts** — values whose true value was read off the physical
   controller, each carrying a ``MEASURED`` marker and the observation that produced
   it. They were transcribed from a hardware-in-the-loop probe run
-  (``confirmed=True``). Two keep a safe default for want of a measurement: e-stop
+  (``confirmed=True``). One keeps a safe default for want of a measurement: e-stop
   continuation path A, unprovable during the probe because the Stream Motion status
-  feed never came up, and the RMI→stream J3 conversion, read at a single J2 value.
+  feed never came up. The RMI→stream J3 conversion is measured, but stays OFF by
+  default — see its own note; that is a configuration question, not a missing fact.
 * **Driver tuning** — the brake scales, capture and servo windows, RX-silence ladder,
   anti-flap dwell and watchdog thresholds. Chosen against those measurements, but they
   are decisions rather than observations, and they carry across FANUC models unchanged.
@@ -103,7 +104,9 @@ class MeasuredFacts:
     tx_silence_backstop_ok: bool = False  # MEASURED: NO-GO (decel onset ~10 ITPs, not <=3)
     # Deviation-watchdog threshold the controller uses to fault a frozen (un-ramped) command
     # stream; also calibrates the FakeCRX deviation-watchdog emulation. deg.
-    deviation_watchdog_deg: float = 5.0  # MEASURED: worst overrun 4.63 deg @ 49.9 deg/s
+    # CHOSEN, from a measurement: worst overrun observed was 4.63 deg @ 49.9 deg/s, so 5.0
+    # is the nearest round number above every observation rather than an observation itself.
+    deviation_watchdog_deg: float = 5.0
 
     # --- e-stop continuation ---
     # "B" = full SM re-handshake (always-safe default). "A" = fast resume (behind policy,
@@ -157,9 +160,11 @@ MEASURED_FACTS = MeasuredFacts()
 
 @dataclass(frozen=True)
 class SettlePolicy:
-    """End-of-trajectory settle criteria. Production call sites routinely override the
-    defaults — 1.5° with a 1.5-3 s timeout is a field-proven pair for coarser moves.
-    These constants are worth re-measuring on hardware against the servo lag."""
+    """End-of-trajectory settle criteria, and the defaults a call site overrides.
+
+    ``submit_trajectory`` takes all three per motion, so a coarse move can ask for a looser
+    tolerance and a longer wait without changing these. Worth re-measuring against the servo
+    lag on an arm whose tracking differs from the one in ``docs/controller-notes.md``."""
 
     tol_deg: float = 0.5
     vel_eps_deg_s: float = 2.0
@@ -176,10 +181,10 @@ CAPTURE_TOL_DEG: float = 5.0  # re-anchor deadband; REJECT beyond, typed error
 CAPTURE_RATE_DEG_S: float = 15.0  # starvation re-anchor rate; also the SAFE_FOLLOW envelope
 
 # servo_j has NO distance window: a target is tracked however far away it is, bounded
-# by the servo limits below rather than refused. A window was tried and removed — it is
-# measured against the COMMANDED pose, which trails a streamed plan by the tracker's own
-# response time, so at speed ordinary tracking lag ate it and the guard began discarding
-# good setpoints (295 rejects on a 20 °/s ramp; total stall at 60 °/s). See NO DISTANCE
+# by the servo limits below rather than refused. Such a window is measured against the
+# COMMANDED pose, which trails a streamed plan by the tracker's own response time, so at
+# speed ordinary tracking lag eats it and the guard discards good setpoints — measured at a
+# 5° window, 295 rejects on a 20 °/s ramp and a total stall at 60 °/s. See NO DISTANCE
 # GUARD in tick_engine/servo.hpp.
 SERVO_LIMIT_SCALE: float = 1.0
 
@@ -212,15 +217,6 @@ RX_SILENT_PARK_MS: float = 500.0  # → RX_SILENT fault, park TX
 # Anti-flap dwell: DEGRADED → STREAMING requires all-clear sustained ≥ this
 # (covers measured ~300 ms contact-stop / motion_possible bit-skew).
 ANTIFLAP_DWELL_MS: float = 500.0
-
-# Plan staleness ceiling. A submission may declare the commanded tick its first knot was
-# built from (StreamCore.submit_trajectory's plan_tick), and the core then joins the plan
-# that many ticks in rather than splicing back to a knot the arm has already passed. This
-# bounds how much of a plan that may skip: 200 ms is 25 ticks, an order of magnitude above
-# the measured cost of the Python submission path (tens of microseconds) and still short
-# enough that the skipped opening is motion the arm demonstrably just made. Beyond it the
-# submission is refused instead.
-MAX_PLAN_STALE_MS: float = 200.0
 
 # qd_end blend: on trajectory exhaustion with non-zero terminal velocity, one
 # Hermite blend (q_end,qd_end) → (q_end,0) over at least this long.

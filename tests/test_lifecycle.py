@@ -130,12 +130,65 @@ def test_mirrored_watchdog_windows_are_populated_from_controller_facts() -> None
     assert rc.rx_silence_qd_ramp_ms == cf.RX_SILENCE_QD_RAMP_MS
     assert rc.rx_silent_park_ms == cf.RX_SILENT_PARK_MS
     assert rc.antiflap_dwell_ms == cf.ANTIFLAP_DWELL_MS
-    assert rc.max_plan_stale_ms == cf.MAX_PLAN_STALE_MS
+    assert rc.servo_limit_scale == cf.SERVO_LIMIT_SCALE
+    assert rc.qd_end_blend_min_s == cf.QD_END_BLEND_MIN_MS / 1000.0
+    # The SAFE_FOLLOW envelope is the capture pair, which is what ``controller_facts``
+    # says: one constant, both uses, so tightening the splice tightens the re-anchor.
+    assert rc.safe_follow_rate_rad_s == float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
+    assert rc.safe_follow_deadband_rad == float(np.deg2rad(cf.CAPTURE_TOL_DEG))
 
 
 def test_stream_rate_is_derived_from_the_interpolation_period() -> None:
     """One fact, one encoding. ``125.0`` written out is a second editable copy of ITP_S."""
     assert cf.STREAM_RATE_HZ == 1.0 / cf.ITP_S
+
+
+def test_every_published_integer_has_an_exported_decoder() -> None:
+    """``get_state`` hands out four bare integers; each needs a decoder in ``airo_fanuc``.
+
+    The package re-exports these ONLY so a caller does not have to reach into
+    ``airo_fanuc._core``, so an integer published without its decoder exported defeats the
+    point of the re-export.
+    """
+    import airo_fanuc
+
+    for name in ("Mode", "FaultReason", "MotionStatus", "Condition"):
+        assert name in airo_fanuc.__all__, f"{name} decodes a published field but is not exported"
+        assert getattr(airo_fanuc, name) is getattr(airo_fanuc._core, name), (
+            f"{name} must BE the extension's enum, not a second copy of it"
+        )
+
+
+def test_the_core_enums_are_not_int_subclasses() -> None:
+    """Pins the trap the stub is written around, so the stub cannot drift back to IntEnum.
+
+    pybind11 enum members are not ``int``, so comparing a published integer to a member
+    directly is always False. The stub used to declare these as ``enum.IntEnum``, which
+    made a type checker bless exactly that mistake. If pybind11 ever gains real int-backed
+    enums, this test fails and the stub should be corrected to match.
+    """
+    from airo_fanuc import Mode
+
+    assert not isinstance(Mode.HOLD, int)
+    assert (int(Mode.HOLD) == Mode.HOLD) is False, "if this passes, the stub may claim IntEnum"
+    # And the spelling the docs tell callers to use does work. `==`, not `is`: converting
+    # from an int builds a new object rather than returning the class attribute, which is
+    # the second half of the trap and why the docs spell the comparison out.
+    assert Mode(int(Mode.HOLD)) == Mode.HOLD
+    assert Mode(int(Mode.HOLD)) is not Mode.HOLD
+    assert Mode.HOLD.name == "HOLD" and Mode.HOLD.value == int(Mode.HOLD)
+
+
+def test_condition_flags_are_disjoint_bits() -> None:
+    """``conditions`` is a mask, so its values must be single distinct bits — an ordinal
+    slipping into this enum would make two unrelated conditions alias each other."""
+    from airo_fanuc import Condition
+
+    bits = [int(v) for name, v in Condition.__members__.items() if name != "NONE"]
+    assert int(Condition.NONE) == 0
+    for b in bits:
+        assert b > 0 and b & (b - 1) == 0, f"{b} is not a single bit"
+    assert len(set(bits)) == len(bits), "two conditions share a bit"
 
 
 # --------------------------------------------------------------------------- #
@@ -298,11 +351,21 @@ def test_capture_gate_is_vacuous_when_the_endpoint_velocities_match() -> None:
         assert list(p["reject_joints"]) == []
         assert list(p["shed_travel"]) == [0.0] * 6
 
-    # A continuation whose target IS the current commanded state, at speed: not refused.
-    moving = [0.8, 0, 0, 0, 0, 0]
-    same = generate_capture_path([0.1] * 6, moving, [0.1] * 6, moving)
-    assert same["would_reject"] is False, "a phase-join submission must not be refused"
+    # A submission whose first knot IS the current commanded state, moving: not refused,
+    # up to the arrival rate the splice itself runs at. Past that rate the gate refuses on
+    # velocity alone, because the generator's own max_velocity is that rate and Ruckig
+    # treats a target above it as invalid input.
+    rate = math.radians(cf.CAPTURE_RATE_DEG_S)
+    matched = [rate, 0, 0, 0, 0, 0]
+    same = generate_capture_path([0.1] * 6, matched, [0.1] * 6, matched)
+    assert same["would_reject"] is False, "a matched continuation must not be refused"
     assert list(same["shed_travel"]) == [0.0] * 6
+
+    too_fast = [rate * 1.5, 0, 0, 0, 0, 0]
+    over = generate_capture_path([0.1] * 6, too_fast, [0.1] * 6, too_fast)
+    assert over["would_reject"] is True, "an unreachable arrival rate must be refused"
+    assert over["tol_exceeded"] is False, "the endpoint window is not what is violated"
+    assert list(over["reject_joints"]) == [0]
 
 
 def test_capture_reject_message_names_the_joint_and_the_shed_cost() -> None:

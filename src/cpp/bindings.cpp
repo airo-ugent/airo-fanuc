@@ -345,7 +345,7 @@ class StreamCore {
                                   const std::vector<std::vector<double>>& q,
                                   const std::vector<std::vector<double>>& qd, double speed_scale,
                                   double settle_tol_rad, double settle_vel_eps_rad_s, double settle_timeout_s,
-                                  double force_stop_n, double deadman_s, std::uint64_t plan_tick) {
+                                  double force_stop_n, double deadman_s) {
     if (times_ns.size() != q.size() || q.size() != qd.size()) {
       throw std::invalid_argument("times_ns, q, qd must have equal length");
     }
@@ -360,7 +360,7 @@ class StreamCore {
       qdv.push_back(to_vec6(qd[i]));
     }
     return core_->submit_trajectory(times_ns, qv, qdv, speed_scale, settle_tol_rad, settle_vel_eps_rad_s,
-                                    settle_timeout_s, force_stop_n, deadman_s, plan_tick);
+                                    settle_timeout_s, force_stop_n, deadman_s);
   }
 
   std::uint64_t submit_servo(const std::vector<double>& q, double duration_s) {
@@ -544,6 +544,25 @@ PYBIND11_MODULE(_core, m) {
       .value("SAFE_FOLLOW", rt::Mode::SAFE_FOLLOW)
       .value("RX_SILENT", rt::Mode::RX_SILENT);
 
+  // The snapshot's `conditions` is a BITMASK, and the primary FaultReason it travels with
+  // cannot decode it: FaultReason is a dense ordinal and these are disjoint bits. Bound
+  // with py::arithmetic() so the bitwise tests a mask exists to support actually typecheck
+  // and work. Without this the driver published an integer no caller could read.
+  py::enum_<rt::Condition>(m, "Condition", py::arithmetic())
+      .value("NONE", rt::Condition::kCondNone)
+      .value("E_STOP", rt::Condition::kCondEStop)
+      .value("IN_ERROR", rt::Condition::kCondInError)
+      .value("MOTION_NOT_POSSIBLE", rt::Condition::kCondMotionNotPossible)
+      .value("TEACH", rt::Condition::kCondTeach)
+      .value("CONTACT_STOP", rt::Condition::kCondContactStop)
+      .value("SAFETY_CLAMP", rt::Condition::kCondSafetyClamp)
+      .value("RX_DEGRADED", rt::Condition::kCondRxDegraded)
+      .value("RX_SILENT", rt::Condition::kCondRxSilent)
+      // Diagnostic only — set when the slew clip has been active for
+      // `slew_sustained_ticks` in a row. It never faults, so a caller watching for
+      // trouble must not treat a non-zero mask as one.
+      .value("SUSTAINED_SLEW", rt::Condition::kCondSustainedSlew);
+
   py::enum_<rt::FaultReason>(m, "FaultReason")
       .value("NONE", rt::FaultReason::NONE)
       .value("E_STOP", rt::FaultReason::E_STOP)
@@ -626,22 +645,31 @@ PYBIND11_MODULE(_core, m) {
           "slew_factor", [](const rt::RtCoreConfig& c) { return c.tick.slew_factor; },
           [](rt::RtCoreConfig& c, double v) { c.tick.slew_factor = v; })
       // Exposed because move_trajectory REJECTS a caller's trajectory against these two
-      // (the capture window, and the envelope the splice into knot 0 runs at). Left as
-      // C++-only defaults they were a second, independently editable copy of the Python
-      // constants the rejection is written in terms of, so changing controller_facts moved
-      // the pre-flight check and the error text but not the gate that actually runs — and
-      // "the checked path IS the executed path" quietly stopped holding for them.
+      // (the capture window, and the envelope the splice into knot 0 runs at). They must be
+      // settable so the refusal and the gate that executes are decided by ONE number: as
+      // C++-only defaults they would be a second, independently editable copy of the Python
+      // constants the rejection is written in terms of, and "the checked path IS the
+      // executed path" would not hold for them.
       .def_property(
           "capture_rate_rad_s", [](const rt::RtCoreConfig& c) { return c.tick.capture_rate_rad_s; },
           [](rt::RtCoreConfig& c, double v) { c.tick.capture_rate_rad_s = v; })
       .def_property(
           "capture_tol_rad", [](const rt::RtCoreConfig& c) { return c.tick.capture_tol_rad; },
           [](rt::RtCoreConfig& c, double v) { c.tick.capture_tol_rad = v; })
+      // Exposed for the weaker version of the same reason: nothing REJECTS against these,
+      // but `controller_facts` names itself their single source and the C++ mirrors name it
+      // back. Unbound, they are values that can be edited in the one place claiming to own
+      // them without anything changing.
+      .def_property(
+          "servo_limit_scale", [](const rt::RtCoreConfig& c) { return c.tick.servo_limit_scale; },
+          [](rt::RtCoreConfig& c, double v) { c.tick.servo_limit_scale = v; })
+      .def_property(
+          "qd_end_blend_min_s", [](const rt::RtCoreConfig& c) { return c.tick.qd_end_blend_min_s; },
+          [](rt::RtCoreConfig& c, double v) { c.tick.qd_end_blend_min_s = v; })
       .def_readwrite("rx_silence_blind_hold_ms", &rt::RtCoreConfig::rx_silence_blind_hold_ms)
       .def_readwrite("rx_silence_qd_ramp_ms", &rt::RtCoreConfig::rx_silence_qd_ramp_ms)
       .def_readwrite("rx_silent_park_ms", &rt::RtCoreConfig::rx_silent_park_ms)
       .def_readwrite("antiflap_dwell_ms", &rt::RtCoreConfig::antiflap_dwell_ms)
-      .def_readwrite("max_plan_stale_ms", &rt::RtCoreConfig::max_plan_stale_ms)
       .def_readwrite("safe_follow_rate_rad_s", &rt::RtCoreConfig::safe_follow_rate_rad_s)
       .def_readwrite("safe_follow_deadband_rad", &rt::RtCoreConfig::safe_follow_deadband_rad)
       .def_readwrite("safety_scale_min", &rt::RtCoreConfig::safety_scale_min)
@@ -664,7 +692,7 @@ PYBIND11_MODULE(_core, m) {
       .def("submit_trajectory", &StreamCore::submit_trajectory, py::arg("times_ns"), py::arg("q"),
            py::arg("qd"), py::arg("speed_scale") = 1.0, py::arg("settle_tol_rad") = airo_fanuc::tick_engine::deg2rad(0.5),
            py::arg("settle_vel_eps_rad_s") = airo_fanuc::tick_engine::deg2rad(2.0), py::arg("settle_timeout_s") = 2.0,
-           py::arg("force_stop_n") = 0.0, py::arg("deadman_s") = 0.0, py::arg("plan_tick") = 0)
+           py::arg("force_stop_n") = 0.0, py::arg("deadman_s") = 0.0)
       .def("submit_servo", &StreamCore::submit_servo, py::arg("q"), py::arg("duration"))
       .def("submit_servo_ff", &StreamCore::submit_servo_ff, py::arg("q"), py::arg("qd"),
            py::arg("qdd"), py::arg("duration"))

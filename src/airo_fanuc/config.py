@@ -120,7 +120,10 @@ class DriverConfig:
     supervisor_lost_s: float = cf.SUPERVISOR_LOST_S
 
     # -- Stream Motion protocol / RT hygiene -----------------------------
-    #: Negotiated Stream Motion version (3 = no force config, 4 = FSConfig/force).
+    #: Stream Motion version REQUESTED at handshake. The session adopts the version the
+    #: controller reports it supports, so this is the ask and the fallback, not the outcome —
+    #: read ``sm_negotiated_version`` for that. No ForceSensorConfig packet is sent at any
+    #: version, so no force block is streamed and ``get_wrench()`` stays ``None``.
     sm_version: int = 3
     #: Controller interpolation period in seconds. The R-30iB class runs an 8 ms ITP
     #: (125 Hz), which is the default; a controller with a different period is
@@ -196,13 +199,22 @@ class DriverConfig:
         # check the gate would have passed.
         rc.capture_rate_rad_s = float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
         rc.capture_tol_rad = float(np.deg2rad(cf.CAPTURE_TOL_DEG))
+        # The SAFE_FOLLOW re-anchor walks a FAULTED arm's commanded pose back onto the
+        # measured one, and ``controller_facts`` says outright that these two constants own
+        # that envelope as well as the capture window. Both are the same pair of numbers, so
+        # tightening the capture rate has to tighten the rate a faulted arm is walked at
+        # too — otherwise the one place the commanded pose moves without a motion behind it
+        # keeps running at a rate nothing in the single source still names.
+        rc.safe_follow_rate_rad_s = float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
+        rc.safe_follow_deadband_rad = float(np.deg2rad(cf.CAPTURE_TOL_DEG))
+        rc.servo_limit_scale = float(cf.SERVO_LIMIT_SCALE)
+        rc.qd_end_blend_min_s = float(cf.QD_END_BLEND_MIN_MS) / 1000.0
         # Mirrored watchdog/dwell windows. The C++ defaults match, but leaving them
         # unset made "single source of truth" untrue for exactly these fields.
         rc.rx_silence_blind_hold_ms = float(cf.RX_SILENCE_BLIND_HOLD_MS)
         rc.rx_silence_qd_ramp_ms = float(cf.RX_SILENCE_QD_RAMP_MS)
         rc.rx_silent_park_ms = float(cf.RX_SILENT_PARK_MS)
         rc.antiflap_dwell_ms = float(cf.ANTIFLAP_DWELL_MS)
-        rc.max_plan_stale_ms = float(cf.MAX_PLAN_STALE_MS)
         rc.sm_version = int(self.sm_version)
         rc.supervisor_lost_s = float(self.supervisor_lost_s)
         rc.itp_s = float(self.itp_s)
