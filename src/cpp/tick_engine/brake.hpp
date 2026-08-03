@@ -69,7 +69,6 @@ class Brake {
   BrakeStep step();
 
   // --- termination helpers (pure; caller supplies measured velocity) ---
-  bool ruckig_finished() const { return finished_; }
   // |qd_meas|∞ < brake_settle_vel_eps.
   bool velocity_settled(const Vec6& qd_meas) const;
   double elapsed_s() const { return static_cast<double>(elapsed_ticks_) * cfg_.itp_s; }

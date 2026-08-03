@@ -194,7 +194,6 @@ struct RtCoreConfig {
   bool mlock{false};        // mlockall the process (graceful on EPERM)
   double pll_rx_lead_us{300.0};  // PLL target: fire tick this long after RX
   double pll_kp{0.20};           // PLL proportional gain (tuned; rationale in pll.hpp)
-  bool reply_on_receive{false};  // diagnostic: send in direct reply to each RX instead of PLL-clocked
   std::uint32_t sm_version{3};   // fallback default; GetCapability negotiation adopts the controller's available_version at handshake
 };
 

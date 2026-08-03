@@ -141,7 +141,6 @@ class RealtimeCore {
 
   StateSnapshot snapshot() const { return snap_.read(); }
   std::size_t drain_events(Event* out, std::size_t max);
-  int event_fd() const { return event_fd_; }
   TimingStats timing() const;
   bool joints_at_wall(std::int64_t wall_ns, Vec6& out) const;
   MotionStatus motion_status(std::uint64_t id) const;

@@ -102,6 +102,42 @@ def test_to_rt_core_config_maps_protocol_and_hygiene() -> None:
     assert rc.mlock is True
 
 
+def test_the_gate_that_executes_uses_the_constants_the_refusal_is_written_in() -> None:
+    """``move_trajectory`` refuses a submission against the ``controller_facts`` capture
+    window and splice envelope, so the core has to gate on the same two numbers.
+
+    Left as C++-only defaults these were a second, independently editable copy: editing
+    ``controller_facts`` moved the refusal and the error text but not the gate, and
+    "the checked path IS the executed path" stopped holding for them without anything
+    failing. ``float(np.deg2rad(...))`` here mirrors how ``driver.py`` builds the
+    threshold, because a refusal decided by a different bit pattern than the gate is the
+    same bug in miniature.
+    """
+    rc = DriverConfig(profile=TEST_PROFILE).to_rt_core_config()
+    assert rc.capture_rate_rad_s == float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
+    assert rc.capture_tol_rad == float(np.deg2rad(cf.CAPTURE_TOL_DEG))
+
+
+def test_mirrored_watchdog_windows_are_populated_from_controller_facts() -> None:
+    """Every window ``controller_facts`` claims to single-source must actually be sent.
+
+    The C++ defaults agree with these values, which is exactly why omitting them was
+    invisible — the mirror comments in ``rt_core_config.hpp`` name a Python symbol that
+    was not in fact reaching the core.
+    """
+    rc = DriverConfig(profile=TEST_PROFILE).to_rt_core_config()
+    assert rc.rx_silence_blind_hold_ms == cf.RX_SILENCE_BLIND_HOLD_MS
+    assert rc.rx_silence_qd_ramp_ms == cf.RX_SILENCE_QD_RAMP_MS
+    assert rc.rx_silent_park_ms == cf.RX_SILENT_PARK_MS
+    assert rc.antiflap_dwell_ms == cf.ANTIFLAP_DWELL_MS
+    assert rc.max_plan_stale_ms == cf.MAX_PLAN_STALE_MS
+
+
+def test_stream_rate_is_derived_from_the_interpolation_period() -> None:
+    """One fact, one encoding. ``125.0`` written out is a second editable copy of ITP_S."""
+    assert cf.STREAM_RATE_HZ == 1.0 / cf.ITP_S
+
+
 # --------------------------------------------------------------------------- #
 # Lifecycle classification: (core Mode, FaultReason) → LifecycleState.
 # --------------------------------------------------------------------------- #

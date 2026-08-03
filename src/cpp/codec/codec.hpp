@@ -63,7 +63,7 @@ struct RobotStatusView {
   double moment_y{};
   double moment_z{};
   std::uint32_t fs_type{};
-  std::array<std::uint8_t, 256> io_status{};
+  std::array<std::uint8_t, static_cast<std::size_t>(kMaxIoBytes)> io_status{};
 };
 
 // Encode a Stream Motion CommandPacket (type 201, 344 B, big-endian).

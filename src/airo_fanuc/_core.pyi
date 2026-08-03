@@ -184,17 +184,23 @@ class RtCoreConfig:
     rx_silent_park_ms: float
     antiflap_dwell_ms: float
     max_plan_stale_ms: float
+    #: The capture window, and the envelope the splice into knot 0 runs at.
+    #: ``move_trajectory`` refuses a submission against the ``controller_facts`` values,
+    #: so ``DriverConfig.to_rt_core_config`` sets these from the same constants — the
+    #: refusal and the gate that executes must be decided by one number.
+    capture_rate_rad_s: float
+    capture_tol_rad: float
     safe_follow_rate_rad_s: float
     safe_follow_deadband_rad: float
     safety_scale_min: float
     supervisor_lost_s: float
     preroll_timeout_s: float
-    #: Controller interpolation period in seconds (8 ms on the R-30iB class). Every
-    #: per-tick limit is scaled by it, so it must equal the controller's real period.
     #: Joint position limits (rad). Default ±inf — the core clamps every commanded
     #: pose against these, so leaving them unset disables the soft-limit clamp.
     position_limits_lower: list[float]
     position_limits_upper: list[float]
+    #: Controller interpolation period in seconds (8 ms on the R-30iB class). Every
+    #: per-tick limit is scaled by it, so it must equal the controller's real period.
     itp_s: float
     rt_priority: int
     sched_fifo: bool

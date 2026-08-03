@@ -625,6 +625,18 @@ PYBIND11_MODULE(_core, m) {
       .def_property(
           "slew_factor", [](const rt::RtCoreConfig& c) { return c.tick.slew_factor; },
           [](rt::RtCoreConfig& c, double v) { c.tick.slew_factor = v; })
+      // Exposed because move_trajectory REJECTS a caller's trajectory against these two
+      // (the capture window, and the envelope the splice into knot 0 runs at). Left as
+      // C++-only defaults they were a second, independently editable copy of the Python
+      // constants the rejection is written in terms of, so changing controller_facts moved
+      // the pre-flight check and the error text but not the gate that actually runs — and
+      // "the checked path IS the executed path" quietly stopped holding for them.
+      .def_property(
+          "capture_rate_rad_s", [](const rt::RtCoreConfig& c) { return c.tick.capture_rate_rad_s; },
+          [](rt::RtCoreConfig& c, double v) { c.tick.capture_rate_rad_s = v; })
+      .def_property(
+          "capture_tol_rad", [](const rt::RtCoreConfig& c) { return c.tick.capture_tol_rad; },
+          [](rt::RtCoreConfig& c, double v) { c.tick.capture_tol_rad = v; })
       .def_readwrite("rx_silence_blind_hold_ms", &rt::RtCoreConfig::rx_silence_blind_hold_ms)
       .def_readwrite("rx_silence_qd_ramp_ms", &rt::RtCoreConfig::rx_silence_qd_ramp_ms)
       .def_readwrite("rx_silent_park_ms", &rt::RtCoreConfig::rx_silent_park_ms)

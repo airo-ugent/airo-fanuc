@@ -96,7 +96,6 @@ class TrajectorySampler {
 
   // Terminal knot (for the qd_end blend / hold). qd is the NATURAL terminal
   // velocity; multiply by speed_scale to get the wire terminal velocity.
-  const Vec6& q_first() const { return q_[0]; }
   const Vec6& q_last() const { return q_[static_cast<std::size_t>(n_ - 1)]; }
   const Vec6& qd_last() const { return qd_[static_cast<std::size_t>(n_ - 1)]; }
 

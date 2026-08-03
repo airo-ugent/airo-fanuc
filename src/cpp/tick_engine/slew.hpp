@@ -62,7 +62,6 @@ class SlewLimiter {
   std::uint64_t total_clips() const { return total_clips_; }
   int consecutive_clip_ticks() const { return consecutive_clip_ticks_; }
   bool sustained_clip() const { return consecutive_clip_ticks_ >= cfg_.slew_sustained_ticks; }
-  bool has_reference() const { return has_prev_; }
 
  private:
   TickEngineConfig cfg_;

@@ -40,7 +40,10 @@ from dataclasses import dataclass
 #: Interpolation period of the R-30iB controller in seconds (8 ms ITP = 125 Hz).
 #: R-50iA + S647 would give 1 kHz; the CRX is fixed at 8 ms.
 ITP_S: float = 0.008
-STREAM_RATE_HZ: float = 125.0
+#: Derived, not independently stated: the same fact as :data:`ITP_S` expressed as a rate.
+#: Writing ``125.0`` here would be a second editable encoding of one number, which this
+#: module exists to prevent.
+STREAM_RATE_HZ: float = 1.0 / ITP_S
 
 #: Safety-critical: CommandPacket dataStyle field. FANUC's vendored struct calls this
 #: field ``uint16_t unused``; we MUST write 0xFFFF (joint angles) — writing 0 makes the

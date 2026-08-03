@@ -186,6 +186,23 @@ class DriverConfig:
         rc.stop_scale_va = float(self.stop_scale_va)
         rc.stop_scale_j = float(self.stop_scale_j)
         rc.slew_factor = float(self.slew_factor)
+        # The capture window and splice envelope: set here because
+        # ``move_trajectory`` refuses a submission against the ``controller_facts``
+        # values, so the gate that executes has to be the same number the refusal was
+        # decided by — otherwise the two drift silently and the refusal stops
+        # predicting the gate.
+        # np.deg2rad, not math.radians: driver.py builds the refusal threshold the same
+        # way, and the two must be bit-identical or a submission could be refused by a
+        # check the gate would have passed.
+        rc.capture_rate_rad_s = float(np.deg2rad(cf.CAPTURE_RATE_DEG_S))
+        rc.capture_tol_rad = float(np.deg2rad(cf.CAPTURE_TOL_DEG))
+        # Mirrored watchdog/dwell windows. The C++ defaults match, but leaving them
+        # unset made "single source of truth" untrue for exactly these fields.
+        rc.rx_silence_blind_hold_ms = float(cf.RX_SILENCE_BLIND_HOLD_MS)
+        rc.rx_silence_qd_ramp_ms = float(cf.RX_SILENCE_QD_RAMP_MS)
+        rc.rx_silent_park_ms = float(cf.RX_SILENT_PARK_MS)
+        rc.antiflap_dwell_ms = float(cf.ANTIFLAP_DWELL_MS)
+        rc.max_plan_stale_ms = float(cf.MAX_PLAN_STALE_MS)
         rc.sm_version = int(self.sm_version)
         rc.supervisor_lost_s = float(self.supervisor_lost_s)
         rc.itp_s = float(self.itp_s)
