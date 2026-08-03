@@ -185,7 +185,7 @@ the dev tools are an **extra** (`[project.optional-dependencies] dev`), not a de
 so a plain `uv sync` does *not* install pytest. Use `--extra dev`.
 
 ```bash
-git clone --recursive <repo-url> && cd airo-fanuc
+git clone --recursive https://github.com/airo-ugent/airo-fanuc.git && cd airo-fanuc
 uv sync --extra dev            # compiles the extension (scikit-build-core + CMake)
 uv run pytest -q               # ~475 tests, all hardware-free
 uv run ruff check src tests examples
