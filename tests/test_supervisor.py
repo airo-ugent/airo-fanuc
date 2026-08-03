@@ -31,6 +31,7 @@ from airo_fanuc import (
     RobotFaultedError,
 )
 from airo_fanuc._core import Mode
+from airo_fanuc.controller_facts import RX_SILENCE_BLIND_HOLD_MS
 from airo_fanuc.lifecycle import OPERATOR_REQUIRED_HINT
 from airo_fanuc.testing import FakeCRXConfig, FakeCRXController
 
@@ -79,8 +80,14 @@ def test_teach_drives_degraded_and_states_flow(tmp_path: Any) -> None:
         rig.controller.set_teach(True)
         assert _wait(lambda: _state(rig) == "degraded", 2.0)
         assert _fault(rig) == "teach_mode"
-        # States keep flowing in TEACH (T1-freeze fix): RX stays fresh.
-        assert rig.driver.get_state()["rx_fresh"] is True
+        # States keep flowing in TEACH: the receive half must stay readable while the
+        # control half is inhibited. Measured as RX AGE against the core's own
+        # escalation point rather than the per-tick rx_fresh flag — that flag is one
+        # tick's have_rx, the same condition that increments missed_rx_ticks, and a few
+        # percent of ticks legitimately carry no status because the controller's TX
+        # clock and the tick clock are independent. An age below the blind-hold entry is
+        # the core's definition of RX still flowing, so a real freeze still fails this.
+        assert rig.driver.get_state()["rx_age_ms"] < RX_SILENCE_BLIND_HOLD_MS
         assert rig.driver.get_state()["tp_enabled"] is True
     finally:
         rig.controller.set_teach(False)

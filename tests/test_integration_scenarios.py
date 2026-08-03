@@ -12,7 +12,7 @@ injectors + explicit polling.
 
 **Strict conformance is always-on**: the fake runs ``strict=True`` and every
 test asserts, at teardown, that the core emitted ZERO wire-conformance
-violations (dataStyle 0xFFFF, one-TX min-inter-spacing, monotone seq, version
+violations (dataStyle 0xFFFF, same-instant double-send, monotone seq, version
 echo, ...) and that the fake's realtime loop recorded no error. A single
 violation fails the owning test — a conformant core is the invariant.
 
@@ -66,6 +66,7 @@ import pytest
 from conftest import TEST_PROFILE
 
 from airo_fanuc._core import FaultReason, Mode, MotionStatus, RtCoreConfig, StreamCore
+from airo_fanuc.controller_facts import RX_SILENCE_BLIND_HOLD_MS
 from airo_fanuc.rmi_client import RmiClient
 from airo_fanuc.testing import FakeCRXConfig, FakeCRXController
 
@@ -324,9 +325,12 @@ def test_teach_toggle_kills_to_safe_follow_and_states_flow(rig: Rig) -> None:
     rig.controller.set_teach(True)  # TEACH (T1)
     assert rig.wait_mode(Mode.SAFE_FOLLOW, 2.0)
     assert rig.fault() == FaultReason.TEACH_MODE
-    # Status packets keep flowing while the controller sits in TEACH, so RX stays
-    # fresh: a T1 toggle must read as TEACH_MODE, never as an RX-silence fault.
-    assert rig.core.get_snapshot()["rx_fresh"] is True
+    # Status packets keep flowing while the controller sits in TEACH: a T1 toggle must
+    # read as TEACH_MODE, never as an RX-silence fault. Asserted on RX age against the
+    # core's own blind-hold entry rather than the per-tick rx_fresh flag, which is one
+    # tick's have_rx and so reads false on the few percent of ticks that legitimately
+    # carry no status.
+    assert rig.core.get_snapshot()["rx_age_ms"] < RX_SILENCE_BLIND_HOLD_MS
     assert rig.core.get_snapshot()["tp_enabled"] is True
     rig.controller.set_teach(False)
     rig.core.recover()
@@ -391,9 +395,12 @@ def test_status_seq_gap_counted_not_faulted(rig: Rig) -> None:
 def test_status_duplicate_tolerated(rig: Rig) -> None:
     rig.controller.duplicate_next_status()
     time.sleep(0.1)
-    # A byte-identical duplicate must not fault or wedge the core.
+    # A byte-identical duplicate must not fault or wedge the core: status keeps
+    # arriving afterwards. Asserted on RX age rather than the per-tick rx_fresh flag,
+    # which is one tick's have_rx and so reads false on the few percent of ticks that
+    # legitimately carry no status.
     assert rig.mode() == Mode.HOLD
-    assert rig.core.get_snapshot()["rx_fresh"] is True
+    assert rig.core.get_snapshot()["rx_age_ms"] < RX_SILENCE_BLIND_HOLD_MS
 
 
 # ---------------------------------------------------------------------------
@@ -565,14 +572,17 @@ def test_contact_flap_storm_holds_dwell_no_premature_recovery(rig: Rig) -> None:
 def test_soak_short_conformance_and_cadence(rig: Rig) -> None:
     """A few seconds of SUSTAINED 125 Hz streaming (one move, then steady HOLD)
     must hold the wire-conformance + one-TX-per-window invariants: ZERO strict
-    violations and ``double_send_guard == 0`` over ~500 TX windows. This is the
-    fast CI canary for the FakeCRX min-inter-TX-spacing check — its exact target
-    is the steady stream, where the core's TX clock and the fake's ~125 Hz status
-    clock run independently and must NOT drift into a window that looks like a
-    phantom double-send. Steady HOLD exercises that continuously, which is why the
-    soak spends most of its time there. Longer soaks (multi-minute, and an
-    adversarial variant) belong on a quiet dedicated host, not on jittery CI
-    runners, so this one is deliberately short.
+    violations and ``double_send_guard == 0`` over ~500 TX windows.
+
+    ``double_send_guard`` is the one that carries the one-TX-per-window property
+    here: the core counts it at the source, so it holds whatever the host's
+    scheduler does. The fake's own strict check is a receiver-side same-instant
+    floor and deliberately cannot see anything wider (see ``fake_crx_sm``), which
+    is why the two are asserted together rather than either alone. Steady HOLD
+    exercises both continuously, which is why the soak spends most of its time
+    there. Longer soaks (multi-minute, and an adversarial variant) belong on a
+    quiet dedicated host, not on jittery CI runners, so this one is deliberately
+    short.
 
     NOTE: this soak does a SINGLE trajectory submit to keep the focus on cadence.
     Rapid re-submission is exercised by

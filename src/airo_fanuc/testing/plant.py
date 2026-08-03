@@ -1,13 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """First-order-lag joint plant + deviation watchdog for the FakeCRXController.
 
-This is the **behavior-model** half of the executable spec: where this model and
-a test disagree, the model is normative, because it is what the driver is
-specified against. Given a stream of commanded joint angles at the controller ITP
-(8 ms), it produces the *measured* joint angles the controller would report back
-in its status packet (type-202 at the default v3; type-204 at v4) — modeling the
-servo tracking lag that the capture math and the on-hardware lag measurement both
-depend on.
+Given a stream of commanded joint angles at the controller ITP (8 ms), it
+produces the *measured* joint angles a controller of this shape would report back
+in its status packet (type-202 at the default v3; type-204 at v4), so tests that
+need a closed loop have one.
+
+**This model is a stand-in, not an authority.** Each effect below is pinned to a
+number measured on the physical controller, but three first-order effects are not
+a CRX: it has no joint coupling, no gravity or payload term, no friction, no
+drive-train compliance and no controller-side interpolation of its own. Where the
+model and the arm disagree, the ARM is right. So it is sound to test *logic*
+against — did the driver react to a fault, did the lifecycle advance, was the
+command well-formed — and it settles nothing quantitative about tracking,
+following error, servo fidelity or timing. Those belong on hardware, or in the
+C++ suite where the core can be driven deterministically in-process.
 
 Three modeled effects, each pinned to a value measured on the physical
 controller:

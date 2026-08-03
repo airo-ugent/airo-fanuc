@@ -19,21 +19,22 @@ A strict-conformance emulator of the controller's Stream Motion side:
   and — in strict mode — asserts every per-packet invariant that the real
   controller (or our own driver) must satisfy, most importantly
   ``dataStyle == 0xFFFF`` (the 0-dataStyle Cartesian-slew bug, incident
-  2026-05-06) and the **min inter-TX spacing** guard. The spacing check
-  reads the **kernel RX timestamp** of every command (``SO_TIMESTAMPNS`` +
-  ``recvmsg``/CMSG), so it flags a genuine double-send (two TXs < 1 ms apart)
-  while NOT false-flagging two legitimate ~8 ms-apart TXs that the fake's own
-  ~125 Hz tick clock happened to bin into one drain — the fake and the driver run
-  on independent clocks that jitter across a drain-window boundary, so a
-  per-window count of commands cannot distinguish the two cases and kernel
-  timestamps can. The threshold is ``0.5 · itp`` (4 ms): a double-send is < 1 ms,
-  the nominal cadence is ~8 ms, so 4 ms cleanly separates them. The **first
-  inter-command interval of each (re)started stream** is the exception: the host
-  RT core's PLL re-locks phase on the first RX after a StartPacket and
-  legitimately compresses that one interval (measured ≥ 0.57 ms), so it is
-  checked against a tighter same-instant floor (``itp / 80``) that still flags a
-  genuine ~simultaneous double-send while tolerating the PLL transient — see
-  :attr:`_first_interval_floor_ns`.
+  2026-05-06) and the **same-instant double-send** guard. That check reads the
+  **kernel RX timestamp** of every command (``SO_TIMESTAMPNS`` + ``recvmsg``/CMSG)
+  and flags two CommandPackets emitted in a single host iteration, which arrive
+  ~simultaneously (measured ≤ 12 µs on loopback).
+
+  Its floor is deliberately tight — ``itp / 80`` (0.1 ms at an 8 ms ITP), 8x above
+  that signature — because a receiver cannot police anything wider. Arrival
+  spacing only implies send spacing while the sender is not itself jittered, and
+  under load the host RT thread is: one descheduled tick followed by a catch-up
+  tick produces a short arrival gap indistinguishable from a double-send. The
+  legitimate short intervals sit far above this floor (a PLL phase re-lock after a
+  StartPacket compresses one interval to ≥ 0.57 ms), so the floor separates the two
+  regimes with ~5x margin either side and never reports host jitter as a protocol
+  fault. The **semantic** one-TX-per-window property is measured at the source
+  instead, by the core's own ``double_send_guard`` counter — asserted zero by the
+  soak in ``test_integration_scenarios.py`` and by ``tests/cpp/test_rt_loopback.cpp``.
 
 ``motion_possible`` (status bit 0) asserts only after a StartPacket AND the RMI
 side has accepted ``FRC_Call("STREAM_MOTN")`` — the two subsystems are coupled
@@ -84,7 +85,7 @@ _RX_BUF_BYTES = 2048
 # |qd| above which we assert status bit 3 (motion_in_progress), deg/s.
 _MOTION_IN_PROGRESS_EPS_DEG_S = 1.0
 
-# Kernel RX timestamping (for the min-inter-TX-spacing check). Python's socket
+# Kernel RX timestamping (for the same-instant double-send check). Python's socket
 # module does NOT expose these Linux SOL_SOCKET constants on every build, so we
 # fall back to the fixed x86-64 Linux values (SO_TIMESTAMPNS == SCM_TIMESTAMPNS
 # == 35). The RT core is Linux-only (timerfd/epoll), so this is not a portability
@@ -125,8 +126,8 @@ class FakeStreamMotionServer:
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((host, port))
         self._sock.setblocking(False)
-        # Kernel RX timestamps for the min-inter-TX-spacing check. Guarded
-        # so a non-Linux build degrades to "no spacing check" rather than crashing.
+        # Kernel RX timestamps for the same-instant double-send check. Guarded so a
+        # non-Linux build degrades to "no double-send check" rather than crashing.
         try:
             self._sock.setsockopt(socket.SOL_SOCKET, _SO_TIMESTAMPNS, 1)
             self._rx_timestamping = True
@@ -134,28 +135,24 @@ class FakeStreamMotionServer:
             self._rx_timestamping = False
         self.host, self.port = self._sock.getsockname()[:2]
 
-        # Min inter-arrival spacing: two consecutive commands drained in
-        # the SAME window that arrive (kernel RX time) closer than this are a
-        # double-send. Scoped within one drain batch — that is exactly where the
-        # fake-vs-core clock jitter can bin two commands together, and it keeps
-        # the deterministic manual-tick tests (which send one command per tick
-        # with no wall delay) from false-flagging consecutive-tick commands.
-        self._min_inter_tx_ns: float = 0.5 * self.itp_s * 1e9
+        # Same-instant double-send floor, applied to EVERY inter-command interval.
+        # A genuine double-send emits both CommandPackets in one host iteration and
+        # they arrive ~simultaneously (measured <= 12 us on loopback); 1/80·itp
+        # (0.1 ms @ 8 ms ITP) sits ~8x above that.
+        #
+        # It is not wider because a receiver cannot honestly police wider. Arrival
+        # spacing implies send spacing only while the sender is unjittered, and the
+        # host RT thread is not: one descheduled tick followed by a catch-up tick
+        # lands two arrivals a few ms apart with nothing sent twice (measured 3.267 ms
+        # on a loaded host, 272x the double-send signature). Legitimate short
+        # intervals — the PLL re-locking phase on the first RX after a StartPacket
+        # compresses one interval to >= 0.57 ms — sit ~5x above this floor, so the two
+        # regimes separate cleanly and no first-interval exception is needed.
+        #
+        # The semantic property (one TX per window) is measured at the source by the
+        # core's own double_send_guard counter, not inferred from arrival times here.
+        self._double_send_floor_ns: float = self.itp_s * 1e9 / 80.0
         self._last_cmd_kernel_ns: int | None = None
-        # (Re)start settling floor. The very FIRST inter-command interval of a
-        # (re)started stream is legitimately compressed: the host RT core's PLL
-        # re-locks phase on the first RX after a StartPacket and shortens that one
-        # interval (measured >= 0.57 ms, below the 0.5·itp steady guard). That is NOT
-        # a double-send — but the reconnect / e-stop path-B re-handshake (StopPacket →
-        # drain → StartPacket → resume) trips the steady guard on it. So the first
-        # interval of each stream is checked against this much tighter floor instead,
-        # which still catches a GENUINE double-send: a real double-send emits both
-        # CommandPackets in one host iteration and they arrive ~simultaneously
-        # (measured <= 12 us on loopback). 1/80·itp (0.1 ms @ 8 ms ITP) sits in the
-        # ~48x-wide gap: ~8x above a real double-send, ~5x below the shortest
-        # legitimate PLL-compressed interval. Only the FIRST interval is relaxed
-        # (via _commands_seen == 2); every steady-stream interval keeps the full guard.
-        self._first_interval_floor_ns: float = self.itp_s * 1e9 / 80.0
 
         self._peer_addr: tuple[str, int] | None = None
         self._streaming = False
@@ -205,7 +202,7 @@ class FakeStreamMotionServer:
         Uses ``recvmsg`` + ``SO_TIMESTAMPNS`` so each CommandPacket carries its
         KERNEL arrival timestamp (not the drain-return time). Batched draining
         must NOT lose true inter-arrival spacing — that is why kernel timestamps
-        are required for the min-inter-TX-spacing check. The spacing
+        are required for the same-instant double-send check. The spacing
         reference is reset per drain: only commands drained together (where the
         fake/core clock-jitter binning happens) are compared.
         """
@@ -286,11 +283,7 @@ class FakeStreamMotionServer:
         self._ticks_since_cmd = 0
         # SM (re)start boundary. Forget any pre-restart CommandPacket timestamp so the
         # first command of the new stream is never compared against a stale reference
-        # (a StartPacket only ever arrives at (re)start, never mid-steady-stream). The
-        # PLL's one-time first-interval compression at (re)start is handled by the
-        # _commands_seen == 2 relaxation in _on_command (see _first_interval_floor_ns);
-        # resetting _commands_seen = 0 above re-arms that per-stream first-interval
-        # detection.
+        # (a StartPacket only ever arrives at (re)start, never mid-steady-stream).
         self._last_cmd_kernel_ns = None
         with self._state.lock:
             self._state.stream_started = True
@@ -323,23 +316,17 @@ class FakeStreamMotionServer:
         self._last_cmd_is_last = bool(is_last)
 
         if self._cfg.strict:
-            # Min inter-TX spacing: a genuine double-send emits two TXs
-            # < 1 ms apart; kernel RX timestamps separate that from two legit
-            # ~8 ms TXs jittered into one drain. Compared within the drain only.
+            # Same-instant double-send: two CommandPackets emitted in one host
+            # iteration arrive ~together (<= 12 us on loopback). Anything above the
+            # floor is host scheduling jitter, which a receiver cannot tell from
+            # cadence — see _double_send_floor_ns.
             if kernel_ns is not None and self._last_cmd_kernel_ns is not None:
                 spacing_ns = kernel_ns - self._last_cmd_kernel_ns
-                # The FIRST inter-command interval of a (re)started stream (this is the
-                # 2nd command → _commands_seen == 2) is the PLL's phase re-lock and is
-                # legitimately compressed; check it against the tight same-instant floor
-                # so only a genuine ~simultaneous double-send trips. Every steady-stream
-                # interval uses the full 0.5·itp guard. See _first_interval_floor_ns.
-                is_first_interval = self._commands_seen == 2
-                threshold = self._first_interval_floor_ns if is_first_interval else self._min_inter_tx_ns
-                if spacing_ns < threshold:
+                if spacing_ns < self._double_send_floor_ns:
                     self._record_violation(
                         f"consecutive CommandPackets {spacing_ns / 1e6:.3f} ms apart "
-                        f"< min inter-TX spacing {threshold / 1e6:.1f} ms — "
-                        "the one-TX-per-window / double-send guard, measured "
+                        f"< same-instant floor {self._double_send_floor_ns / 1e6:.3f} ms — "
+                        "two TXs in one host iteration (double-send), measured "
                         "from kernel RX timestamps"
                     )
             if data_style != wire.COMMAND_DATA_STYLE:
@@ -386,7 +373,7 @@ class FakeStreamMotionServer:
         RECORDS the violation and KEEPS STREAMING (an integration test can assert
         on ``violations`` without the core going RX-silent).
 
-        The min-inter-TX-spacing / double-send guard is enforced per-packet in
+        The same-instant double-send guard is enforced per-packet in
         :meth:`_on_command` from kernel RX timestamps, NOT by a fixed per-tick
         window count: the fake and the driver run on independent ~125 Hz clocks
         that drift across a window boundary, so a count check bins two legitimate

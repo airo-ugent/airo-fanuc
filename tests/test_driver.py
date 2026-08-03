@@ -793,10 +793,11 @@ def test_reconnect_returns_to_commandable(tmp_path: Any) -> None:
 
     Runs under a STRICT FakeCRX via :class:`DriverRig` (its ``close()`` asserts zero
     wire-conformance violations), matching the other driver tests. The reconnect
-    re-handshake's PLL phase re-lock compresses the first CommandPacket interval of
-    the restarted stream; the FakeCRX SM server checks that single first interval
-    against a tight same-instant floor, so the transient is not mistaken for a
-    double-send while a genuine double-send is still caught. connect_retries=3: the
+    re-handshake's PLL phase re-lock compresses CommandPacket intervals on the
+    restarted stream, by more than one interval when the host is loaded; the FakeCRX
+    SM server checks every interval against a same-instant floor well below that
+    transient, so it is not mistaken for a double-send while a genuine double-send
+    is still caught. connect_retries=3: the
     cold re-bring-up's Connect_STMO can briefly race the single-session teardown of
     the just-dropped session (2556954), which is a transport race rather than the
     stop-signal bug under test."""

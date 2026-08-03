@@ -309,7 +309,7 @@ def test_strict_rejects_double_send_in_one_window() -> None:
         addr = (c.sm.host, c.sm_port)
         cli.sendto(wire.encode_command_packet(1, _q9(0.1), version_no=ver), addr)
         cli.sendto(wire.encode_command_packet(2, _q9(0.2), version_no=ver), addr)
-        with pytest.raises(StrictConformanceError, match="one-TX-per-window|window"):
+        with pytest.raises(StrictConformanceError, match="double-send"):
             c.tick()
         cli.close()
 
