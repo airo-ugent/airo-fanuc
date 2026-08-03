@@ -69,6 +69,12 @@ them as binding: code that regresses one of these is a bug, not a refactor.
   asked for. Nothing clears the flag but `arm()`, and nothing may call `arm()` inside
   a retry loop — that moves the robot with the operator at the pendant.
   `FanucDriver.recover()` returning True therefore does **not** imply commandable.
+  Measured, an e-stop does not arrive as one event: the first faulted sample read
+  `in_error` with `e_stopped` still False **and `motion_possible` still True**, and the
+  `e_stop` classification followed seconds later. Both states are in `ARM_FAULTS`, so
+  latching on observation caught it on that first sample — whereas a gate keyed to the
+  `e_stop` classification, or to `motion_possible` dropping, would each have had a real
+  window in which the driver was faulted and motion was not yet inhibited.
 
 ## Collision-check hook (CAPTURE)
 
@@ -79,6 +85,29 @@ them as binding: code that regresses one of these is a bug, not a refactor.
   **The `airo_fanuc` wheel never imports a collision-checking or kinematics
   library** — collision-checking is the caller's responsibility, and the runtime
   dependency set stays numpy-only so the wheel installs standalone.
+- **The handoff out of the splice is phase-exact.** The generator runs to `Finished`
+  and Ruckig extrapolates past `duration`, so the splice's terminal knot is not
+  `(q0, qd0)` but `(q0, qd0)` advanced by a residue in `(0, itp]`. Playback must
+  therefore resume at `residue + itp`, not at `itp`. Resuming at `itp` makes the
+  handoff tick cover only `itp − residue` of a tick's travel — a commanded-velocity
+  notch sized by nothing but where the profile's duration happened to fall between two
+  ticks, reaching a whole tick's step in the limit. The contact-stop monitor infers
+  contact from motor disturbance torque, which is what makes a one-tick position step a
+  safety concern and not merely an accuracy one.
+- **The capture gate is direction-free and has no gap floor.** It tests whether the
+  endpoint window can absorb the velocity change at the brake-class clamps. A joint
+  whose commanded velocity already matches the knot's asks nothing of the geometry, so
+  a phase-matched submission is admissible at any speed and any gap. Reintroducing a
+  signed gap term refuses *every* stale replan, because staleness guarantees the gap is
+  negative — mid-flight replanning is a capability of this driver, not an edge case.
+- **A joined submission skips only knots the arm has already made.** When a caller
+  declares which tick its first knot was planned from, the join target is a **knot** —
+  never an interpolation — so it is a pose the caller's own collision check has already
+  seen, and the skipped prefix is a prefix of the caller's own checked trajectory. Where
+  the commanded state already continues the plan, no bridge is synthesized at all and
+  the executed path is the caller's trajectory and nothing else. This narrows what the
+  driver invents rather than widening it. Beyond a staleness ceiling the phase is
+  refused rather than guessed at.
 
 ## Bring-up
 
@@ -97,7 +126,9 @@ them as binding: code that regresses one of these is a bug, not a refactor.
   trigger register and both act on every command. The probe is what makes a
   re-bring-up safe: it detects a prior process's surviving fork and adopts it instead
   of forking again. The one-shot budget covers all of a `bringup()`'s retries, not one
-  attempt.
+  attempt. **No RMI verb this driver has can undo a fork** — measured, `FRC_Abort`
+  does not kill one either (`docs/controller-notes.md` §2.7), so only an operator at
+  the pendant can, and the probe is the whole defence rather than one of two.
 - **A bring-up is not complete until `motion_possible` HOLDS.** Re-calling
   `STREAM_MOTN` drops `motion_possible` for about a second, and the drop lands after
   the preroll reports ready — so an assert-once check passes and the robot faults
