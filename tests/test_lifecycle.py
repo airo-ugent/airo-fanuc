@@ -227,6 +227,76 @@ def test_capture_would_reject_at_five_degrees() -> None:
     assert beyond["would_reject"] is True
 
 
+# The capture gate's velocity-shed term, through the binding, plus the typed message built
+# from it. The message is asserted here rather than in test_driver because the formatter
+# takes the gate's dict and nothing else — which is the property worth pinning: the Python
+# side derives no part of the feasibility condition, so nothing on this side can drift from
+# tick_engine/capture.cpp.
+def test_capture_gate_rejects_a_velocity_the_window_cannot_absorb() -> None:
+    from airo_fanuc._core import RtCoreConfig
+
+    cfg = RtCoreConfig()  # the synthetic tick-engine envelope
+    v = 0.8  # rad/s commanded on joint 0
+    gap = 0.08  # rad, ~4.58 deg — inside the 5 deg window
+    p = generate_capture_path([0.0] * 6, [v, 0, 0, 0, 0, 0], [gap, 0, 0, 0, 0, 0], _ZERO6, cfg)
+    assert p["would_reject"] is True
+    assert p["tol_exceeded"] is False, "the endpoint gap is inside the window"
+    assert list(p["reject_joints"]) == [0]
+
+    a_b = cfg.stop_scale_va * cfg.acceleration_limits[0]
+    j_b = cfg.stop_scale_j * cfg.jerk_limits[0]
+    need = 0.5 * v * (v / a_b + a_b / j_b)  # trapezoidal shed
+    assert float(p["shed_travel"][0]) == pytest.approx(need, rel=1e-12)
+    assert need > math.radians(cf.CAPTURE_TOL_DEG), "shed travel exceeds the window"
+
+
+def test_capture_gate_is_vacuous_when_the_endpoint_velocities_match() -> None:
+    # Every submission out of HOLD (both velocities zero) and every continuation replan
+    # (both equal and non-zero) has nothing to shed, so the gate is the endpoint window
+    # alone and behaves exactly as it always did.
+    inside = generate_capture_path([math.radians(4.5), 0, 0, 0, 0, 0], _ZERO6, _ZERO6, _ZERO6)
+    beyond = generate_capture_path([math.radians(34.0), 0, 0, 0, 0, 0], _ZERO6, _ZERO6, _ZERO6)
+    assert inside["would_reject"] is False
+    assert beyond["would_reject"] is True and beyond["tol_exceeded"] is True
+    for p in (inside, beyond):
+        assert list(p["reject_joints"]) == []
+        assert list(p["shed_travel"]) == [0.0] * 6
+
+    # A continuation whose target IS the current commanded state, at speed: not refused.
+    moving = [0.8, 0, 0, 0, 0, 0]
+    same = generate_capture_path([0.1] * 6, moving, [0.1] * 6, moving)
+    assert same["would_reject"] is False, "a phase-join submission must not be refused"
+    assert list(same["shed_travel"]) == [0.0] * 6
+
+
+def test_capture_reject_message_names_the_joint_and_the_shed_cost() -> None:
+    from airo_fanuc._core import RtCoreConfig
+    from airo_fanuc.driver import _capture_reject_message
+
+    cfg = RtCoreConfig()
+    v, gap = 0.8, 0.08
+    q_cmd, qd_cmd = [0.0] * 6, [v, 0, 0, 0, 0, 0]
+    q0, qd0 = [gap, 0, 0, 0, 0, 0], list(_ZERO6)
+    p = generate_capture_path(q_cmd, qd_cmd, q0, qd0, cfg)
+    msg = _capture_reject_message(p, q_cmd, qd_cmd, q0, qd0)
+
+    assert "joint 0" in msg
+    assert f"{math.degrees(v):+.3f}°/s" in msg, "the velocity it must shed"
+    assert f"{math.degrees(float(p['shed_travel'][0])):.3f}°" in msg, "what shedding costs"
+    assert f"{cf.CAPTURE_TOL_DEG:g}°" in msg, "and the window it is compared against"
+    assert "unreachable" in msg and "from rest" in msg, "and what to do about it"
+
+
+def test_capture_reject_message_for_the_endpoint_window() -> None:
+    from airo_fanuc.driver import _capture_reject_message
+
+    q_cmd, q0 = [math.radians(34.0), 0, 0, 0, 0, 0], list(_ZERO6)
+    p = generate_capture_path(q_cmd, _ZERO6, q0, _ZERO6)
+    msg = _capture_reject_message(p, q_cmd, list(_ZERO6), q0, list(_ZERO6))
+    assert "capture window" in msg and "joint 0" in msg
+    assert "34.000°" in msg and f"{cf.CAPTURE_TOL_DEG:g}°" in msg
+
+
 def test_capture_path_bad_length_raises() -> None:
     with pytest.raises((ValueError, RuntimeError)):
         generate_capture_path([0.0, 0.0], _ZERO6, _ZERO6, _ZERO6)

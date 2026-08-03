@@ -84,3 +84,22 @@ gtest_discover_tests(test_latch_and_handles)
 add_executable(test_motion_profile test_motion_profile.cpp)
 target_link_libraries(test_motion_profile PRIVATE rt_core GTest::gtest_main)
 gtest_discover_tests(test_motion_profile)
+
+# ---------------------------------------------------------------------------
+# The CAPTURE -> TRAJECTORY seam: the splice's sub-tick terminal residue, and the
+# commanded travel the handoff tick carries at every grid phase. Asserts the position
+# SEQUENCE, because the wire carries positions and the controller differentiates them.
+# Links rt_core (which carries tick_engine) like the tests above.
+# ---------------------------------------------------------------------------
+add_executable(test_capture_seam test_capture_seam.cpp)
+target_link_libraries(test_capture_seam PRIVATE rt_core GTest::gtest_main)
+gtest_discover_tests(test_capture_seam)
+
+# ---------------------------------------------------------------------------
+# Joining a submitted plan at the phase the caller's declared staleness implies: that a
+# continuation replan is joined with no splice at all, that a reachable gap still
+# splices, and the staleness ceiling. Same rt_core link surface as the tests above.
+# ---------------------------------------------------------------------------
+add_executable(test_join_phase test_join_phase.cpp)
+target_link_libraries(test_join_phase PRIVATE rt_core GTest::gtest_main)
+gtest_discover_tests(test_join_phase)

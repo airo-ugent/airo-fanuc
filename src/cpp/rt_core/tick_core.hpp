@@ -104,6 +104,10 @@ class TickCore {
   std::uint64_t epoch() const { return epoch_; }
   const Vec6& q_cmd() const { return q_cmd_; }
   const Vec6& qd_cmd() const { return qd_cmd_; }
+  const Vec6& qdd_cmd() const { return qdd_cmd_; }
+  // Ticks since construction, one per tick(), TX or not. Published as
+  // StateSnapshot::cmd_tick and echoed back as Target::plan_tick.
+  std::uint64_t tick_no() const { return tick_no_; }
   std::uint64_t active_motion_id() const { return active_motion_id_; }
   MotionStatus active_motion_status() const { return active_status_; }
   std::uint64_t total_slew_clips() const { return slew_.total_clips(); }
@@ -199,6 +203,12 @@ class TickCore {
   // --- capture ---
   int capture_idx_{0};
   Target captured_target_{};        // the trajectory to install after CAPTURE completes
+  // Wire-elapsed time of the knot the pending trajectory is JOINED at — 0 for knot 0.
+  // install_trajectory starts playback one tick past it.
+  std::int64_t join_tau_ns_{0};
+
+  // --- tick counter (published as StateSnapshot::cmd_tick) ---
+  std::uint64_t tick_no_{0};
 
   // --- servo ---
   Vec6 servo_last_q_{};

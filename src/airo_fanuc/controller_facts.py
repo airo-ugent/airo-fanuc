@@ -205,6 +205,15 @@ RX_SILENT_PARK_MS: float = 500.0  # → RX_SILENT fault, park TX
 # (covers measured ~300 ms contact-stop / motion_possible bit-skew).
 ANTIFLAP_DWELL_MS: float = 500.0
 
+# Plan staleness ceiling. A submission may declare the commanded tick its first knot was
+# built from (StreamCore.submit_trajectory's plan_tick), and the core then joins the plan
+# that many ticks in rather than splicing back to a knot the arm has already passed. This
+# bounds how much of a plan that may skip: 200 ms is 25 ticks, an order of magnitude above
+# the measured cost of the Python submission path (tens of microseconds) and still short
+# enough that the skipped opening is motion the arm demonstrably just made. Beyond it the
+# submission is refused instead.
+MAX_PLAN_STALE_MS: float = 200.0
+
 # qd_end blend: on trajectory exhaustion with non-zero terminal velocity, one
 # Hermite blend (q_end,qd_end) → (q_end,0) over at least this long.
 QD_END_BLEND_MIN_MS: float = 25.0

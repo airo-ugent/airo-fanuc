@@ -27,11 +27,22 @@ struct StateSnapshot {
   Vec6 qd_est{};    // radians/s (5-sample finite-difference slope, computed at ingest)
   Vec6 q_cmd{};     // radians (last commanded position)
   Vec6 qd_cmd{};    // radians/s (last commanded velocity)
+  // radians/s² — the interpolator's ANALYTIC second derivative at the last tick, the same
+  // quantity the brake seeds from. Published so a caller planning from (q_cmd, qd_cmd) can
+  // seed its plan with the acceleration the arm is actually under: a plan seeded at zero
+  // starts with a curvature the arm does not have, and that difference is what a capture
+  // splice then has to absorb.
+  Vec6 qdd_cmd{};
   std::array<double, 9> cart{};  // Cartesian XYZWPR + ext (deg / mm), raw from the status packet
 
   // Sequence / timing.
   std::uint32_t rx_seq{0};
   std::uint32_t tx_seq{0};
+  // Which tick the q_cmd/qd_cmd/qdd_cmd in this snapshot were commanded on. Monotonic from
+  // core construction, one per TickCore::tick, independent of TX (a parked tick counts).
+  // A caller echoes it back as Target::plan_tick so the core can tell how many ticks of
+  // its own motion happened between the read and the submission.
+  std::uint64_t cmd_tick{0};
   std::uint32_t ctrl_time_stamp_ms{0};
   std::int64_t rx_mono_ns{0};    // CLOCK_MONOTONIC at last RX ingest
   std::int64_t tick_mono_ns{0};  // CLOCK_MONOTONIC at snapshot publish

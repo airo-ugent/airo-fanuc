@@ -652,6 +652,8 @@ void RealtimeCore::publish_snapshot_(const RxSample* rx, const Command& cmd, std
   StateSnapshot s{};
   s.q_cmd = cmd.q_rad;
   s.qd_cmd = tick_core_.qd_cmd();
+  s.qdd_cmd = tick_core_.qdd_cmd();
+  s.cmd_tick = tick_core_.tick_no();
   if (rx != nullptr) {
     s.q_meas = rx->q_meas;
     s.qd_est = rx->qd_est;
@@ -796,7 +798,8 @@ std::uint64_t RealtimeCore::submit_trajectory(const std::vector<std::int64_t>& t
                                               const std::vector<Vec6>& q, const std::vector<Vec6>& qd,
                                               double speed_scale, double settle_tol_rad,
                                               double settle_vel_eps_rad_s, double settle_timeout_s,
-                                              double force_stop_n, double deadman_s) {
+                                              double force_stop_n, double deadman_s,
+                                              std::uint64_t plan_tick) {
   std::lock_guard<std::mutex> lk(submit_mu_);
   reap_retired_locked_();
   auto buf = std::make_unique<TrajBuffer>();
@@ -818,6 +821,7 @@ std::uint64_t RealtimeCore::submit_trajectory(const std::vector<std::int64_t>& t
   t.settle_timeout_s = settle_timeout_s;
   t.force_stop_n = force_stop_n;
   t.deadman_s = deadman_s;
+  t.plan_tick = plan_tick;
   return enqueue_(t, raw);
 }
 

@@ -82,13 +82,27 @@ py::dict py_generate_capture_path(const std::vector<double>& q_cmd, const std::v
   const te::TickEngineConfig cfg = config ? config->tick : te::TickEngineConfig{};
 
   py::dict d;
-  d["would_reject"] = te::capture_would_reject(qc, q0v, cfg);
+  // ONE evaluation of the gate, exported whole. The Python typed error is FORMATTED from
+  // these numbers rather than recomputed, so no second derivation of the feasibility
+  // arithmetic exists to drift from tick_engine/capture.cpp.
+  const te::CaptureGate gate = te::capture_gate(qc, qdc, q0v, qd0v, cfg);
+  d["would_reject"] = gate.reject;
+  d["tol_exceeded"] = gate.tol_exceeded;
+  py::list reject_joints;
+  for (int j = 0; j < te::kNumJoints; ++j) {
+    if (((gate.reject_mask >> static_cast<unsigned>(j)) & 1u) != 0u) {
+      reject_joints.append(j);
+    }
+  }
+  d["reject_joints"] = reject_joints;
+  d["shed_travel"] = std::vector<double>(gate.shed_travel.begin(), gate.shed_travel.end());
 
   auto path = std::make_unique<te::CapturePath>();
   te::generate_capture_path(qc, qdc, q0v, qd0v, cfg, *path);
   d["count"] = path->count;
   d["finished"] = path->finished;
   d["overflow"] = path->overflow;
+  d["residue_ns"] = path->residue_ns;
   py::list q_knots;
   py::list qd_knots;
   for (int k = 0; k < path->count; ++k) {
@@ -118,7 +132,8 @@ py::dict py_generate_capture_path(const std::vector<double>& q_cmd, const std::v
 py::dict py_plan_joint_move(const std::vector<double>& q0, const std::vector<double>& qd0,
                             const std::vector<double>& q_target,
                             const std::optional<airo_fanuc::rt_core::RtCoreConfig>& config,
-                            double max_velocity_rad_s, double accel_scale, double jerk_scale) {
+                            double max_velocity_rad_s, double accel_scale, double jerk_scale,
+                            const std::vector<double>& qdd0) {
   namespace te = airo_fanuc::tick_engine;
   auto to_vec6 = [](const std::vector<double>& v, const char* name) {
     if (v.size() != static_cast<std::size_t>(te::kNumJoints)) {
@@ -160,7 +175,12 @@ py::dict py_plan_joint_move(const std::vector<double>& q0, const std::vector<dou
   inp.synchronization = ruckig::Synchronization::Time;  // the leading-axis semantics
   inp.current_position = p0;
   inp.current_velocity = v0;
-  inp.current_acceleration = te::Vec6{};
+  // Seeded from the caller's own commanded acceleration when it supplies one (empty =
+  // zeros). A plan anchored at the commanded state but seeded at zero acceleration starts
+  // with a curvature the arm does not have, and the capture splice is then asked to absorb
+  // that difference; passing the snapshot's qdd_cmd makes the plan continue the motion
+  // instead. Ruckig validates the TARGET state against the limits, not this one.
+  inp.current_acceleration = qdd0.empty() ? te::Vec6{} : to_vec6(qdd0, "qdd0");
   inp.target_position = pt;
   inp.target_velocity = te::Vec6{};
   inp.target_acceleration = te::Vec6{};
@@ -325,7 +345,7 @@ class StreamCore {
                                   const std::vector<std::vector<double>>& q,
                                   const std::vector<std::vector<double>>& qd, double speed_scale,
                                   double settle_tol_rad, double settle_vel_eps_rad_s, double settle_timeout_s,
-                                  double force_stop_n, double deadman_s) {
+                                  double force_stop_n, double deadman_s, std::uint64_t plan_tick) {
     if (times_ns.size() != q.size() || q.size() != qd.size()) {
       throw std::invalid_argument("times_ns, q, qd must have equal length");
     }
@@ -340,7 +360,7 @@ class StreamCore {
       qdv.push_back(to_vec6(qd[i]));
     }
     return core_->submit_trajectory(times_ns, qv, qdv, speed_scale, settle_tol_rad, settle_vel_eps_rad_s,
-                                    settle_timeout_s, force_stop_n, deadman_s);
+                                    settle_timeout_s, force_stop_n, deadman_s, plan_tick);
   }
 
   std::uint64_t submit_servo(const std::vector<double>& q, double duration_s) {
@@ -381,6 +401,8 @@ class StreamCore {
     d["qd_est"] = vec6_to_list(s.qd_est);
     d["q_cmd"] = vec6_to_list(s.q_cmd);
     d["qd_cmd"] = vec6_to_list(s.qd_cmd);
+    d["qdd_cmd"] = vec6_to_list(s.qdd_cmd);
+    d["cmd_tick"] = s.cmd_tick;
     py::list cart;
     for (double x : s.cart) cart.append(x);
     d["cart"] = cart;
@@ -499,6 +521,7 @@ PYBIND11_MODULE(_core, m) {
   m.def("plan_joint_move", &py_plan_joint_move, py::arg("q0"), py::arg("qd0"), py::arg("q_target"),
         py::arg("config") = py::none(), py::arg("max_velocity_rad_s") = 0.0,
         py::arg("accel_scale") = 1.0, py::arg("jerk_scale") = 1.0,
+        py::arg("qdd0") = std::vector<double>{},
         "Plan a point-to-point joint move offline with Ruckig and return ITP-spaced knots: "
         "{times_ns, q, qd, count, duration_s}, ready for FanucDriver.move_trajectory. "
         "max_velocity_rad_s is the LEADING-AXIS speed (<=0 = the config's velocity limits); "
@@ -606,6 +629,7 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("rx_silence_qd_ramp_ms", &rt::RtCoreConfig::rx_silence_qd_ramp_ms)
       .def_readwrite("rx_silent_park_ms", &rt::RtCoreConfig::rx_silent_park_ms)
       .def_readwrite("antiflap_dwell_ms", &rt::RtCoreConfig::antiflap_dwell_ms)
+      .def_readwrite("max_plan_stale_ms", &rt::RtCoreConfig::max_plan_stale_ms)
       .def_readwrite("safe_follow_rate_rad_s", &rt::RtCoreConfig::safe_follow_rate_rad_s)
       .def_readwrite("safe_follow_deadband_rad", &rt::RtCoreConfig::safe_follow_deadband_rad)
       .def_readwrite("safety_scale_min", &rt::RtCoreConfig::safety_scale_min)
@@ -628,7 +652,7 @@ PYBIND11_MODULE(_core, m) {
       .def("submit_trajectory", &StreamCore::submit_trajectory, py::arg("times_ns"), py::arg("q"),
            py::arg("qd"), py::arg("speed_scale") = 1.0, py::arg("settle_tol_rad") = 0.008726646259971648,
            py::arg("settle_vel_eps_rad_s") = 0.03490658503988659, py::arg("settle_timeout_s") = 2.0,
-           py::arg("force_stop_n") = 0.0, py::arg("deadman_s") = 0.0)
+           py::arg("force_stop_n") = 0.0, py::arg("deadman_s") = 0.0, py::arg("plan_tick") = 0)
       .def("submit_servo", &StreamCore::submit_servo, py::arg("q"), py::arg("duration"))
       .def("submit_servo_ff", &StreamCore::submit_servo_ff, py::arg("q"), py::arg("qd"),
            py::arg("qdd"), py::arg("duration"))

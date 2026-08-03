@@ -151,6 +151,14 @@ struct RtCoreConfig {
   //     and straight back into a fault. ---
   double antiflap_dwell_ms{500.0};  // controller_facts.ANTIFLAP_DWELL_MS
 
+  // --- Plan staleness ceiling: how far out of date a submission's declared anchor
+  //     (Target::plan_tick) may be before the core refuses it rather than joining the
+  //     plan that far in. The join skips the plan's own opening, on the grounds that the
+  //     arm has already covered it; past this window that reasoning stops holding,
+  //     because the plan is describing a past the arm may not have taken. Undeclared
+  //     submissions (plan_tick == 0) are unaffected. ---
+  double max_plan_stale_ms{200.0};  // controller_facts.MAX_PLAN_STALE_MS
+
   // --- SAFE_FOLLOW re-anchor: walk the commanded pose back onto the measured one
   //     slowly enough that the re-anchor itself is not a motion command. ---
   double safe_follow_rate_rad_s{deg2rad(15.0)};   // controller_facts.CAPTURE_RATE_DEG_S
@@ -219,6 +227,11 @@ struct Target {
   const Vec6* qd{nullptr};
   int n{0};
   double speed_scale{1.0};
+  // The StateSnapshot::cmd_tick this plan's FIRST KNOT was built from, or 0 for "not
+  // declared". Declaring it lets consume() join the plan at the phase the elapsed ticks
+  // imply instead of splicing back to a knot the arm has already passed. 0 keeps knot 0
+  // as the join point, which is what a plan whose first knot is meant literally wants.
+  std::uint64_t plan_tick{0};
   // per-motion settle override (defaults mirror TickEngineConfig / SettlePolicy)
   double settle_tol_rad{deg2rad(0.5)};
   double settle_vel_eps_rad_s{deg2rad(2.0)};

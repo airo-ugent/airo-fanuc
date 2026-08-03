@@ -53,6 +53,14 @@ void generate_capture_path(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& q0
     out.count = k + 1;
     if (r == ruckig::Result::Finished) {
       out.finished = true;
+      // Finished means ruck_out.time is past the profile's duration; the difference is
+      // how far THIS knot sits beyond (q0, qd0) in the trajectory's own time, which is
+      // what playback needs in order to resume one tick on. Clamped to [0, itp_s]
+      // because that is the interval Ruckig's own Finished test bounds it to, so a
+      // clamp can only ever absorb float dust.
+      const double residue_s =
+          std::clamp(ruck_out.time - ruck_out.trajectory.get_duration(), 0.0, cfg.itp_s);
+      out.residue_ns = static_cast<std::int64_t>(std::llround(residue_s * 1e9));
       return;
     }
     ruck_out.pass_to_input(inp);
@@ -61,13 +69,47 @@ void generate_capture_path(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& q0
   out.overflow = true;
 }
 
-bool capture_would_reject(const Vec6& q_cmd, const Vec6& q0, const TickEngineConfig& cfg) {
+namespace {
+
+// Duration of a jerk-limited change of |dv| in one joint's velocity, bounded by (a, j):
+// triangular in acceleration while |dv| < a²/j (a is never reached), trapezoidal above
+// it. The standard S-curve result, under the SAME envelope generate_capture_path hands
+// Ruckig above — which is why it predicts THAT generator and not some other one.
+double shed_time(double dv, double a, double j) {
+  if (!(a > 0.0) || !(j > 0.0) || !(dv > 0.0)) {
+    return 0.0;
+  }
+  return (dv < a * a / j) ? 2.0 * std::sqrt(dv / j) : dv / a + a / j;
+}
+
+}  // namespace
+
+CaptureGate capture_gate(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& q0, const Vec6& qd0,
+                         const TickEngineConfig& cfg) {
+  CaptureGate g{};
   for (std::size_t j = 0; j < static_cast<std::size_t>(kNumJoints); ++j) {
+    // (1) endpoint gap vs the capture window.
     if (std::abs(q_cmd[j] - q0[j]) > cfg.capture_tol_rad) {
-      return true;
+      g.tol_exceeded = true;
+      g.reject = true;
+    }
+
+    // (2) can the window absorb the velocity change? Mean speed over a monotone velocity
+    // change is (|v0| + |v1|)/2, so the travel it costs is that times its duration. Zero
+    // whenever the endpoint velocities match — including the case where both are zero,
+    // which is every submission out of HOLD, and the case where both are large and equal,
+    // which is a continuation replan.
+    const double a_b = cfg.stop_scale_va * cfg.limits.a[j];
+    const double j_b = cfg.stop_scale_j * cfg.limits.j[j];
+    const double t_shed = shed_time(std::abs(qd0[j] - qd_cmd[j]), a_b, j_b);
+    g.shed_travel[j] = 0.5 * (std::abs(qd_cmd[j]) + std::abs(qd0[j])) * t_shed;
+
+    if (g.shed_travel[j] > cfg.capture_tol_rad) {
+      g.reject_mask |= (1u << static_cast<unsigned>(j));
+      g.reject = true;
     }
   }
-  return false;
+  return g;
 }
 
 }  // namespace airo_fanuc::tick_engine

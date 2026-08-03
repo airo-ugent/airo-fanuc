@@ -15,6 +15,8 @@
 #include "tick_engine/capture.hpp"
 #include "tick_engine/tick_engine_config.hpp"
 
+using airo_fanuc::tick_engine::capture_gate;
+using airo_fanuc::tick_engine::CaptureGate;
 using airo_fanuc::tick_engine::capture_would_reject;
 using airo_fanuc::tick_engine::CapturePath;
 using airo_fanuc::tick_engine::generate_capture_path;
@@ -108,12 +110,93 @@ TEST(Capture, ReachesNonZeroTargetVelocity) {
   }
 }
 
-// Reject tolerance helper: within 5° → accept; beyond → reject.
+// Gate term (1), the endpoint window: within 5° → accept; beyond → reject. From REST —
+// which is every submission out of HOLD — the endpoint velocities match at zero, so term
+// (2) contributes nothing and this is the whole gate, exactly as it always was.
 TEST(Capture, WouldRejectBeyondTolerance) {
   TickEngineConfig cfg;
-  EXPECT_FALSE(capture_would_reject(kQCmd, kQ0, cfg)) << "3° splice is within the 5° window";
+  EXPECT_FALSE(capture_would_reject(kQCmd, kQdCmd, kQ0, kQd0, cfg))
+      << "3° splice is within the 5° window";
 
   Vec6 far = kQCmd;
   far[2] += cfg.capture_tol_rad + 0.01;  // just over 5° on joint 2
-  EXPECT_TRUE(capture_would_reject(kQCmd, far, cfg)) << ">5° splice must be rejected";
+  EXPECT_TRUE(capture_would_reject(kQCmd, kQdCmd, far, kQd0, cfg))
+      << ">5° splice must be rejected";
+
+  const CaptureGate g = capture_gate(kQCmd, kQdCmd, far, kQd0, cfg);
+  EXPECT_TRUE(g.tol_exceeded);
+  EXPECT_EQ(g.reject_mask, 0u) << "nothing to shed between two zero velocities";
+  for (int j = 0; j < kNumJoints; ++j) {
+    EXPECT_EQ(g.shed_travel[static_cast<std::size_t>(j)], 0.0) << "joint " << j;
+  }
+}
+
+// Gate term (2). A first knot INSIDE the 5° window, at rest, while the joint is commanded
+// fast: term (1) passes and the deceleration cannot fit in the window. This is the
+// 20.9°-swept-against-a-5°-gate case, in the synthetic envelope.
+TEST(Capture, GateRejectsAVelocityTheWindowCannotAbsorb) {
+  TickEngineConfig cfg;
+  const double v = 0.8;  // rad/s on joint 0
+  Vec6 qdc{};
+  qdc[0] = v;
+  Vec6 q0 = kQCmd;
+  q0[0] += 0.08;  // ~4.58°, comfortably inside capture_tol
+  ASSERT_LT(std::abs(q0[0] - kQCmd[0]), cfg.capture_tol_rad);
+
+  const CaptureGate g = capture_gate(kQCmd, qdc, q0, Vec6{}, cfg);
+  EXPECT_TRUE(g.reject) << "an infeasible splice must be refused, not swept";
+  EXPECT_FALSE(g.tol_exceeded) << "the endpoint gap is inside the window; term (2) fails";
+  EXPECT_EQ(g.reject_mask, 1u) << "joint 0 only";
+
+  // Closed form, restated from the envelope: trapezoidal shed (|dv| >= a_b^2/j_b), travel
+  // = mean speed x duration.
+  const double a_b = cfg.stop_scale_va * cfg.limits.a[0];
+  const double j_b = cfg.stop_scale_j * cfg.limits.j[0];
+  ASSERT_GE(v, a_b * a_b / j_b);
+  const double need = 0.5 * v * (v / a_b + a_b / j_b);
+  EXPECT_NEAR(g.shed_travel[0], need, 1e-12);
+  EXPECT_GT(need, cfg.capture_tol_rad)
+      << "the shed travel exceeds the window the old gate measured — the whole point";
+}
+
+// The gate is DIRECTION-FREE. A first knot behind the commanded pose is not refused on
+// that ground: a caller's snapshot is always at least one tick stale, so a negative gap is
+// the normal case for a mid-flight replan, not an error. (The reversal such a gap causes is
+// a separate defect with a separate fix; this gate does not turn it into a refusal.)
+TEST(Capture, GateIsDirectionFree) {
+  TickEngineConfig cfg;
+  const double v = 0.2;
+  Vec6 qdc{};
+  qdc[0] = v;
+  Vec6 qd0m{};
+  qd0m[0] = v;  // matched: nothing to shed
+
+  for (const double delta : {-3.0 * v * cfg.itp_s, -v * cfg.itp_s, 0.0, v * cfg.itp_s}) {
+    Vec6 q0 = kQCmd;
+    q0[0] += delta;  // behind, level, and ahead — all inside the window
+    const CaptureGate g = capture_gate(kQCmd, qdc, q0, qd0m, cfg);
+    EXPECT_FALSE(g.reject) << "refused a gap of " << delta << " rad on sign alone";
+    EXPECT_EQ(g.shed_travel[0], 0.0) << "matched endpoint velocities cost no travel";
+  }
+}
+
+// *** COMPATIBILITY INVARIANT — read before adding any term to this gate. ***
+// A join-at-phase submission targets the trajectory at the phase the arm has actually
+// reached, so its target IS the current commanded state: gap 0.000 and |dqd| 0.000, by
+// construction. The gate must not refuse it. Any directional term, and any lower floor on
+// the gap, breaks this — that is why neither is here.
+TEST(Capture, GateDoesNotRefuseAJoinAtPhaseSubmission) {
+  TickEngineConfig cfg;
+  for (const double v : {0.0, 0.05, 0.2, 0.8, 2.0}) {
+    Vec6 qdc{};
+    qdc[0] = v;
+    // Target == current state, exactly.
+    const CaptureGate g = capture_gate(kQCmd, qdc, kQCmd, qdc, cfg);
+    EXPECT_FALSE(g.reject)
+        << "a continuation whose target is the current commanded state was refused at "
+        << v << " rad/s — this is the submission a phase join exists to make work";
+    EXPECT_FALSE(g.tol_exceeded);
+    EXPECT_EQ(g.reject_mask, 0u);
+    EXPECT_EQ(g.shed_travel[0], 0.0);
+  }
 }

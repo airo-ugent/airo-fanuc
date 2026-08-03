@@ -63,6 +63,53 @@ _NDOF = 6
 _INT64_MAX = 2**63 - 1
 _STEADY_QD_EPS_RAD_S = math.radians(2.0)  # SettlePolicy vel_eps default
 
+
+def _capture_reject_message(
+    path: dict[str, Any],
+    q_cmd: Sequence[float],
+    qd_cmd: Sequence[float],
+    q0: Sequence[float],
+    qd0: Sequence[float],
+) -> str:
+    """Format a CAPTURE reject into a message the caller can act on without reading us.
+
+    Every quantity here comes either from the C++ gate's own output — ``tol_exceeded``,
+    ``reject_joints``, ``shed_travel``, exported by
+    :func:`airo_fanuc._core.generate_capture_path` — or from the caller's own arguments.
+    The feasibility condition is NOT recomputed on this side: there is one derivation, in
+    ``src/cpp/tick_engine/capture.cpp``, and this function only converts its radians to
+    degrees and names the joints. That is deliberate. A Python reimplementation of the
+    same closed form would be a second source of truth able to disagree with the gate the
+    core actually applies, and the disagreement would surface as a submission the
+    pre-flight accepted and the core rejected.
+    """
+    deg = math.degrees
+    if bool(path["tol_exceeded"]):
+        worst = max(range(_NDOF), key=lambda j: abs(q_cmd[j] - q0[j]))
+        return (
+            f"trajectory first knot is beyond the {cf.CAPTURE_TOL_DEG:g}° capture window from "
+            f"the commanded pose: joint {worst} is "
+            f"{deg(abs(q_cmd[worst] - q0[worst])):.3f}° away, limit {cf.CAPTURE_TOL_DEG:g}°. "
+            f"Replan from the commanded pose "
+            f"({[round(deg(v), 3) for v in q_cmd]}°)."
+        )
+    shed = [float(v) for v in cast("list[float]", path["shed_travel"])]
+    clauses = [
+        f"joint {j} must shed {deg(qd_cmd[j]):+.3f}°/s → {deg(qd0[j]):+.3f}°/s, which costs "
+        f"{deg(shed[j]):.3f}° of travel"
+        for j in (int(x) for x in cast("list[int]", path["reject_joints"]))
+    ]
+    return (
+        "trajectory first knot is unreachable from the commanded pose: "
+        + "; ".join(clauses)
+        + f" — more than the {cf.CAPTURE_TOL_DEG:g}° capture window is wide. The splice runs "
+        f"at the brake-class acceleration and jerk clamps, so no profile can absorb that "
+        f"velocity change inside the window: it would have to leave and come back, sweeping "
+        f"travel the window never bounded. Submit the trajectory from rest, or match its "
+        f"first knot's velocity to the commanded one."
+    )
+
+
 #: Axis labels published alongside the joint stream: the pendant's own J1..J6, in
 #: Stream Motion wire order. This package ships no URDF, so they are labels for a
 #: consumer to map, not URDF joint names.
@@ -274,10 +321,20 @@ class FanucDriver:
         settle: SettlePolicy | None = None,
         deadman_s: float | None = None,
         force_stop_n: float | None = None,
+        plan_tick: int | None = None,
         asynchronous: bool = False,
     ) -> MotionHandle:
         """Submit ONE whole trajectory (rad, ns-relative int64 times) — CAPTURE-or-REJECT
         splice, Hermite playback, settle → :class:`MotionHandle`.
+
+        ``plan_tick`` declares WHICH commanded state the first knot was built from: the
+        ``cmd_tick`` of the snapshot it was read from. Given one, the core joins the plan
+        at the phase the elapsed ticks imply instead of splicing back to a knot the arm
+        has already passed — which is what makes a replan while moving land smoothly
+        rather than as a bridge back to a stale pose. Omit it when the first knot is meant
+        literally (a plan in absolute joint space, or a replay); the core then joins at
+        knot 0. It is not inferred here, because only the caller knows which state its
+        planner started from.
 
         Validation — every violation raises its own typed error naming the offending
         joint/knot, never a generic reject: strictly-increasing int64 ns times, ≥2
@@ -338,6 +395,7 @@ class FanucDriver:
             settle_timeout_s=float(settle.timeout_s),
             force_stop_n=float(force_stop_n) if force_stop_n is not None else 0.0,
             deadman_s=float(deadman_s) if deadman_s is not None else 0.0,
+            plan_tick=int(plan_tick) if plan_tick is not None else 0,
         )
         handle = MotionHandle(self.core, mid, time.monotonic_ns())
         assert self._supervisor is not None
@@ -446,6 +504,10 @@ class FanucDriver:
                     max_velocity_rad_s=speed,
                     accel_scale=float(self._cfg.movej_scale_a),
                     jerk_scale=float(self._cfg.movej_scale_j),
+                    # The commanded acceleration this plan starts under. Seeding it is what
+                    # makes the plan continue the arm's current motion instead of starting
+                    # from a curvature the arm does not have.
+                    qdd0=[float(v) for v in snap["qdd_cmd"]],
                 ),
             )
         except (ValueError, RuntimeError) as exc:
@@ -453,6 +515,9 @@ class FanucDriver:
                 f"move_j could not plan a profile to {q_arr.tolist()}: {exc}"
             ) from exc
 
+        # The plan is anchored at the commanded state `snap` carries, so its tick is the
+        # one the core needs to know which phase of this plan belongs to the tick that
+        # consumes it.
         return self.move_trajectory(
             plan["times_ns"],
             plan["q"],
@@ -460,6 +525,7 @@ class FanucDriver:
             settle=settle,
             deadman_s=deadman_s,
             force_stop_n=force_stop_n,
+            plan_tick=int(snap["cmd_tick"]),
             asynchronous=asynchronous,
         )
 
@@ -1012,9 +1078,13 @@ class FanucDriver:
 
         Synthesizes the EXACT capture path the C++ core will execute via
         :func:`airo_fanuc._core.generate_capture_path` (one code path — "the
-        checked path IS the executed path"). Beyond the 5° window → synchronous
+        checked path IS the executed path"). Rejected by the gate → synchronous
         :class:`RejectedStartMismatch` (async submissions let the core resolve
-        REJECTED). When ``policy.capture_check`` is set, the synthesized knots are
+        REJECTED). The gate is the 5° endpoint window AND whether that window can absorb
+        the first knot's velocity change at the brake-class clamps — one closed form,
+        evaluated in C++ and reported per joint (see THE CAPTURE ACCEPTANCE GATE in
+        ``tick_engine/capture.hpp``); this side formats its numbers and derives none.
+        When ``policy.capture_check`` is set, the synthesized knots are
         handed to the caller's collision checker; ``False`` → typed reject.
         """
         assert self.core is not None
@@ -1031,9 +1101,7 @@ class FanucDriver:
         if bool(path["would_reject"]):
             if asynchronous:
                 return  # the core resolves this submission as REJECTED
-            raise RejectedStartMismatch(
-                f"trajectory first knot {q0} is beyond the 5° capture window from the commanded pose {q_cmd}"
-            )
+            raise RejectedStartMismatch(_capture_reject_message(path, q_cmd, qd_cmd, q0, qd0))
 
         check = self._policy.capture_check
         if check is not None:

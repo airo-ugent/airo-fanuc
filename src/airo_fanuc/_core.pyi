@@ -47,9 +47,19 @@ def generate_capture_path(
     All arguments are length-6 radian vectors. Returns the EXACT knots the RT core
     will execute (same code path, default ``TickEngineConfig`` → byte-identical),
     so the Python collision check IS the executed path. Keys:
-    ``would_reject`` (bool; ``|q_cmd − q0|∞`` beyond the 5° window), ``count``
+    ``would_reject`` (bool; the capture gate's verdict — the 5° endpoint window, and
+    whether that window can absorb the first knot's velocity change at the brake-class
+    clamps), ``tol_exceeded`` (bool; the endpoint-window term specifically),
+    ``reject_joints`` (list[int]; joints failing the velocity-shed term),
+    ``shed_travel`` (length-6 radian list; the travel that shedding
+    ``|qd0 − qd_cmd|`` costs per joint — 0 where the endpoint velocities match. These are
+    the gate's OWN numbers, so a caller formatting an error message never has to
+    re-derive the condition), ``count``
     (int), ``finished`` (bool), ``overflow`` (bool), ``q`` / ``qd`` (lists of
-    length-6 radian knot vectors, ITP-spaced; ``q[0] == q_cmd``).
+    length-6 radian knot vectors, ITP-spaced; ``q[0] == q_cmd``), ``residue_ns``
+    (int; how far past ``(q0, qd0)`` the last knot lies in trajectory time, in
+    ``(0, itp]`` — the core resumes trajectory playback at ``itp + residue_ns``,
+    so this is part of the executed path, not a diagnostic).
     """
 
 def plan_joint_move(
@@ -60,6 +70,7 @@ def plan_joint_move(
     max_velocity_rad_s: float = 0.0,
     accel_scale: float = 1.0,
     jerk_scale: float = 1.0,
+    qdd0: list[float] = ...,
 ) -> dict[str, object]:
     """Plan a point-to-point joint move offline with Ruckig; return ITP-spaced knots.
 
@@ -172,6 +183,7 @@ class RtCoreConfig:
     rx_silence_qd_ramp_ms: float
     rx_silent_park_ms: float
     antiflap_dwell_ms: float
+    max_plan_stale_ms: float
     safe_follow_rate_rad_s: float
     safe_follow_deadband_rad: float
     safety_scale_min: float
@@ -232,6 +244,7 @@ class StreamCore:
         settle_timeout_s: float = 2.0,
         force_stop_n: float = 0.0,
         deadman_s: float = 0.0,
+        plan_tick: int = 0,
     ) -> int:
         """Submit ONE whole trajectory (radians). CAPTURE-or-REJECT splice from
         the commanded pose. Returns a motion_id. ``force_stop_n`` arms the C++
@@ -286,8 +299,10 @@ class StreamCore:
 
     def get_snapshot(self) -> dict[str, object]:
         """Seqlock read; never raises. Keys include mode/fault/conditions/epoch,
-        q_meas/qd_est/q_cmd/qd_cmd (length-6), cart, status bits, wrench,
-        active_motion_id/status, rx_age_ms, total_slew_clips."""
+        q_meas/qd_est/q_cmd/qd_cmd/qdd_cmd (length-6), cart, status bits, wrench,
+        active_motion_id/status, rx_age_ms, total_slew_clips, and ``cmd_tick`` — the
+        tick the commanded state was commanded on, which
+        :meth:`submit_trajectory` takes back as ``plan_tick``."""
 
     def poll_events(self) -> list[dict[str, object]]:
         """Drain the RT event ring (mode/epoch/fault/motion events)."""
