@@ -31,6 +31,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
     "Typing :: Typed",
 ]
@@ -107,12 +108,21 @@ AIRO_FANUC_BUILD_TESTS = "OFF"
 # ---------------------------------------------------------------------------
 [tool.cibuildwheel]
 # One wheel per interpreter: pybind11 does not build against the stable ABI, so there
-# is no single abi3 wheel to publish instead. The range matches requires-python.
-build = "cp310-* cp311-* cp312-* cp313-*"
+# is no single abi3 wheel to publish instead. The range covers every CPython the floor in
+# requires-python admits, so nobody on a current interpreter silently falls back to
+# compiling — 3.14 is included because the extension was verified to build and run there.
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
 # musl is not built: the RT thread's timerfd/epoll/SCHED_FIFO path has only ever run on
 # glibc, and shipping an untested musl wheel would let pip prefer it over the sdist a
 # musl user would otherwise build and can at least see fail.
-skip = "*-musllinux_*"
+#
+# Neither is free-threaded 3.14 (`cp314t`), and for a sharper reason: this extension is
+# written against a held GIL — the RT thread releases it around exactly the three calls that
+# block on I/O and holds it everywhere else — and the pybind11 it is built with predates
+# free-threading support. A `cp314t` wheel would install and import, then be wrong under
+# concurrency. Leaving it out means a free-threaded interpreter builds from the sdist, which
+# is at least a decision its user made.
+skip = "*-musllinux_* cp314t-*"
 # 2.28 (glibc 2.28) rather than the older default: the C++20 the build needs comes from
 # the toolchain in this image, and 2.28 still covers every distribution in support.
 manylinux-x86_64-image = "manylinux_2_28"

@@ -144,8 +144,10 @@ make it fail, the test is documentation, not a guard, and should say so.
 
 Wheels are built by `.github/workflows/release.yml`, not by hand: a local build produces a
 `linux_x86_64` tag that PyPI refuses, so the manylinux image is what makes a publishable
-wheel. cp310-cp313 on x86_64 and aarch64, each imported and run against two test suites
-before it is kept.
+wheel. cp310-cp314 on x86_64 and aarch64, each imported and run against two test suites
+before it is kept. Free-threaded 3.14 is deliberately not built: this extension assumes a
+held GIL and the pybind11 it links predates free-threading, so a `cp314t` wheel would import
+and then be wrong under concurrency. Those users build from the sdist.
 
 `workflow_dispatch` builds the matrix and keeps the artifacts without releasing anything.
 Pushing a `v*` tag is what publishes, via PyPI trusted publishing — no API token lives in

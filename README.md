@@ -27,12 +27,15 @@ so installing this driver does not drag in a robotics stack.
 pip install airo-fanuc
 ```
 
-A download on **Linux x86_64 and aarch64, CPython 3.10-3.13**: the published wheels carry
-the compiled real-time core, so no compiler, no CMake and no headers are involved.
+A download on **Linux x86_64 and aarch64, CPython 3.10-3.14**: the published wheels carry
+the compiled real-time core, so no compiler, no CMake and no headers are involved. `uv add
+airo-fanuc` / `uv pip install airo-fanuc` take the same wheel.
 
 Linux only, and not a preference — the RT thread is `timerfd_create` + `epoll` +
-`SCHED_FIFO`, with no portable fallback. Anywhere else, pip falls back to the sdist and
-compiles the extension, which needs a C++20 compiler, CMake ≥ 3.22, the Python development
+`SCHED_FIFO`, with no portable fallback.
+
+Anywhere else — another platform, or a free-threaded interpreter — pip falls back to the sdist
+and compiles the extension, which needs a C++20 compiler, CMake ≥ 3.22, the Python development
 headers, and network access to fetch ruckig and pybind11.
 
 The package ships **no arm profile** — you supply a `RobotProfile`, and most of it comes out

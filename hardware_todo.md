@@ -177,12 +177,14 @@ Recorded so a hardware session does not spend time re-deriving these:
 Not hardware, but in the same "has never actually run" category:
 
 - [ ] **`.github/workflows/release.yml` has never executed.** Trigger it with
-      `workflow_dispatch` first and confirm eight wheels build, `auditwheel` retags them as
-      manylinux, and each passes its import and test step. The manylinux build was never
-      exercised locally — no container runtime on the dev machine.
+      `workflow_dispatch` first and confirm **ten** wheels build (cp310-cp314 × two
+      architectures), `auditwheel` retags them as manylinux, and each passes its import and
+      test step. The manylinux build was never exercised locally — no container runtime on the
+      dev machine. Until this run is green, `pip install airo-fanuc` cannot work for anyone.
 - [ ] **Configure PyPI trusted publishing** for this repository, the `Release` workflow and
       the `pypi` environment. Without it the publish step fails at the last moment.
 - [ ] **Make the repository public**, or `https://github.com/airo-ugent/airo-fanuc.git` in
-      the README 404s for everyone who reads it.
+      the README 404s for everyone who reads it. Both acquisition routes the README documents
+      are dead until then: PyPI 404s and so does the clone URL.
 - [ ] Re-run the whole gate set on the final commit: `uv run pytest`, `ctest`, the TSAN
       build, ruff, mypy, and the nine `--fake` example runs.
