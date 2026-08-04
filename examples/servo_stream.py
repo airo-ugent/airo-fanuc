@@ -516,10 +516,9 @@ def main() -> int:
         if not safe:
             return verdict("servo_stream", checks, driver)
 
-        # There is deliberately no per-step distance guard here. The core used to
-        # refuse a servo target more than 5° from the commanded pose, which made the
-        # rate/speed pairing a pre-motion check; it no longer does — a far target is
-        # tracked under the servo limits instead. What the rate still decides is
+        # There is deliberately no per-step distance guard here. The core never refuses a
+        # servo target for distance — a far one is tracked under the servo limits instead
+        # — so the rate/speed pairing is not a pre-motion check. What the rate decides is
         # tracking quality, which the run measures rather than predicts.
         step_deg = peak_speed / args.rate
         print(f"  peak step    : {step_deg:.2f} deg per target at {args.rate:g} Hz")

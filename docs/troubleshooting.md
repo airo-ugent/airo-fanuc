@@ -1,5 +1,10 @@
 # Troubleshooting
 
+Symptom-first. Find the exception, the pendant alarm or the behaviour you are looking at;
+each entry says what causes it and what to do about it. [Safety](safety.md) has the fault
+model these symptoms come out of, and [`controller-notes.md`](controller-notes.md) has the
+exact alarm texts and recovery procedures measured on our controller.
+
 ---
 
 ## Bring-up fails

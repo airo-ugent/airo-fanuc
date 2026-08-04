@@ -317,10 +317,10 @@ class StreamCore:
         duration: float,
     ) -> int:
         """As :meth:`submit_servo`; ``qd``/``qdd`` are accepted and CURRENTLY IGNORED.
-        All three vectors are length-6 radians (rad, rad/s, rad/s²). They previously
-        became Ruckig's target velocity/acceleration, but demanding an arrival velocity
-        made the command reverse against a forward-moving stream under clock drift —
-        see BEST EFFORT in ``src/cpp/tick_engine/servo.hpp``."""
+        All three vectors are length-6 radians (rad, rad/s, rad/s²). The core drops them
+        because feeding them to Ruckig as a target velocity/acceleration demands an
+        arrival velocity, and that makes the command reverse against a forward-moving
+        stream under clock drift — see BEST EFFORT in ``src/cpp/tick_engine/servo.hpp``."""
 
     def submit_brake(self) -> int: ...
     def submit_hold(self) -> int: ...

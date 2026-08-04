@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""airo_fanuc — FANUC driver: a C++17 real-time core behind a Python API.
+"""airo_fanuc — FANUC driver: a compiled real-time core behind a Python API.
 
 The public surface is split the conventional way for a robot client library: a
 *receive* half (state getters that never raise and never lie — every value comes
@@ -25,9 +25,9 @@ from importlib.metadata import version as _metadata_version
 #: Re-exported from the extension because :meth:`FanucDriver.get_state` publishes
 #: ``mode``, ``fault``, ``active_motion_status`` and the ``conditions`` bitmask as plain
 #: integers, and :class:`LifecycleState` deliberately collapses
-#: HOLD/CAPTURE/TRAJECTORY/SERVO/BRAKE into ``STREAMING`` — so without
-#: these a caller cannot decode values the driver hands it, and the examples had to reach
-#: into ``airo_fanuc._core`` to do it. One decoder each: ``Mode`` for ``mode``,
+#: HOLD/CAPTURE/TRAJECTORY/SERVO/BRAKE into ``STREAMING`` — so without these a caller
+#: cannot decode the values the driver hands it except by reaching into
+#: ``airo_fanuc._core``. One decoder each: ``Mode`` for ``mode``,
 #: ``FaultReason`` for ``fault``, ``MotionStatus`` for ``active_motion_status``, and
 #: ``Condition`` — bit flags, not ordinals — for ``conditions``.
 #:
