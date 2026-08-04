@@ -146,10 +146,10 @@ Step 2 hand-builds a 2-knot trajectory; this asks `move_j` for the journey and g
 a speed instead of a duration. `--speed-scale` is a fraction of the arm's slowest joint
 velocity limit — `0.1` is 12 deg/s on the CRX-10iA/L — so it means the same thing on
 any arm, and `1.0` is the fastest a leading-axis speed can be while every joint can
-still reach it. The run echoes the absolute deg/s it resolves to. (This is not the
-`speed_scale` `move_trajectory` used to take: that rescaled an already-built
-trajectory's playback but not its capture splice, stepping velocity at the handover.
-This one is applied before planning, so profile and splice agree.)
+still reach it. The run echoes the absolute deg/s it resolves to. It is applied *before*
+planning, so the profile, its first knot and the capture splice that reaches it are all
+built at the same speed — rescaling an already-built trajectory's playback would leave
+the splice behind and step the commanded velocity at the handover.
 
 `--multi` moves three joints unequal distances at once and times each one's arrival,
 which is how the leading-axis synchronisation shows up from outside — a 20 ms spread

@@ -55,7 +55,7 @@ void generate_capture_path(const Vec6& q_cmd, const Vec6& qd_cmd, const Vec6& q0
       out.finished = true;
       // Finished means ruck_out.time is past the profile's duration; the difference is
       // how far THIS knot sits beyond (q0, qd0) in the trajectory's own time, which is
-      // what playback needs in order to resume one tick on. Clamped to [0, itp_s]
+      // what playback needs to resume one tick on. Clamped to [0, itp_s]
       // because that is the interval Ruckig's own Finished test bounds it to, so a
       // clamp can only ever absorb float dust.
       const double residue_s =

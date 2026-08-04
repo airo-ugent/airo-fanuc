@@ -9,8 +9,8 @@
 > Option **S636** (External Control Package = J519 Stream Motion + R912 RMI).
 >
 > **Everything below was measured on the physical controller** unless a row says
-> otherwise. Three questions this file used to leave open are now measured: the **e-stop
-> continuation path** (§1.3 — the Stream Motion session survives an E-stop and resumes
+> otherwise. Settled by measurement: the **e-stop continuation path** (§1.3 — the Stream
+> Motion session survives an E-stop and resumes
 > without a re-handshake), the **command-to-report offset** vs `tracking_lag_s` (§1.9a —
 > duty-dependent over 84–180 ms, which is what made two sessions appear to disagree), and
 > the **acceleration/jerk clamps** (§1.11 — the controller executes the profile's full

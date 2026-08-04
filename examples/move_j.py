@@ -36,12 +36,10 @@ the argument valid by construction rather than needing to be range-checked again
 profile. The script always echoes the absolute deg/s it resolves to, because that is the
 number that matters standing next to the robot.
 
-**Not to be confused with the ``speed_scale`` that ``move_trajectory`` used to take**
-(removed; ``submit_trajectory``'s is pinned to 1.0). That one rescaled the playback of an
-*already-built* trajectory without rescaling the capture splice, so it stepped the
-commanded velocity at the handover. This one is applied BEFORE planning: the profile,
-its first knot and the splice that reaches it are all built at the resulting speed, so
-there is no handover to step.
+**``--speed-scale`` is applied BEFORE planning**, never to an already-built trajectory:
+the profile, its first knot and the capture splice that reaches it are all built at the
+resulting speed. Rescaling playback afterwards would leave the splice at the old speed
+and step the commanded velocity at the handover; there is no handover to step here.
 
   # Offline — no hardware. Spins up an in-process FakeCRX and drives it:
   python examples/move_j.py --fake
