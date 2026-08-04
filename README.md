@@ -39,7 +39,8 @@ and compiles the extension, which needs a C++20 compiler, CMake ≥ 3.22, the Py
 headers, and network access to fetch ruckig and pybind11.
 
 The package ships **no arm profile** — you supply a `RobotProfile`, and most of it comes out
-of the controller itself. See [configuration](docs/configuration.md).
+of the controller itself. See
+[configuration](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/configuration.md).
 
 ## Will it work on your robot?
 
@@ -50,7 +51,7 @@ this covers FANUC's mainstream controller class rather than only cobots.
 Four things are not generic: the arm's envelope (injected, no default), the interpolation
 period (configured, and bring-up refuses a mismatch), the six-joint count (compile-time),
 and the gripper (parameterised, but its Teach-Pendant program is yours to install).
-[**Read this before planning a bring-up.**](docs/portability.md)
+[**Read this before planning a bring-up.**](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/portability.md)
 
 Developed and measured against a FANUC CRX-10iA/L on an R-30iB-class controller.
 
@@ -98,16 +99,20 @@ and ends in a PASS/FAIL verdict with the real-time loop's measured timing.
 
 ## Documentation
 
-**[docs/README.md](docs/README.md)** is the index. The ones you are most likely to want:
+<!-- Absolute links, not repo-relative: this file is also the PyPI project page, and PyPI
+     resolves relative links against pypi.org rather than rewriting them to the repository. -->
 
-- [**Portability**](docs/portability.md) — will this work on my robot, and what to check first
-- [**API reference**](docs/api.md) — every method, what blocks, what it raises, every `get_state()` key
-- [**Configuration**](docs/configuration.md) — `RobotProfile`, `DriverConfig`, `DriverPolicy`
-- [**Safety**](docs/safety.md) — preconditions, the fault model, the ARM gate, limitations
-- [**Gripper**](docs/gripper.md) — how to drive your own
-- [**Troubleshooting**](docs/troubleshooting.md) — symptom-first
-- [**Architecture**](docs/architecture.md) and [**Development**](docs/development.md) — if you are working on the driver
-- [**`examples/README.md`**](examples/README.md) — the ordered bring-up ladder for a first run against real hardware
+**[docs/README.md](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/README.md)** is the
+index. The ones you are most likely to want:
+
+- [**Portability**](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/portability.md) — will this work on my robot, and what to check first
+- [**API reference**](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/api.md) — every method, what blocks, what it raises, every `get_state()` key
+- [**Configuration**](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/configuration.md) — `RobotProfile`, `DriverConfig`, `DriverPolicy`
+- [**Safety**](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/safety.md) — preconditions, the fault model, the ARM gate, limitations
+- [**Gripper**](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/gripper.md) — how to drive your own
+- [**Troubleshooting**](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/troubleshooting.md) — symptom-first
+- [**Architecture**](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/architecture.md) and [**Development**](https://github.com/airo-ugent/airo-fanuc/blob/main/docs/development.md) — if you are working on the driver
+- [**`examples/README.md`**](https://github.com/airo-ugent/airo-fanuc/blob/main/examples/README.md) — the ordered bring-up ladder for a first run against real hardware
 
 ## License
 
