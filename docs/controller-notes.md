@@ -35,9 +35,19 @@
 | SM `available_version` / `sampling_rate_ms` | **v3 / 8 ms** (125 Hz). NOTE: v3 < 4 → **FSConfig(v4) N/A**; controller streams **type-202 (no force)** | version echo; 8 ms ITP |
 | J2/J3 coupled envelope (`$JNT23_UPLIM/$JNT23_LOWLI`) | **0.0 / 0.0 → INACTIVE** | context for §1.5 |
 | Joint vel limits (deg/s and rad/s) | deg/s `[120,120,180,180,180,180]`; rad/s `[2.0944,2.0944,3.1416,3.1416,3.1416,3.1416]` — **exact match to `examples/crx10ial.py`** ✓ | cross-check the `RobotProfile` in `examples/crx10ial.py` |
-| Joint pos limits (active vs URDF) | active lower `[-179.999,-179.999,-270,-190,-179.999,-225]` upper `[179.999,179.999,270,190,179.999,225]` — note **±179.999, not ±180**, on J1/J2/J5; J1–J5 == URDF, **J6 URDF (±190) narrower than ctrl (±225)** = safe | SRVO-115 (flag URDF-wider) |
+| Joint pos limits (active vs URDF) | active lower `[-179.999,-179.999,-270,-190,-179.999,-225]` upper `[179.999,179.999,270,190,179.999,225]` — note **±179.999, not ±180**, on J1/J2/J5; J1–J5 == URDF, **J6 URDF (±190) narrower than ctrl (±225)** = safe. **These are the controller's own `$PARAM_GROUP` values, not measured against the arm's mechanical stops** — see below | SRVO-115 (flag URDF-wider) |
 | DCS joint / Cartesian envelopes | joint DCS ±9999° (LIM_ENB=1, wide-open); Cartesian ±3000 mm (LIM_ENB=1, whole cell) — enabled but permissive | fallback if the §1.2 coast is ever judged insufficient (zone tightening) — **DCS is enabled, so tightening is viable** |
 | Master position / max payload | MASTER_POS `[0, 55.21, -104.852, 0, -75.148, 0]`°; MAX_PAYLOAD **10.0 kg**; TRKERRLIM 524288; `$RMI_CFG.$DISCNT_TIM = 60 min` | reference |
+
+**The position limits are configuration, not geometry.** They come from the controller
+(`$PARAM_GROUP[1].$LOWERLIMS` / `$UPPERLIMS`) and the probe reports active == master, so the guard
+table cannot be wider than *the controller's own configuration*. What has **not** been checked on
+this arm is the configured soft limit against the **mechanical stop**: a limit configured wider
+than a joint can physically reach would let the pre-motion guard pass a command the controller
+then refuses. `examples/check_joint_limits.py` is that check — it opens a connect-only RMI session
+and polls at 15 Hz while an operator hand-guides each joint to its stop — and **it has not been
+completed on this arm.** Its `short` verdict is ambiguous by design: either the stop was not
+reached or the table is too wide, and only the operator can tell which.
 
 #### 1.1a Where each of these comes from, and which are read automatically
 

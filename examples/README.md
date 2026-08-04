@@ -236,6 +236,11 @@ from the robot, and a limit recorded too WIDE means the guard passes a command t
 controller refuses. A `short` verdict is ambiguous — either you did not reach the stop,
 or the table is too wide — and only the operator can tell which.
 
+**This step has not been completed on the development arm.** The recorded limits come from the
+controller's own `$PARAM_GROUP`, so they match its configuration; what stays unverified is that
+configuration against the **mechanical stops**. Of the eight steps, this is the one with no
+result behind it.
+
 ### Step 6 — a fault, on purpose
 
 No script for this one: press the E-stop during step 3 or 4, while it is moving.
