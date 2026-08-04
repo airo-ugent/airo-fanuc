@@ -39,6 +39,19 @@ def _source_files() -> list[pathlib.Path]:
     return sorted(_PKG_ROOT.rglob("*.py"))
 
 
+def _manifest() -> dict:
+    """Parse ``pyproject.toml``, skipping where the interpreter has no TOML reader.
+
+    ``tomllib`` is stdlib only from 3.11 and ``requires-python`` admits 3.10, so the
+    cp310 wheel runs its own test step without one. Skipping there beats adding a
+    ``tomli`` test dependency for a single interpreter: both drift guards below stay
+    live on every other interpreter in the matrix, and on the 3.13 CI job.
+    """
+    tomllib = pytest.importorskip("tomllib", reason="stdlib TOML reader arrived in 3.11")
+    root = pathlib.Path(__file__).resolve().parents[1]
+    return tomllib.loads((root / "pyproject.toml").read_text())
+
+
 def _imported_top_level_modules(path: pathlib.Path) -> set[str]:
     """Top-level module names imported by *path*, including inside functions."""
     names: set[str] = set()
@@ -96,11 +109,7 @@ def test_declared_dependencies_match_the_allowed_set() -> None:
     """
     import re
 
-    import tomllib
-
-    root = pathlib.Path(__file__).resolve().parents[1]
-    manifest = tomllib.loads((root / "pyproject.toml").read_text())
-    declared = manifest["project"]["dependencies"]
+    declared = _manifest()["project"]["dependencies"]
     # Strip version specifiers / extras: "numpy>=1.26" -> "numpy".
     names = {re.split(r"[<>=!~\[; ]", spec, maxsplit=1)[0].strip().lower() for spec in declared}
     assert names == _ALLOWED_THIRD_PARTY, (
@@ -119,12 +128,9 @@ def test_version_is_read_from_the_distribution_metadata() -> None:
     way to tell which is authoritative. Deriving it from the installed metadata makes
     the manifest the only source; this pins that it stays so.
     """
-    import tomllib
-
     import airo_fanuc
 
-    root = pathlib.Path(__file__).resolve().parents[1]
-    declared = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    declared = _manifest()["project"]["version"]
     assert airo_fanuc.__version__ == declared, (
         f"__version__ is {airo_fanuc.__version__!r} but pyproject declares {declared!r}. "
         "Reinstall the package if this is a stale editable install; otherwise the literal "
