@@ -31,7 +31,8 @@ jobs:
       fail-fast: false
       matrix:
         # Native runners for both architectures; no QEMU, so an aarch64 wheel costs the
-        # same as an x86_64 one. Each builds cp310-cp313 for its own arch.
+        # same as an x86_64 one. Each builds the interpreter range in
+        # [tool.cibuildwheel] for its own arch.
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v5
