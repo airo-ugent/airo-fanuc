@@ -59,6 +59,23 @@ def _snap(core: StreamCore) -> dict[str, Any]:
     return cast("dict[str, Any]", core.get_snapshot())
 
 
+def _measured_block(core: StreamCore | None, key: str) -> np.ndarray | None:
+    """One measured six-element snapshot block (rad, rad/s), gated on ``rx_mono_ns > 0``.
+
+    Before the first status packet the snapshot is still zero-initialised, and all-zero
+    joints are a pose this arm can hold rather than a "no data" marker — so the gate is
+    on the ingest stamp, not on the value, exactly as in
+    :meth:`FanucDriver.get_flange_pose`. It is the rule every consumer of the joint
+    stream otherwise has to rediscover from ``get_state()``.
+    """
+    if core is None:
+        return None
+    snap = _snap(core)
+    if int(snap.get("rx_mono_ns", 0)) <= 0:
+        return None
+    return np.asarray(snap[key], dtype=np.float64)
+
+
 _NDOF = 6
 _INT64_MAX = 2**63 - 1
 _STEADY_QD_EPS_RAD_S = math.radians(2.0)  # SettlePolicy vel_eps default
@@ -108,6 +125,58 @@ def _capture_reject_message(
         f"travel the window never bounded. Submit the trajectory from rest, or match its "
         f"first knot's velocity to the commanded one."
     )
+
+
+def _knot_velocities(times_ns: Sequence[int], q: np.ndarray) -> np.ndarray:
+    """Knot velocities for a position-only path: monotone cubic tangents, ends at rest.
+
+    Playback is cubic Hermite between consecutive knots (``tick_engine/hermite.hpp``),
+    so ``qd`` is not a description of the path — it IS the tangent the core interpolates
+    with, and a different choice is a different executed motion. This derives the one
+    the driver stands behind for a caller who has only positions and times.
+
+    The rule is PCHIP's weighted harmonic mean of the two adjacent secant slopes, zero
+    wherever they disagree in sign or either is zero. That makes the interpolant
+    MONOTONE on every interval: between two knots the command stays inside the
+    positions those knots bracket. The obvious alternative — a centred difference /
+    Catmull-Rom tangent — overshoots at a direction change, sending the arm past a knot
+    and back, which is neither the path the caller drew nor one anything checked. The
+    spacing-weighted form is what keeps that true for non-uniform ``times``; on evenly
+    spaced knots it is the harmonic mean of the neighbouring slopes.
+
+    **Both endpoints are at rest**, rather than a one-sided difference. Knot 0 is what
+    the capture splice bridges to, and the splice can only reach ``CAPTURE_RATE_DEG_S``
+    — 15 °/s, measured — so a derived start velocity is the one number able to turn a
+    perfectly good path into a refused submission. At rest it always clears. The final
+    knot at rest is what the settle window then confirms arrival against, and matches
+    what :meth:`FanucDriver.move_j`'s planner produces.
+
+    A tangent may still exceed a joint's velocity limit: the harmonic mean is bounded
+    by three times the smaller adjacent slope, so knots whose spacing implies a sharp
+    speed change can ask for more than the arm has. That is a path the timing makes
+    infeasible, and ``_validate_trajectory`` refuses it saying so — it is not clamped,
+    because a clamped tangent is a different curve from the one checked here.
+    """
+    t_s = np.asarray(times_ns, dtype=np.float64) * 1e-9
+    qd = np.zeros_like(q)
+    if q.shape[0] < 3:
+        return qd  # two knots: no interior tangent to derive, and both ends are at rest
+    h = np.diff(t_s)[:, None]  # (n-1, 1) interval lengths in seconds, broadcast over joints
+    d = np.diff(q, axis=0) / h  # (n-1, 6) secant slopes, rad/s
+    h_left, h_right = h[:-1], h[1:]
+    d_left, d_right = d[:-1], d[1:]
+    # A sign disagreement means the interior knot is a local extremum, and a zero slope
+    # means a flat run: the monotone tangent is zero for both, which `> 0` covers at once.
+    turning = d_left * d_right > 0.0
+    w_left = 2.0 * h_right + h_left
+    w_right = h_right + 2.0 * h_left
+    # np.where evaluates both branches, so the divisors are made harmless where the mask
+    # discards the result anyway — the zeros it excludes are exactly the ones that divide.
+    whmean = (w_left / np.where(turning, d_left, 1.0) + w_right / np.where(turning, d_right, 1.0)) / (
+        w_left + w_right
+    )
+    qd[1:-1] = np.where(turning, 1.0 / whmean, 0.0)
+    return qd
 
 
 #: Axis labels published alongside the joint stream: the pendant's own J1..J6, in
@@ -316,7 +385,7 @@ class FanucDriver:
         self,
         times: Sequence[int] | np.ndarray,
         q: Sequence[Sequence[float]] | np.ndarray,
-        qd: Sequence[Sequence[float]] | np.ndarray,
+        qd: Sequence[Sequence[float]] | np.ndarray | None = None,
         *,
         settle: SettlePolicy | None = None,
         deadman_s: float | None = None,
@@ -333,11 +402,21 @@ class FanucDriver:
         requiring the arm to be at rest, so its anchor cannot move between the read and
         the submission; :meth:`servo_j` is the entry point for a moving arm.
 
+        ``qd=None`` derives the knot velocities from ``times`` and ``q`` — monotone
+        cubic tangents, both ends at rest (:func:`_knot_velocities`) — for a planner
+        that emits positions only. One derivation lives here rather than one per
+        caller, and it is the derivation that matches the core's Hermite playback: a
+        caller differentiating the path itself has to land the result inside the 15 °/s
+        first-knot capture envelope or watch the submission be refused, which is a
+        driver-shaped problem to solve. Pass ``qd`` whenever the plan already carries
+        velocities — they are the playback tangents, and the planner that shaped the
+        path knows them better than any reconstruction from its samples.
+
         Validation — every violation raises its own typed error naming the offending
         joint/knot, never a generic reject: strictly-increasing int64 ns times, ≥2
         knots, finite q/qd, ``|qd| ≤ v_lim``, and a first knot inside the capture
-        envelope. The CAPTURE collision-check hook runs when ``policy.capture_check``
-        is set.
+        envelope. Derived velocities face the same checks as supplied ones. The CAPTURE
+        collision-check hook runs when ``policy.capture_check`` is set.
 
         ``force_stop_n`` (N) and ``deadman_s`` (s) are optional guards, and both must be
         finite and > 0 when given. A threshold that cannot trip is rejected rather than
@@ -849,6 +928,37 @@ class FanucDriver:
         except Exception:  # noqa: BLE001 - a read failure means "not available"
             return False
 
+    def get_joint_configuration(self) -> np.ndarray | None:
+        """MEASURED joint positions (rad), or ``None`` before the first status packet.
+
+        The controller's own report, straight out of the Stream Motion status packet —
+        ``get_state()["q_meas"]`` behind the no-data gate, so a caller reading joints
+        does not have to know that rule. Lock-free, never blocks, never raises. Age
+        comes from ``get_state()["rx_age_ms"]`` like every other snapshot value.
+
+        Measured, not commanded: ``q_cmd`` in :meth:`get_state` is what the driver last
+        put on the wire, and the two differ by the servo's tracking lag. Anything
+        planning from where the arm *will* be told to go wants that one; anything
+        reporting where the arm *is* wants this one.
+
+        This and :meth:`get_joint_velocities` take one snapshot each, so a
+        position/velocity pair read through them may straddle a tick. Read ``q_meas``
+        and ``qd_est`` out of a single :meth:`get_state` when they must be the same
+        instant.
+        """
+        return _measured_block(self.core, "q_meas")
+
+    def get_joint_velocities(self) -> np.ndarray | None:
+        """Estimated joint velocities (rad/s), or ``None`` before the first status packet.
+
+        ``get_state()["qd_est"]``: a five-sample finite difference over the measured
+        positions, taken at packet ingest because the status packet carries no velocity
+        field of its own. Same gate and same never-raise contract as
+        :meth:`get_joint_configuration` — see it for the measured/commanded distinction
+        and the one-snapshot-each note.
+        """
+        return _measured_block(self.core, "qd_est")
+
     def get_wrench(self) -> np.ndarray | None:
         """Tool-frame wrench ``[fx, fy, fz, mx, my, mz]`` (N, Nm) or ``None`` when
         force telemetry is unavailable (fs_type gate / wrench invalid)."""
@@ -979,6 +1089,27 @@ class FanucDriver:
     @property
     def preflight_report(self) -> Any:
         return getattr(self, "_preflight_report", None)
+
+    @property
+    def policy(self) -> DriverPolicy:
+        """The :class:`~airo_fanuc.config.DriverPolicy` this driver was constructed with.
+
+        What a caller cannot otherwise recover but has to know to size its own
+        behaviour: ``policy.settle`` (how long a submitted motion may take to confirm
+        arrival, which is what a wait around :meth:`MotionHandle.wait` must be sized
+        against — playback can legitimately outrun the timeline),
+        ``policy.gripper_protocol`` (which protocol ``driver.gripper`` is executing,
+        so a wrapper that assumes a particular set of modifier buckets can check
+        rather than assume) and ``policy.config`` (``itp_s``, the period the RT loop
+        targets, alongside :meth:`timing_stats`).
+
+        The live object, not a copy — the dataclasses are the caller's own. Mutating a
+        field afterwards reconfigures NOTHING: the C++ config was mirrored once at
+        construction (:meth:`airo_fanuc.config.DriverConfig.to_rt_core_config`) and the
+        RT core runs from that copy, so a changed field here would describe a driver
+        that does not exist. Read it.
+        """
+        return self._policy
 
     # ==================================================================
     # Lifecycle
@@ -1139,19 +1270,21 @@ class FanucDriver:
         self,
         times: Sequence[int] | np.ndarray,
         q: Sequence[Sequence[float]] | np.ndarray,
-        qd: Sequence[Sequence[float]] | np.ndarray,
+        qd: Sequence[Sequence[float]] | np.ndarray | None,
     ) -> tuple[list[int], np.ndarray, np.ndarray]:
         q_arr = np.asarray(q, dtype=np.float64)
-        qd_arr = np.asarray(qd, dtype=np.float64)
         if q_arr.ndim != 2 or q_arr.shape[1] != _NDOF:
             raise TrajectoryValidationError(f"q must be (N, {_NDOF}); got shape {q_arr.shape}")
-        if qd_arr.shape != q_arr.shape:
-            raise TrajectoryValidationError(f"qd shape {qd_arr.shape} must match q shape {q_arr.shape}")
+        qd_given = None if qd is None else np.asarray(qd, dtype=np.float64)
+        if qd_given is not None and qd_given.shape != q_arr.shape:
+            raise TrajectoryValidationError(f"qd shape {qd_given.shape} must match q shape {q_arr.shape}")
         n = q_arr.shape[0]
         if n < 2:
             raise TrajectoryValidationError(f"need ≥2 knots, got {n}")
-        if not (np.all(np.isfinite(q_arr)) and np.all(np.isfinite(qd_arr))):
-            raise TrajectoryValidationError("q/qd contain non-finite values")
+        if not np.all(np.isfinite(q_arr)):
+            raise TrajectoryValidationError("q contains non-finite values")
+        if qd_given is not None and not np.all(np.isfinite(qd_given)):
+            raise TrajectoryValidationError("qd contains non-finite values")
 
         times_arr = np.asarray(times)
         if times_arr.shape[0] != n:
@@ -1164,12 +1297,26 @@ class FanucDriver:
         if any(times_ns[i] <= times_ns[i - 1] for i in range(1, n)):
             raise TrajectoryValidationError("times must be strictly increasing (ns, relative)")
 
+        # Derived here, once, and returned — so the knots the capture gate checks, the
+        # collision hook sees and the core plays back are one array. A second derivation
+        # anywhere downstream would be a second answer able to disagree with this one.
+        qd_arr = _knot_velocities(times_ns, q_arr) if qd_given is None else qd_given
+
         vlim = self._cfg.profile.velocity_limits
         peak = np.max(np.abs(qd_arr), axis=0)
         if np.any(peak > vlim + 1e-9):
             over = np.where(peak > vlim + 1e-9)[0].tolist()
+            detail = (
+                " These velocities were DERIVED from the path (qd=None): a knot's tangent "
+                "is set by the secant slopes either side of it, and where those differ "
+                "sharply the monotone tangent runs up to 3× the smaller of them. Stretch "
+                "the offending segment's `times`, or pass a `qd` your planner shaped."
+                if qd_given is None
+                else ""
+            )
             raise TrajectoryValidationError(
-                f"|qd| exceeds velocity limit on joint(s) {over}: peak={peak.tolist()} vs {vlim.tolist()}"
+                f"|qd| exceeds velocity limit on joint(s) {over}: peak={peak.tolist()} vs "
+                f"{vlim.tolist()}.{detail}"
             )
 
         # FIRST-KNOT velocity vs the capture envelope. The core bridges the commanded

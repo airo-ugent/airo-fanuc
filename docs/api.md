@@ -44,13 +44,19 @@ Three composed parts are public, for the things the facade does not wrap:
 `driver.core` (the C++ real-time core), `driver.rmi` (the RMI client — `write_register`
 and friends), `driver.gripper` (`None` unless `enable_gripper`).
 
+`driver.policy` reads back the `DriverPolicy` it was constructed with — `policy.settle`
+(what a caller's own wait around a motion has to be sized against), `policy.gripper_protocol`
+(which protocol `driver.gripper` is executing) and `policy.config` (`itp_s`, the period the
+real-time loop targets). It is the live object, not a copy, and mutating a field afterwards
+reconfigures nothing: the C++ config was mirrored once at construction.
+
 ---
 
 ## Control
 
 | Method | Blocks | Returns | Requires STREAMING + armed |
 |---|---|---|---|
-| `move_trajectory(times, q, qd, *, settle=None, deadman_s=None, force_stop_n=None, asynchronous=False)` | no | `MotionHandle` | yes |
+| `move_trajectory(times, q, qd=None, *, settle=None, deadman_s=None, force_stop_n=None, asynchronous=False)` | no | `MotionHandle` | yes |
 | `move_j(q, *, joint_speed=None, settle=None, deadman_s=None, force_stop_n=None, asynchronous=False)` | no | `MotionHandle` | yes |
 | `servo_j(q, duration, *, qd=None, qdd=None)` | no | `MotionHandle` | yes |
 | `stop_j()` | no | `None` | **no — any state, any thread** |
@@ -67,6 +73,17 @@ nanoseconds relative to the start of the motion.
 from there, so a late Python thread costs nothing. `times` must be strictly increasing
 with at least two knots, `q`/`qd` finite and `|qd|` within the profile's velocity limits,
 and the first knot must be within the capture window of where the arm currently is.
+
+**`qd` is optional.** Omit it and the driver derives the knot velocities from `times` and
+`q`: monotone cubic tangents (the PCHIP rule), with both ends at rest. Playback is cubic
+Hermite between knots, so `qd` is not a description of the path but the tangent the core
+interpolates with — deriving it here rather than in each caller means one derivation, and
+one that matches the playback. The rest-at-both-ends part is load-bearing: knot 0 is what
+the capture splice has to reach, and it can only reach 15 °/s, so a differentiated start
+velocity is what turns a good path into a refused submission. Pass `qd` whenever your
+planner already produced it — those are the tangents it shaped the path with. A derived
+velocity is validated exactly like a supplied one, and a path whose knot spacing outruns
+the arm is refused with a message saying the velocities were derived.
 
 **`move_j`** plans the timeline for you from the current pose to `q` under the profile's
 jerk-limited envelope, then submits it through `move_trajectory`. **It requires the arm to
@@ -140,6 +157,8 @@ rejection is raised at the call or resolved on the handle.
 | Method | Blocks | Returns |
 |---|---|---|
 | `get_state()` | no | `dict` — the whole published state, see below |
+| `get_joint_configuration()` | no | measured joints (rad); `None` before the first status packet |
+| `get_joint_velocities()` | no | estimated joint velocities (rad/s); `None` before the first status packet |
 | `get_flange_pose()` | no | `[X, Y, Z, W, P, R]` in **mm and degrees**, faceplate frame; `None` before the first status packet. Whether this field follows the *active* UTOOL is unverified — see [portability](portability.md#open-questions-stated-as-such) |
 | `get_tcp_pose()` | **yes** | the same six numbers at the **tool tip**, with the controller's active UTOOL applied; `None` if the read fails |
 | `get_wrench()` | no | `[fx, fy, fz, mx, my, mz]` in N and Nm; `None` on a controller that streams no force block |
@@ -156,6 +175,30 @@ lock-free against the real-time thread; `get_state()` additionally takes the sup
 mutex for the lifecycle half, which the RT thread never holds. **This package
 does no kinematics** — there is no FK, no IK, no URDF — so these two poses are what the
 controller reports, and nothing more.
+
+`get_joint_configuration()` / `get_joint_velocities()` are `q_meas` / `qd_est` from
+`get_state()`, behind the same "no data yet" gate the pose getters apply — they answer
+`None` until a status packet has landed, rather than handing out the zero-initialised
+snapshot as if all-zero joints were a reading. They are *measured*; `q_cmd` in `get_state()`
+is what the driver last put on the wire, and the two differ by the servo's tracking lag.
+Each takes its own snapshot, so read `q_meas` and `qd_est` out of one `get_state()` when a
+position/velocity pair must be the same tick.
+
+### The pose convention
+
+Both pose getters return `[X, Y, Z, W, P, R]` in **millimetres and degrees** — wire units,
+exactly what the pendant's POSITION screen shows. **W/P/R are fixed-axis XYZ angles:**
+
+```
+R = Rz(R) · Ry(P) · Rx(W)
+```
+
+W about the world X axis, then P about world Y, then R about world Z. That is the one thing
+a consumer converting to a homogeneous matrix must get right and cannot guess from the six
+numbers. It holds for both getters: at one standstill pose the streamed faceplate and the
+controller's own `FRC_ReadCartesianPosition` reported orientation bit-identically, and the
+composition itself was resolved against that pose's 175 mm tool lever arm to better than
+0.1° — measured, `controller-notes.md` §1.10, not assumed.
 
 ### `get_state()`
 

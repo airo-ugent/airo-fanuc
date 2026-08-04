@@ -20,8 +20,10 @@ Three modeled effects, each pinned to a value measured on the physical
 controller:
 
 * **First-order servo lag** — ``q_meas`` relaxes toward ``q_cmd`` with time
-  constant ``tau_s`` (measured servo lag: 25 ms, held in
-  ``MEASURED_FACTS.tracking_lag_s``).
+  constant ``tau_s`` (``MEASURED_FACTS.tracking_lag_s``, 125 ms: the midpoint of a
+  measured 84–180 ms that moves with recent duty, not a fixed property — see
+  ``docs/controller-notes.md`` §1.9a). A single τ cannot reproduce that drift, so
+  the fake tracks a *typical* arm rather than any particular one.
 * **Deviation watchdog** — a commanded per-tick position *step* larger than
   ``deviation_watchdog_deg`` (``MEASURED_FACTS.deviation_watchdog_deg`` = 5.0 deg;
   worst measured overrun was 4.63° at 49.9°/s, so 5.0° is well-supported) trips a
@@ -128,8 +130,8 @@ class JointPlant:
         itp_s: float = ITP_S,
         initial_q_deg: np.ndarray | list[float] | None = None,
     ) -> None:
-        # τ — servo tracking lag; reads MEASURED_FACTS.tracking_lag_s
-        # (measured servo lag: 25 ms).
+        # τ — servo tracking lag; reads MEASURED_FACTS.tracking_lag_s (125 ms, the midpoint
+        # of a duty-dependent 84–180 ms).
         self.tau_s: float = float(tau_s if tau_s is not None else MEASURED_FACTS.tracking_lag_s)
         if self.tau_s <= 0.0:
             raise ValueError(f"tau_s must be > 0 (got {self.tau_s})")

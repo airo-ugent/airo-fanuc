@@ -78,9 +78,7 @@ build-dir = "build/{wheel_tag}"
 # carrying 176 files it cannot use; include wins over exclude, so the order of
 # the two lists does not matter. The headers cannot simply be dropped: without
 # them `pip install --no-binary airo-fanuc` has nothing to compile against.
-# hardware_todo.md is a pre-release checklist for this cell, not documentation for
-# someone installing the package; it would read as an inventory of what is broken.
-sdist.exclude = ["/build", "/dist", "/vendor/fanuc_driver", "/hardware_todo.md"]
+sdist.exclude = ["/build", "/dist", "/vendor/fanuc_driver"]
 sdist.include = [
     "/vendor/fanuc_driver/fanuc_libs/stream_motion/include",
     "/vendor/fanuc_driver/LICENSES",

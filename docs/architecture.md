@@ -190,7 +190,9 @@ Tracing one `move_trajectory`, because where the executed path is computed is th
 the safety argument:
 
 1. **Python validates** — knot count, strictly increasing int64 times, finiteness,
-   `|qd|` against the profile's velocity limits.
+   `|qd|` against the profile's velocity limits. With `qd=None` it derives the knot
+   velocities here first, once, and validates those; the derived array is the one every
+   step below sees, so the tangents checked are the tangents played back.
 2. **Python runs the capture gate** — it calls the *same* `generate_capture_path` the core
    will run to synthesize the splice from the current commanded state to your first knot,
    and hands those exact knots to `capture_check` if you supplied one.

@@ -42,6 +42,8 @@ driver.gripper.close_gripper_and_wait()          # the two above, in one call
 | `close_gripper(close_force=None)` | no | `None` |
 | `wait_gripper_done(timeout=None)` | yes | `{"success": bool, "message": str}`, or `None` |
 | `is_gripper_done()` | no | `bool` |
+| `last_result` | no | the latest completed command's dict, or `None` if none has completed since the last submit |
+| `protocol` | no | the `RegisterGripperProtocol` this worker executes |
 | `open_gripper_and_wait(open_state=None, timeout=None)` | yes | as `wait_gripper_done` |
 | `close_gripper_and_wait(close_force=None, timeout=None)` | yes | as `wait_gripper_done` |
 | `close()` | no | `None` |
@@ -67,6 +69,10 @@ A submitted command has exactly three outcomes, and they are deliberately three:
 
 `success: True` means *the dispatcher said it finished*. It does not mean a width was
 reached or an object is held — nothing in this mechanism can tell you that.
+
+`last_result` is the same dict read without waiting for it, and its `None` is the third
+thing again but from the other side: **no verdict yet**, because a submit clears it and the
+command has not finished. It never hands back the previous command's verdict.
 
 ### The never-hang guarantee, and its numbers
 
@@ -188,6 +194,14 @@ safe to execute at bring-up, with whatever is or is not in the gripper.** For a
 two-finger gripper, opening is the natural clean start state. If for your tool it is not,
 supply a protocol whose `default_open_modifier` names something that is.
 
+**And it is not only at bring-up.** The **cold-reconnect** recovery escalation rebuilds the
+dispatcher through that same probe, so the benign open can fire *mid-session*, after a fault, on
+a gripper that may be holding a workpiece — `FanucDriver.reconnect()` documents it as leaving the
+gripper "usable and open". Reaching it needs a fault the lighter RMI ladder cannot clear: an
+**E-stop recovery does not re-probe** (measured — it recovers via the RMI tier and the dispatcher
+is never rebuilt). But when the escalation does run, the part is released. If that is
+unacceptable for your tool, hold the workpiece mechanically or gate recovery in your own layer.
+
 ---
 
 ## 3. Writing the protocol
@@ -279,7 +293,16 @@ install both on controller flash.
 
 - **The gripper path is not covered by the validation ladder.** Every script in
   `examples/` runs with `enable_gripper=False`. Passing all eight steps says nothing
-  about your gripper; it needs its own run once the tool is mounted.
+  about your gripper; it needs its own run once the tool is mounted. For reference, ours was
+  exercised separately: bring-up with the gripper enabled took 14.9 s against ~11 s without
+  (the GRPRUN fork plus the probe), and every bucket completed in **0.32–1.52 s** against a 5 s
+  `dispatch_timeout_s` — roughly 3× headroom. A gripper command issued while recovery is in
+  flight is refused immediately with `{'success': False, 'message': 'RMI recovery in progress
+  — refusing gripper command (retry once recovery has completed)'}` rather than queued or hung.
+- **`dispatch_timeout_s` itself is untested on hardware.** A dispatcher killed while the driver
+  stays healthy should fail the command at that bound. The one attempt aborted the
+  `STREAM_MOTN` program along with the dispatcher, so the fail-fast gate answered first and the
+  timeout never ran. Abort the `GRIPDISP` task specifically if you want to exercise it.
 - **`success: True` is the dispatcher's word.** No independent confirmation exists.
 - **One command's result at a time.** A second submit replaces the first's result.
 - **Bring-up on a cold controller may need `connect_retries > 1`** when the gripper is

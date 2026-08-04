@@ -77,7 +77,7 @@ CRX-10iA/L may want them revisited:
 | `RX_SILENCE_*`, `ANTIFLAP_DWELL_MS`, `QD_END_BLEND_MIN_MS` | ms | the RX-silence ladder and the fault-flap dwell |
 | `SUPERVISOR_LOST_S` | 3 s | how long the Python heartbeat may lapse |
 | `deviation_watchdog_deg` | 5° | chosen above the worst overrun measured on our arm, not measured on yours |
-| `tracking_lag_s` | 25 ms | the servo lag measured on our controller |
+| `tracking_lag_s` | 125 ms | the midpoint of a **duty-dependent 84–180 ms** measured on our controller — it rises with recent motion and recovers with idleness ([§1.9a](controller-notes.md)). Gates nothing; it sets the fake's plant and a printed comparison |
 
 The first two are the ones you will meet first, because they are what refuse a submission.
 Both are single-sourced: changing the constant moves the refusal, the error message and the
@@ -128,10 +128,20 @@ the velocities matching exactly.
 The profile records why the two are not directly comparable rather than declaring one wrong:
 those are *planning* limits, a profile a planner shapes trajectories to, while these are
 *clamps* — the ceiling above which the core refuses to pass a command through. A looser
-clamp than a planning limit is the expected relationship. Whether this particular gap is the
-right size is unresolved, and the way to resolve it is to measure your controller, not to
-pick one of the two numbers. `examples/sine_wave.py` is where you would do it: raise the
-commanded speed and watch for slew clips, vibration, or a servo alarm.
+clamp than a planning limit is the expected relationship.
+
+**On our controller the gap has been measured, for one joint.** A sweep on J6 up to the
+profile's own clamp — 360 °/s² acceleration at 1080 °/s³ jerk, 121 °/s peak — ran with **zero
+slew clips and no contact stop**, so FANUC's 57 °/s² figure for J4–J6 sits 6.3× below what the
+controller demonstrably executes. It is a planning target, not a tolerance. The full sweep is
+in [controller-notes §1.11](controller-notes.md).
+
+That does **not** settle it for the arm, let alone for yours. J6 is wrist roll, the
+lowest-inertia joint; **J1/J2 carry the arm's mass and have the widest gap to the published
+figures (~10×), and were not swept.** The way to resolve it on your controller is still to
+measure rather than to pick one of the two numbers. `examples/sine_wave.py` is where you would
+do it — raise **amplitude at a long period**, since peak acceleration and jerk go as ω² and ω³,
+and watch for slew clips, vibration, or a servo alarm.
 
 One related caveat: **a planner feeding this driver should shape trajectories with a softer
 jerk than the clamp** — roughly 3× acceleration rather than 8×. A collaborative-stop monitor
@@ -154,8 +164,14 @@ into anything that consumes RMI joints.
 This affects only the RMI-sourced receive and calibration path, not Stream Motion motion.
 While the flag is off, `FanucReceiveInterface.capture_calibration_sample()` **hard-rejects**
 RMI joints rather than folding a possibly-wrong angle into a calibration dataset.
-`examples/verify_j2j3_coupling.py` settles it for your controller against the pendant's
-displayed angles; then set the flag.
+`examples/verify_j2j3_coupling.py` settles it for your controller; then set the flag.
+
+**The pendant can confirm it directly, and FANUC names the distinction.** Its Position display
+in JOINT coordinates carries a `J3` field *and* one labelled **`J2/J3 interaction`**. On our
+controller the plain `J3` field matches the RMI plane and `J2/J3 interaction` matches the Stream
+Motion value exactly — so the conversion is not a workaround for a quirk, it moves between two
+representations the controller itself shows side by side. Read both fields at a standstill pose
+and compare against what the two planes report.
 
 ---
 

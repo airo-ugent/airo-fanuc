@@ -290,6 +290,37 @@ def test_a_foreign_protocol_drives_its_own_registers() -> None:
     assert REG_CMD not in rmi.registers, "wrote a register the shipped preset owns"
 
 
+def test_the_worker_says_which_protocol_it_is_executing() -> None:
+    # A wrapper that assumes particular buckets — a width, a force — can check that
+    # assumption instead of trusting it; the object was reachable only as _proto.
+    with GripperWorker(FakeGripperRmi(), protocol=_FOREIGN) as worker:
+        assert worker.protocol is _FOREIGN
+
+
+def test_last_result_reads_the_latest_verdict_without_waiting() -> None:
+    class OnceThenSilent(FakeGripperRmi):
+        """Answers the first command and then plays dead, so ONE worker sees both."""
+
+        def read_register(self, register_number: int) -> float:
+            value = super().read_register(register_number)
+            self._never_clears = True
+            return value
+
+    with GripperWorker(OnceThenSilent(clears_after=1), dispatch_timeout_s=0.3) as worker:
+        assert worker.last_result is None, "no command has run yet"
+        first = worker.open_gripper_and_wait(timeout=2.0)
+        assert first is not None and first["success"] is True
+        assert worker.last_result == first
+
+        # A submit clears it. The second command cannot have finished — it is still in
+        # its 0.1 s settle — so "no verdict yet" is the only honest answer, and handing
+        # back the PREVIOUS command's is the one thing a non-blocking read must not do.
+        worker.close_gripper()
+        assert worker.last_result is None
+        assert worker.wait_gripper_done(timeout=3.0) is not None
+        assert worker.last_result is not None and worker.last_result["success"] is False
+
+
 def test_a_foreign_protocol_validates_against_its_own_modifiers() -> None:
     rmi = FakeGripperRmi(clears_after=1, trigger_reg=_FOREIGN.trigger_reg)
     with GripperWorker(rmi, protocol=_FOREIGN, dispatch_timeout_s=1.0) as worker:

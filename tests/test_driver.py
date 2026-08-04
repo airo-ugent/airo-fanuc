@@ -40,6 +40,7 @@ from airo_fanuc import (
     TrajectoryValidationError,
 )
 from airo_fanuc import controller_facts as cf
+from airo_fanuc.driver import _knot_velocities
 from airo_fanuc.exceptions import RmiSessionDown
 from airo_fanuc.ownership import OwnershipLock
 from airo_fanuc.republisher import (
@@ -259,6 +260,79 @@ def test_first_knot_velocity_beyond_the_capture_envelope_is_a_typed_error(rig: D
     # Just inside the envelope is accepted, and actually runs — so the ceiling is the
     # capture rate itself and not some smaller fudge.
     assert submit(inside) == MotionResult.DONE
+
+
+# --------------------------------------------------------------------------- #
+# qd=None — the driver derives the knot velocities
+# --------------------------------------------------------------------------- #
+
+
+def test_a_positions_only_trajectory_runs(rig: DriverRig) -> None:
+    """``qd=None`` is a path a planner that emits no velocities can submit as-is."""
+    d = rig.driver
+    start = _cur_q0(d)
+    times = [0, 600_000_000, 1_200_000_000]
+    q = [[start + s, 0, 0, 0, 0, 0] for s in (0.0, 0.2, 0.4)]
+    assert d.move_trajectory(times, q).wait(timeout=5.0) == MotionResult.DONE
+    assert abs(d.get_state()["q_meas"][0] - (start + 0.4)) < 0.02
+
+
+def test_derived_knot_velocities_are_monotone_tangents_at_rest_at_both_ends() -> None:
+    """The tangent rule itself: PCHIP interior, zero at an extremum, zero at the ends.
+
+    The ends matter beyond taste. Knot 0 is what the capture splice has to reach, and
+    it can only reach CAPTURE_RATE_DEG_S — so a derivation that put a one-sided
+    difference there would refuse paths for a velocity the caller never asked for.
+    """
+    times = [0, 500_000_000, 1_000_000_000, 1_300_000_000]
+    q = np.zeros((4, 6))
+    q[:, 0] = [0.0, 0.1, 0.2, 0.15]  # a straight run, then an ASYMMETRIC local maximum
+    qd = _knot_velocities(times, q)
+
+    assert qd.shape == q.shape
+    assert not qd[0].any() and not qd[-1].any(), "both ends must be at rest"
+    # Knot 1 sits mid-run: both secants are 0.2 rad/s, so the tangent is too.
+    assert float(qd[1, 0]) == pytest.approx(0.2)
+    # Knot 2 is a local maximum. A centred difference would put +0.017 rad/s here and
+    # send the command past the knot and back; the monotone rule pins it at rest.
+    assert float(qd[2, 0]) == 0.0
+    assert not qd[:, 1:].any(), "a joint that does not move gets no velocity"
+
+    # Two knots have no interior tangent to derive, and both of them are ends.
+    assert not _knot_velocities([0, 1_000_000_000], np.array([[0.0] * 6, [0.3] + [0.0] * 5])).any()
+
+
+def test_supplied_velocities_are_never_replaced_by_the_derivation(rig: DriverRig) -> None:
+    """Derivation runs only for ``qd=None``, and its output is what gets submitted.
+
+    Reaching into the validator rather than the public call because this is about the
+    array identity: the same qd has to reach the capture gate, the collision hook and
+    the core, or the checked path stops being the executed one.
+    """
+    d = rig.driver
+    times = [0, 600_000_000, 1_200_000_000]
+    q = [[s, 0, 0, 0, 0, 0] for s in (0.0, 0.2, 0.4)]
+
+    _, _, kept = d._validate_trajectory(times, q, [[0.0] * 6] * 3)
+    assert not kept.any(), "a caller's own velocities must survive validation verbatim"
+
+    _, _, made = d._validate_trajectory(times, q, None)
+    assert float(made[1, 0]) > 0.0
+    assert not made[0].any() and not made[-1].any()
+
+
+def test_a_path_the_timing_outruns_says_the_velocities_were_derived(rig: DriverRig) -> None:
+    """An infeasible positions-only path is refused as one, not silently clamped."""
+    d = rig.driver
+    start = _cur_q0(d)
+    # Knots spaced so J1 must average 20% over its own velocity limit to make them: the
+    # positions are legal, the timing is not, so only the derivation can be refusing it.
+    seg_s = 0.1
+    step = float(TEST_PROFILE.velocity_limits[0]) * seg_s * 1.2
+    times = [0, int(seg_s * 1e9), int(2 * seg_s * 1e9)]
+    q = [[start + i * step, 0, 0, 0, 0, 0] for i in range(3)]
+    with pytest.raises(TrajectoryValidationError, match="DERIVED"):
+        d.move_trajectory(times, q)
 
 
 # --------------------------------------------------------------------------- #
@@ -687,6 +761,66 @@ def test_get_flange_pose_is_none_before_the_first_status_packet() -> None:
     )
     pose = FanucDriver.get_flange_pose(after_rx)  # type: ignore[arg-type]
     assert pose is not None and pose.shape == (6,)
+
+
+def test_joint_getters_front_the_measured_stream(rig: DriverRig) -> None:
+    # q_meas / qd_est behind the pose getters' contract, so a consumer reading joints
+    # does not re-derive the rx_mono_ns rule (or forget to).
+    d = rig.driver
+    times, q, qd = _traj_from(d, 0.4, duration_ns=1_500_000_000)
+    handle = d.move_trajectory(times, q, qd)
+
+    # Mid-flight the velocity getter has to show the moving joint — a getter wired to
+    # the wrong key, or to a commanded default, reads zero all the way through.
+    peak = 0.0
+    deadline = time.monotonic() + 4.0
+    while not handle.done() and time.monotonic() < deadline:
+        v = d.get_joint_velocities()
+        assert v is not None and v.shape == (6,)
+        peak = max(peak, abs(float(v[0])))
+        time.sleep(0.005)
+    assert handle.wait(timeout=4.0) == MotionResult.DONE
+    assert peak > math.radians(1.0), "J1 was moving; the velocity getter never said so"
+
+    got = d.get_joint_configuration()
+    assert got is not None and got.shape == (6,)
+    assert float(got[0]) == pytest.approx(0.4, abs=0.02)  # measured, and it moved
+    assert list(got) == pytest.approx(d.get_state()["q_meas"], abs=1e-3)
+    # And at rest the two disagree the way position and velocity must: J1 is 0.4 rad
+    # from where it started and moving at none of it.
+    assert d.wait_until_steady(2.0)
+    rest = d.get_joint_velocities()
+    assert rest is not None and max(abs(float(v)) for v in rest) < math.radians(2.0)
+
+
+def test_joint_getters_are_none_before_the_first_status_packet() -> None:
+    # Same reason as the pose getter: the snapshot's joint block starts zero-initialised
+    # and all-zero joints ARE a pose, so only the ingest stamp can tell "no data" from
+    # "at the zero pose". No core at all is the same answer.
+    empty = SimpleNamespace(core=None)
+    assert FanucDriver.get_joint_configuration(empty) is None  # type: ignore[arg-type]
+    assert FanucDriver.get_joint_velocities(empty) is None  # type: ignore[arg-type]
+
+    snap = {"rx_mono_ns": 0, "q_meas": [0.0] * 6, "qd_est": [0.0] * 6}
+    never_rx = SimpleNamespace(core=SimpleNamespace(get_snapshot=lambda: snap))
+    assert FanucDriver.get_joint_configuration(never_rx) is None  # type: ignore[arg-type]
+    assert FanucDriver.get_joint_velocities(never_rx) is None  # type: ignore[arg-type]
+
+    # One RX and the same zeros become the controller's answer rather than no answer.
+    seen = {"rx_mono_ns": 1, "q_meas": [0.0] * 6, "qd_est": [0.1] * 6}
+    after_rx = SimpleNamespace(core=SimpleNamespace(get_snapshot=lambda: seen))
+    q = FanucDriver.get_joint_configuration(after_rx)  # type: ignore[arg-type]
+    assert q is not None and q.shape == (6,) and not q.any()
+
+
+def test_policy_is_readable_off_the_driver(rig: DriverRig) -> None:
+    # The settle window, the gripper protocol and the interpolation period are all
+    # things a caller has to size its own behaviour against, and the driver was the
+    # only object holding them.
+    policy = rig.driver.policy
+    assert policy.settle.timeout_s > 0.0
+    assert policy.gripper_protocol is rig.driver.gripper.protocol  # type: ignore[union-attr]
+    assert policy.config.itp_s == pytest.approx(cf.ITP_S)
 
 
 def test_get_tcp_pose_returns_the_controllers_tool_tip_not_the_faceplate(rig: DriverRig) -> None:

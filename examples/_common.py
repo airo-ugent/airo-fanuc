@@ -332,8 +332,10 @@ def watch(
     ``q_cmd`` is what the driver put on the wire; ``q_meas`` is what the controller
     reported. Their difference is dominated by the servo lag, which is a property of
     the controller and not an error: at commanded speed ``v`` it settles around
-    ``v · tracking_lag_s`` (25 ms measured — docs/controller-notes.md §1.9). A lag far
-    above that is the arm not following the commanded path.
+    ``v · tracking_lag_s``. That offset is not a constant on this controller — 84-180 ms
+    measured, moving with recent duty (docs/controller-notes.md §1.9a) — so treat the
+    printed comparison as a guide. A lag far outside that band is the arm not following
+    the commanded path.
 
     ``stop_after_s`` calls :meth:`FanucDriver.stop_j` that many seconds in — the
     universal preempt — and measures how long the arm takes to reach standstill and
@@ -453,17 +455,19 @@ def report_motion(w: Watch, *, expect_result: MotionResult) -> bool:
         f"accounts for {w.max_speed_deg_s * lag_s:.3f} deg at this peak speed"
     )
     if w.max_speed_deg_s > 0.5:
-        # Lag divided by speed is the offset expressed as a time. Reported because it is
-        # comparable across runs at different speeds, unlike the raw degrees: if it stays
-        # put as the speed changes, the offset is a delay rather than measurement noise.
-        # NB this is command-to-reported-measurement, so it includes the status-packet
-        # pipeline as well as the servo — it is not the cross-correlation lag of §1.9.
+        # Lag divided by speed is the offset expressed as a time, which is comparable across
+        # speeds where the raw degrees are not. Two things it is not: it is
+        # command-to-reported-measurement, so it carries the status-packet pipeline as well as
+        # the servo (not the cross-correlation lag of §1.9); and it is not a constant of the
+        # controller — measured at 84-180 ms on one arm, rising about one tick per successive
+        # motion and recovering with idleness, so two runs of the same motion differ.
+        # This peak is also sampled at the watch interval, so it under-reads the true peak.
         implied_ms = 1000.0 * w.max_lag_deg / w.max_speed_deg_s
         print(f"                  ⇒ implied offset {implied_ms:.0f} ms at {w.max_speed_deg_s:.1f} deg/s")
         if implied_ms > 2000.0 * lag_s:
             print(
-                f"                  NOTE: {implied_ms / (1000.0 * lag_s):.1f}x the recorded lag. "
-                f"Open question — docs/controller-notes.md §1.9a"
+                f"                  NOTE: {implied_ms / (1000.0 * lag_s):.1f}x the recorded lag, "
+                f"outside the 84-180 ms measured on this arm — docs/controller-notes.md §1.9a"
             )
     print(
         f"  slew clips   : {w.slew_clips}"

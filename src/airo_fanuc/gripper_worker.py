@@ -203,6 +203,30 @@ class GripperWorker:
         """True iff the latest submitted command has completed."""
         return self._done.is_set()
 
+    @property
+    def last_result(self) -> GripperResult | None:
+        """The latest completed command's result, or ``None`` if none has completed
+        since the last submit. Never blocks.
+
+        The same dict :meth:`wait_gripper_done` returns, read without waiting for it —
+        ``wait_gripper_done(timeout=0.0)`` gets there too, but reads like a blocking
+        call given a degenerate timeout. Note the two ``None``\\ s differ: this one
+        means "no verdict yet", that one means "I stopped waiting".
+        """
+        with self._result_lock:
+            return None if self._result is None else dict(self._result)
+
+    @property
+    def protocol(self) -> RegisterGripperProtocol:
+        """The :class:`~airo_fanuc.gripper.RegisterGripperProtocol` this worker
+        executes — which registers it writes and which modifier values they accept.
+
+        A caller wrapping the worker in something that assumes particular buckets (a
+        width in millimetres, a force in newtons) can check that assumption against
+        the protocol instead of trusting it.
+        """
+        return self._proto
+
     # ------------------------------------------------------------------
     # Blocking convenience API
     # ------------------------------------------------------------------

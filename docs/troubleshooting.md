@@ -79,8 +79,13 @@ means the plan and the profile disagree.
 
 **`q_meas` lags `q_cmd`** — expected, and mostly the controller's servo lag rather than
 error. Compare it as an implied time offset (divide the position gap by the commanded speed)
-so it is comparable across speeds. On our arm this comes out several times larger than the
-recorded `tracking_lag_s`, which is an open question and not a fault.
+so it is comparable across speeds. On our arm that offset is **84–180 ms and moves with recent
+duty** — it climbs about one 8 ms tick per successive motion and falls back after a few minutes
+idle, so two runs of the same motion legitimately differ (`controller-notes.md` §1.9a). Not a
+fault, and nothing in the driver is gated on it. Two cautions if you measure it: the figure the
+examples print samples every 250 ms and so under-reads the true peak, and below ~10 °/s its
+noise floor dominates — four runs of one identical 3.7 °/s command spanned 71–102 ms. For a
+number you can rely on, cross-correlate per-tick `q_cmd` against `q_meas` instead.
 
 **A `move_j` peaks well below the speed you asked for** — the move is too short to reach it.
 Accel and decel ramps need travel, and at a high `joint_speed` those ramps alone can exceed

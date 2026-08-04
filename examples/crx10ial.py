@@ -63,10 +63,11 @@ VELOCITY_LIMITS_DEG_S = [120.0, 120.0, 180.0, 180.0, 180.0, 180.0]
 # command through — so they are deliberately looser, to avoid silently mangling a
 # legitimate planned motion.
 #
-# Whether that gap is the right size is an OPEN QUESTION: what this controller
-# actually tolerates has not been measured, and if a measurement lands near FANUC's
-# planning figures then these clamps are too permissive to be a useful net. Resolve it
-# with hardware measurement, not by picking one of the two numbers.
+# Measured on J6, to the clamp: 360 °/s² at 1080 °/s³ jerk and 121 °/s peak ran with zero
+# slew clips and no contact stop, so FANUC's planning figure sits 6.3× below what this
+# controller executes and the looser clamp is not too permissive to be a net
+# (docs/controller-notes.md §1.11). J1/J2 carry the arm's mass, have the widest gap to the
+# published numbers, and are NOT measured — do not read the J6 result as the arm's.
 # ---------------------------------------------------------------------------
 ACCELERATION_LIMITS_DEG_S2 = [240.0, 240.0, 360.0, 360.0, 360.0, 360.0]
 

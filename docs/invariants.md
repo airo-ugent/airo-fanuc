@@ -100,6 +100,14 @@ them as binding: code that regresses one of these is a bug, not a refactor.
   ticks, reaching a whole tick's step in the limit. The contact-stop monitor infers
   contact from motor disturbance torque, which is what makes a one-tick position step a
   safety concern and not merely an accuracy one.
+  Verified on hardware at the worst case the gate allows — a plain sine bridging rest to
+  **15.0 °/s**, the splice's own ceiling. Per-tick, the splice reached 15.0000 °/s on its last
+  CAPTURE tick and handed over at 14.9994, with commanded position stepping a uniform
+  0.1200°/tick straight through the boundary; tick-to-tick commanded acceleration at the seam was
+  1.3 °/s² against a run median of 8.6, i.e. the seam is *smoother* than the trajectory's own
+  typical tick. No localised residue in the lag-corrected measured trace either (0.7638° at the
+  seam against 0.7669° p99 elsewhere), with the detector shown able to resolve 0.03° by injecting
+  a synthetic notch. Also clean at 20 and 60 °/s.
 - **The capture gate is direction-free and has no gap floor.** It tests whether the
   endpoint window can absorb the velocity change at the brake-class clamps. A joint
   whose commanded velocity already matches the knot's asks nothing of the geometry, so a
@@ -216,8 +224,11 @@ them as binding: code that regresses one of these is a bug, not a refactor.
   one ITP, on the same gate path as an e-stop. That monitor is measured (71–121 ms,
   overrun 2.10° @ 15.3 °/s / 4.63° @ 49.9 °/s — `controller-notes.md` §1.2), whereas a
   host-side guard has to model the command→report offset to tell divergence from
-  ordinary lag, and that offset is itself unsettled (§1.9a). Anything reintroduced here
-  must be lag-aligned against a *measured* offset, not against `tracking_lag_s`.
+  ordinary lag, and that offset is **not a constant**: measured at 84–180 ms on the same
+  motion, moving with recent duty (§1.9a). Anything reintroduced here must be lag-aligned
+  against an offset measured *in the duty state it will run in*, not against
+  `tracking_lag_s` — which is the midpoint of that range and so wrong by up to ~1.5× in
+  either direction at any given moment.
 
 ## Backend / process hygiene
 

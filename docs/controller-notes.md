@@ -9,13 +9,16 @@
 > Option **S636** (External Control Package = J519 Stream Motion + R912 RMI).
 >
 > **Everything below was measured on the physical controller** unless a row says
-> otherwise. One question is still unsettled and keeps its safe default: the **e-stop
-> continuation path** (§1.3 — inconclusive, the status stream was down). The **J2/J3
-> representation** (§1.5) is measured including the form of the offset, and its
-> conversion is written but off by default, because whether a controller serves that
-> representation is a per-installation configuration. Open and not yet resolved: the
-> **command-to-report offset** vs `tracking_lag_s` (§1.9a) and the
-> **acceleration/jerk clamps** (see `examples/crx10ial.py`).
+> otherwise. Three questions this file used to leave open are now measured: the **e-stop
+> continuation path** (§1.3 — the Stream Motion session survives an E-stop and resumes
+> without a re-handshake), the **command-to-report offset** vs `tracking_lag_s` (§1.9a —
+> duty-dependent over 84–180 ms, which is what made two sessions appear to disagree), and
+> the **acceleration/jerk clamps** (§1.11 — the controller executes the profile's full
+> derived clamp, measured on J6 only). The **J2/J3 representation** (§1.5) is measured
+> including the form of the offset, and its conversion is written but off by default,
+> because whether a controller serves that representation is a per-installation
+> configuration. Still open: whether the streamed Cartesian block follows the active UTOOL
+> (§1.10), and the clamps on **J1/J2**, which carry the arm's mass and were not swept.
 
 ---
 
@@ -113,13 +116,36 @@ cross-check against the J519 manual (§3).
 
 | Fact | Value |
 |------|-------|
-| SM session survives e-stop (status keeps flowing) | **Not proven** — status stream never came up during the measurement (STREAM_MOTN aborted during an earlier HOST-380 recovery); could not test path A |
-| Sequence number resets on e-stop | N/A (no live stream at the time) |
-| `motion_possible` re-asserts after release w/o new StartPacket | **Not observed** (stream down) |
-| Path-B full re-handshake time (s) | ~4.82 s client start-sequence (of a non-streaming session; not a clean timing) |
+| SM session survives e-stop (status keeps flowing) | **YES, measured.** `rx_age_ms` held 0.17–0.52 ms across the whole latched period, worst 8.3 ms (one tick) over the entire drill |
+| Sequence numbers across the fault | **No gaps** — `rx_seq_gaps=0` through fault, release and recovery |
+| `motion_possible` re-asserts after release w/o a new StartPacket | **YES.** Recovery ran `faulted → recovering → streaming` in **1.25 s**, never entering `rmi_connecting` / `tp_launch` / `sm_handshake`; bring-up in the same run took ~11 s, so no handshake fits in the gap |
+| What recovery actually does | The RMI ladder re-**calls** the STREAM_MOTN TP program (`FRC_Reset` → best-effort Continue → reseed → `FRC_Call`) and then `core.recover()`. The **UDP session is never torn down** — the controller keeps streaming status regardless of the TP program's state, which is why the feed survives |
 | Alarm strings on TP e-stop (SRVO-001/002 exact text) | **SRVO-002 (Teach Pendant E-stop) + SRVO-289** (RMI FRC_ReadError, independent of SM) |
 | `FRC_Continue` reply | **ErrorID 0 (OK)** — accepted (not 2556938) |
-| **Chosen path** | **B (full SM re-handshake)** — the always-safe default; path A neither proven nor refuted. Re-test A when a live `motion_possible` session is available. |
+| **Chosen path** | **A works** — the session resumes without a re-handshake, and that is what the ladder does. The recovery refuses to start while the E-stop is still held ("cannot recover — e-stop is held; release it first"), so it waits for the operator by construction. |
+
+**How the fault arrives matters, and it is not one event.** Sampling at 10 Hz through a deliberate
+E-stop on a moving arm, the flags land in **three stages over ~500 ms**:
+
+| t (s) | fault | `in_error` | `motion_possible` | `e_stopped` | mode |
+|---|---|---|---|---|---|
+| 12.52 | NONE | False | True | False | TRAJECTORY |
+| **12.63** | **IN_ERROR** | **True** | **True** | **False** | SAFE_FOLLOW |
+| 12.93 | MOTION_NOT_POSSIBLE | True | **False** | False | SAFE_FOLLOW |
+| 13.13 | E_STOP | True | False | **True** | SAFE_FOLLOW |
+
+This is the measurement the ARM gate's wording rests on: the E-stop first appears as `in_error`
+with `e_stopped=False` and `motion_possible=True`. **A classifier watching only `e_stopped` would be
+blind for 500 ms while the arm is already decelerating.** The driver catches it at the first stage,
+110 ms after the last healthy tick. `motion_inhibited` went True on that same first faulted sample,
+`safety_scale` held 1.00 throughout, `operator_required` stayed False, and the operator hint read
+"Release the E-stop; then press RESET on the TP if the fault persists."
+
+**Motion stays inhibited after a *successful* recovery.** With `recovery_count=1`,
+`lifecycle_state=streaming`, `mode=HOLD`, `fault=NONE` and `in_error=False`, `motion_inhibited` was
+still True and a `move_j` was refused with `RobotFaultedError: motion_inhibited — call arm() to
+permit motion after a fault/e-stop recovery`. That is the case where breaking the gate would be
+silent.
 
 ### 1.4 RMI single-session + ownership
 
@@ -141,7 +167,8 @@ Mitigation: flock ownership + operator-facing "kill <PID>" hint + documented wor
 | Verdict: identical / RMI applies `J3 += J2` / other | **MEASURED — not identical: RMI reports J3 one J2 BELOW the Stream Motion value.** `RMI J3 = SM J3 − J2`, so the RMI→stream conversion is `J3 += J2`. |
 | Conversion formula | `q_stream[2] = q_rmi[2] + q_rmi[1]` |
 | ε achieved (deg) | **0.0001** — the RMI wire quantization itself (§1.7). Every other joint agreed to 0.000. |
-| Form of the offset: tracks J2 / fixed | **MEASURED — tracks J2.** Two standstill poses in one session, 25° apart in J2: residual **0.0000°** against "tracks J2", **24.9970°** against "fixed offset". |
+| Form of the offset: tracks J2 / fixed | **MEASURED — tracks J2.** Two standstill poses in one session, 25° apart in J2: residual **0.0000°** against "tracks J2", **24.9970°** against "fixed offset". Reproduced in a later session, again 0.0000° against 24.9970°. |
+| Which plane does the **pendant** show? | **Both, and FANUC names the distinction.** The Position display in JOINT coordinates carries a `J3` field *and* one labelled **`J2/J3 interaction`**. At one pose: pendant `J3` = 1.843 against RMI's 1.849, and pendant `J2/J3 interaction` = −21.734 against Stream Motion's −21.734, exact to three decimals. |
 
 A two-plane read at one pose is available from inside a `FanucDriver` session: the driver
 holds an initialized RMI session *and* the SM stream at once, so both planes can be read
@@ -232,8 +259,9 @@ and/or a force option — confirm with FANUC.
 
 | Fact | Value |
 |------|-------|
-| Measured tracking lag (ms) | **25.0 ms** (xcorr; a later verify run gave 20 ms → ~20–25 ms) |
-| `MEASURED_FACTS.tracking_lag_s` | **0.025** |
+| Measured command-to-report offset | **84–180 ms**, moving with recent duty — §1.9a has the series |
+| `MEASURED_FACTS.tracking_lag_s` | **0.125** — the midpoint of that range: typical, not exact |
+| An earlier 20–25 ms by the same xcorr method | **does not reproduce.** Per-tick xcorr on this controller does not go below ~84 ms in any duty state measured, and the ratio metric agrees with it to within 8 ms. Treat the low figure as superseded rather than as a second data point. |
 | Amplitude ratio | **1.000** (commanded 10.000° pk-pk, measured 9.997°) |
 | Post-stop settle: overshoot / time-to-rest | **NOT captured** — the lag measurement samples during motion only (~1 post-end sample). During-motion tracking is clean. Settle defaults (0.5° / 2 °/s / 2 s) stand pending a dedicated move-then-observe capture. |
 
@@ -242,10 +270,12 @@ and/or a force option — confirm with FANUC.
 mirrored into `DriverConfig`, so a wrong value costs accuracy in the fake and in a printed
 comparison, not safety.
 
-#### 1.9a OPEN: the observed command-to-report offset is 3–6× `tracking_lag_s`
+#### 1.9a RESOLVED: the command-to-report offset is duty-dependent, 84–180 ms
 
-Every motion run, in two separate sessions, showed a steady `|q_cmd − q_meas|` far above what 25 ms
-predicts. Dividing by the concurrent measured speed expresses it as a time, comparable across runs:
+**The offset is not a constant of this controller.** It rises with recent motion and falls back with
+idleness, over slightly more than a 2× range — which is why two sessions measuring the same quantity
+disagreed without either being wrong. Dividing the steady `|q_cmd − q_meas|` by the concurrent
+measured speed expresses it as a time, comparable across runs:
 
 | Run | Peak speed | Peak \|q_cmd − q_meas\| | Implied offset |
 |---|---|---|---|
@@ -270,12 +300,38 @@ A later session, on the same controller and arm, measured the same metric **high
 | ±10° sine, 6 s period | 10.55 °/s | 130 ms |
 | ±10° sine, 6 s period (repeat) | 10.95 °/s | 127 ms |
 
-**121–139 ms across six runs.** Two things to be careful about here. The values rise with speed
-within this table, but the spread *at one speed* in the table above (82–104 ms at ~3.7 °/s) is
-larger than the rise, so these data do not establish a speed dependence — a fixed delay remains
-consistent with both tables taken alone. What they do show is that **the two sessions disagree with
-each other**, 82–104 vs 121–139 ms, which no fixed property of the servo explains and which is now
-part of what needs resolving.
+**121–139 ms across six runs**, against 82–104 in the table above. The two sessions disagree, and no
+fixed property of the servo explains it.
+
+**What explains it is duty.** A third session measured the *same* motion — J6 raised cosine, 20 °/s,
+two cycles, 20 ms knots — repeatedly, by cross-correlating per-tick logged `q_cmd` against `q_meas`
+(the method §1.9 uses, not the ratio above):
+
+| Preceding activity | xcorr offset | ticks |
+|---|---|---|
+| After a bring-up ladder | 123.6 ms | 15 |
+| After an acceleration sweep and servo streaming | 163.9 ms | 20 |
+| Immediately after a 12 s continuous move | **179.9 ms** | 22 |
+| After ~4 minutes with the joints idle | **83.9 ms** | 10 |
+| Immediately after the previous run | 91.9 ms | 11 |
+| Immediately after that one | 99.9 ms | 12 |
+
+Each successive run adds close to exactly **one interpolation period**, and rest returns it to the
+floor. The steps are integer ticks (10 → 11 → 12 back to back; 15, 20, 22 earlier), which points at
+pipeline buffering accumulating one ITP per motion session and draining when idle rather than at
+motor heating — heating would drift continuously. The mechanism is not observable from outside; the
+behaviour is.
+
+Excluded as causes, each by measurement: **host load** (load average 0.10 on 28 cores, `tx interval`
+p50 8.000 ms and `skipped_tick_windows` 0 in every run), **packet staleness** (`rx_age_ms` p50
+0.32 ms early against 0.33 ms late — packets arrive equally fresh, so it is the *content* that lags,
+not the delivery), **pose and gravity** (J6 at −1.758° measured 179.9 ms, and after rest at the same
+pose 83.9 ms), and **controller alarms** (`alarms=['No Error']` throughout).
+
+Two consequences. Session 1's 82 ms is a rested arm and session 2's 121–139 ms a worked one, so both
+tables are correct as measurements of different duty states. And **speed dependence is not
+established**: the 123.6 → 131.6 ms step across a 3× speed change came from two consecutive runs,
+which is exactly the one-tick-per-run pattern.
 
 **An independent corroboration of the second session's figure**, from a completely different
 observable. `stop_j()` fired at 10.43 °/s took 0.507 s and 3.367° to reach standstill. The brake is
@@ -287,23 +343,29 @@ shed 16 °/s, more than the 10.43 on hand, so the accel ramp is purely triangula
 offset's magnitude than the ratio metric alone, and it also confirms the brake profile is running
 at the `STOP_LIMIT_SCALE_J` clamps it is supposed to.
 
+Reproduced in a later session with the offset measured that day: `stop_j()` fired at 10.62 °/s took
+**0.525 s over 3.449°**, against `2√(v/j)` = 0.384 s plus a 128 ms offset = 0.512 s, and 2.039° of
+commanded travel plus 1.359° of standing lag = 3.398° predicted. **2.5% on time, 1.5% on distance.**
+
 The metric is an *instantaneous* offset between the setpoint for the current tick and the most recent
 status packet, so unlike the cross-correlation figure above it also contains the command→report
 pipeline (command buffering, the controller's own status generation, up to one ITP of packet age).
 
-**But the pipeline does not account for it.** The same metric against the FakeCRX, whose plant is a
-first-order lag with τ set to exactly `MEASURED_FACTS.tracking_lag_s` = 25 ms, reads **29 ms** — so
-this measurement over-reads a known 25 ms by only ~4 ms. Add the wire (ping RTT to this controller is
-1–6 ms) and the pipeline plausibly explains ~30 ms of it, leaving **50–110 ms unaccounted for**
-depending on which session. That is the part worth resolving, and it wants the xcorr method on
-logged series rather than this ratio.
+**The ratio metric is roughly honest about a known offset, but has a low-speed noise floor.** Against
+the FakeCRX, whose plant is a first-order lag with τ set to `MEASURED_FACTS.tracking_lag_s`, it
+over-reads that τ by only ~4 ms, and an independent per-tick cross-correlation of the same fake read
+29.9 ms against a τ of 25 ms — so the method is sound. What it cannot do is separate the servo from
+the status pipeline, and its floor dominates when the deviation is small: four measurements of one
+identical 3.7 °/s command gave 71 / 86 / 102 / 87 ms, where the same method at 12 °/s repeated to
+within 1 ms. It also samples every 250 ms and so misses the true peak — for one motion it printed
+118 ms where a per-tick trace of the same run gave 131 ms. **Below ~10 °/s, prefer xcorr.**
 
-**What it costs.** Nothing in the driver is gated on this number (see §1.9 **Uses**), so the gap is
-an accuracy question, not a safety one: the FakeCRX plant is τ = 25 ms where the real
-command→report path measures 82–139 ms, and the examples' printed lag comparison is correspondingly
-optimistic. **To settle it:** log `q_cmd` and `q_meas` through a swept-speed move and
-cross-correlate, which separates the servo lag from the status pipeline instead of lumping them as
-this ratio does, and would also show whether the between-session difference is real.
+**What it costs.** Nothing in the driver is gated on this number (see §1.9 **Uses**).
+`tracking_lag_s` is the 125 ms midpoint of the measured range, so the FakeCRX plant represents a
+typical arm rather than a rested or a worked one — no single τ can reproduce a quantity that moves,
+and a fake calibrated to the floor would make every tracking comparison optimistic. The examples'
+printed NOTE fires only past 2× the recorded value, i.e. 250 ms, which is outside the measured range:
+it now marks a genuine anomaly instead of firing on every run.
 
 ### 1.10 The streamed Cartesian pose is NOT the TCP (measured)
 
@@ -371,6 +433,38 @@ all zeros both hypotheses still fit, so the decisive test is *active*: change th
 pendant and re-run `examples/verify_tcp_frame.py`. If the reported offset changes, it is (b). That
 run also re-measures the offset, so it is the check to repeat after any end-effector change.
 
+### 1.11 Acceleration and jerk — what the controller actually tolerates (measured on J6)
+
+`examples/crx10ial.py` derives its acceleration clamp as 2× velocity and its jerk clamp as 8×
+acceleration, while the vendored MoveIt configuration publishes accelerations 6–16× lower with
+identical velocities. Nothing distinguished the two until this sweep, because both are permissive
+enough that ordinary motion runs clean under either.
+
+A raised cosine has peak velocity `A·ω`, acceleration `A·ω²` and jerk `A·ω³`, so choosing `ω`
+separates acceleration from velocity instead of escalating both. On **J6**, two cycles each,
+20 ms knots:
+
+| Peak velocity | Peak acceleration | Peak jerk | Slew clips | Fault |
+|---|---|---|---|---|
+| 20 °/s | 20 °/s² | 20 °/s³ | 0 | none |
+| 60 °/s | 60 °/s² | 60 °/s³ | 0 | none |
+| 80 °/s | 120 °/s² | 180 °/s³ | 0 | none |
+| 90 °/s | 180 °/s² | 360 °/s³ | 0 | none |
+| 96 °/s | 240 °/s² | 600 °/s³ | 0 | none |
+| **121 °/s** | **360 °/s² — the profile's own clamp** | **1080 °/s³** | **0** | **none** |
+
+**The controller executes the full derived J6 clamp.** FANUC's published figure for J4–J6
+(1.0 rad/s² ≈ 57 °/s²) is therefore a *planning* target, not a tolerance: it is 6.3× below what the
+controller demonstrably runs without trimming a single commanded step and without a `CONTACT_STOP` in
+a clear cell. So the derived clamps are not invalidated by the controller faulting earlier — it does
+not fault.
+
+**Scope, stated plainly: J6 only.** Wrist roll is the lowest-inertia joint. **J1/J2 carry the arm's
+mass and have the widest gap to FANUC's numbers (240 against 23 °/s², ~10×), and were not swept.**
+Do not read this table as a property of the arm. Jerk remains the trip trigger for the
+collaborative-stop monitor, so the ≤3× acceleration guidance in `crx10ial.py` stands — the highest
+jerk reached here, 1080 °/s³, is exactly 3× its acceleration.
+
 ---
 
 ## 2. Recovery / fault procedures
@@ -407,6 +501,15 @@ run also re-measures the offset, so it is the check to repeat after any end-effe
   power-cycle. Often coincides with a flaky/unresponsive Teach Pendant.
 - **Observed trigger:** a foreign/malformed SM StartPacket (HOST-380, §1.8) plus repeated
   FRC_Abort/Reset cycling wedged the SM daemon.
+- **Observed trigger, second and easier to hit:** **aborting the STREAM_MOTN TP program from the
+  pendant** — `FCTN > ABORT ALL` does this, because it aborts *every* task and not just the one you
+  were aiming at. The controller pushes `FRC_SystemFault`; `FRC_Continue` is then refused with
+  `ErrorID=2556939 (Cannot Resume TP Program.)`, the RMI ladder cannot re-arm `motion_possible`
+  within its probe window, and `reconnect()`'s three bring-up attempts each `FRC_Call` and each fail
+  with `program_status` 2 then 0. **Only RMI can launch STREAM_MOTN, the driver tries exactly that,
+  and it does not come back.** The driver's triage names this case and the required action; nothing
+  short of a power-cycle cleared it. If you need to stop only the gripper dispatcher, abort the
+  `GRIPDISP` task specifically.
 - **Fix (confirmed):** **power-cycle the controller**, then restart the driver process. After the
   power-cycle, `motion_possible=True` on the first bring-up. The SM-silent triage branch and this
   power-cycle guidance must stay in the driver — nothing short of a power-cycle cleared it.

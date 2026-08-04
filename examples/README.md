@@ -185,8 +185,11 @@ the joint velocity limits.
 The number to watch is `peak lag`: `q_cmd` is what went on the wire, `q_meas` is what
 the controller reported. Their difference is dominated by the controller's servo lag,
 not by error, and the run prints it as an implied offset in ms so it is comparable
-across speeds. Expect ~85–100 ms on this arm — which is 3–4× the recorded
-`tracking_lag_s`, an open question (§1.9a), not a fault.
+across speeds. Expect **84–180 ms on this arm, depending on recent duty** — the offset climbs
+about one 8 ms tick per successive motion and falls back after a few minutes idle, so two runs
+of the same motion legitimately differ (§1.9a). Not a fault, and nothing is gated on it. Two
+cautions if you take the number seriously: this line samples every 250 ms and under-reads the
+true peak, and below ~10 °/s its noise floor dominates.
 
 `the arm moved` looks trivial and is not. An interpolator that silently re-anchors to
 a frozen pose is indistinguishable from a healthy hold from the outside — status
@@ -359,17 +362,33 @@ Passing the eight steps validates the motion path end to end. It does not valida
   dispatch reads no measurement), so the plant is not in the loop and the fake cannot
   settle them; step 3 runs the identical path with the core holding the whole
   trajectory, and that comparison is what gives either number meaning.
-- **The acceleration and jerk clamps.** `crx10ial.py`'s are derived rather than measured, and
-  nothing in these runs distinguishes them from the much lower published figures — both are
-  permissive enough that 63°/s ran clean. Step 3 is where you would settle it; the question
-  itself is stated in
-  [docs/portability.md](../docs/portability.md#the-accelerationjerk-question).
-- **Recovery from a collision-induced `SystemFault`**, which is a different path from
-  the E-stop drill (it can leave RMI unresponsive and forces the cold-reconnect
-  escalation). Provoking it deliberately is not something to do casually.
-- **The J2/J3 angle representation on RMI reads**, which affects only the RMI-sourced
-  receive/calibration path, not Stream Motion. `verify_j2j3_coupling.py` is the check;
-  [docs/portability.md](../docs/portability.md#the-j2j3-representation) is why it matters.
+  Measured on hardware since, with a constant-velocity ramp — against a monotonically forward
+  target any negative `qd_cmd` is unambiguous, unlike a raised cosine whose velocity legitimately
+  reverses: **zero reversals** at 5 and 15 °/s, `commanded` 1.007–1.062×, and a plan error that is
+  *steady* (sd 0.3–2.5% of its mean) rather than cyclic. Hardware and fake agree within 2–4%
+  (−0.169° against −0.163° at 5 °/s), which is what you would expect of a core-side number and is
+  the strongest evidence that the figure is the core's profile trailing the plan, not the plant.
+- **The acceleration and jerk clamps on J1–J5.** A step-3 sweep settled **J6** up to the
+  profile's own clamp — 360 °/s² at 1080 °/s³ jerk, 121 °/s peak, zero slew clips, no contact
+  stop — so the much lower published figures are planning targets rather than tolerances
+  ([controller-notes §1.11](../docs/controller-notes.md)). But J6 is wrist roll, the
+  lowest-inertia joint, and **J1/J2 carry the arm's mass with the widest gap to those figures**.
+  Raise amplitude at a long period, never shorten the period, and watch slew clips.
+- **Recovery from a collision-induced `SystemFault`.** A different path from the E-stop drill,
+  and provoking it with a collision is not something to do casually. One variant *has* been
+  seen, from aborting the `STREAM_MOTN` TP program at the pendant: the driver runs its ladder,
+  cannot re-arm `motion_possible`, and fails with triage naming a controller power-cycle as the
+  fix — correct behaviour, and **not** recoverable in software
+  ([controller-notes §2.5](../docs/controller-notes.md)). Whether a *collision*-induced
+  SystemFault behaves the same is untested.
+- **The J2/J3 angle representation on RMI reads** — affects only the RMI-sourced
+  receive/calibration path, not Stream Motion. `verify_j2j3_coupling.py` is the check, and on
+  our controller it lands on "the offset tracks J2" with a residual of 0.0000° across a 25°
+  separation, twice in two sessions. The pendant confirms it independently: its JOINT Position
+  display carries both a `J3` field (matching the RMI plane) and one labelled `J2/J3
+  interaction` (matching Stream Motion). The conversion still ships **off**, because that is a
+  per-installation configuration — [docs/portability.md](../docs/portability.md#the-j2j3-representation)
+  is why it matters.
 
 ## When something goes wrong
 

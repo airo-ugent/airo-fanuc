@@ -187,7 +187,9 @@ def main() -> int:
         # Tracking is MEASURED AND REPORTED, not asserted (report_motion prints the peak
         # lag and the offset it implies in ms). There is no threshold here because no
         # honest one exists at this altitude: a budget modelled on tracking_lag_s asserts
-        # the model rather than the robot, and on this arm that model is out by ~3.4x
+        # the model rather than the robot, and on this arm the offset it models is not a
+        # constant — 84-180 ms, moving with recent duty, so any fixed budget is wrong by
+        # up to ~1.5x in one direction or the other at any given moment
         # (docs/controller-notes.md §1.9a). Divergence big enough to matter trips the
         # controller's own deviation monitor (§1.2), which lands here as a non-DONE
         # result.

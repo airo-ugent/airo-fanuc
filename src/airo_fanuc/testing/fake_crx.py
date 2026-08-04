@@ -62,7 +62,8 @@ class FakeCRXConfig:
     # Stream Motion capability negotiation.
     available_version: int = 3  # set 4 to exercise the FSConfig / force path
 
-    # Plant. tau_s reads MEASURED_FACTS.tracking_lag_s (measured servo lag: 25 ms).
+    # Plant. tau_s reads MEASURED_FACTS.tracking_lag_s (125 ms, the midpoint of a measured
+    # 84–180 ms that moves with recent duty — docs/controller-notes.md §1.9a).
     tau_s: float = MEASURED_FACTS.tracking_lag_s
     # deviation_watchdog_deg reads MEASURED_FACTS.deviation_watchdog_deg (measured: 5.0°).
     # 5.0 deg is a CHOSEN threshold well supported by measurement, not itself a measured

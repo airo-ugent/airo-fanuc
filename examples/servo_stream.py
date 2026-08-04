@@ -394,12 +394,15 @@ def report_stream(s: Stream, *, rate_hz: float, plan_peak_deg_s: float) -> None:
         # Python costs over handing the same path to the core in one call. It stays
         # comparable only because the setpoint is read one update period ahead; take
         # the lookahead out and 1000/rate ms of pure scheme lag lands on top of it.
+        # Compare the two runs back to back: the offset itself moves with recent duty
+        # (84-180 ms measured, §1.9a), so a gap between runs taken minutes apart is not
+        # necessarily the delivery mechanism.
         implied_ms = 1000.0 * s.max_lag_deg / s.max_speed_deg_s
         print(f"                  ⇒ implied offset {implied_ms:.0f} ms at {s.max_speed_deg_s:.1f} deg/s")
         if implied_ms > 2000.0 * lag_s:
             print(
-                f"                  NOTE: {implied_ms / (1000.0 * lag_s):.1f}x the recorded lag. "
-                f"Open question — docs/controller-notes.md §1.9a"
+                f"                  NOTE: {implied_ms / (1000.0 * lag_s):.1f}x the recorded lag, "
+                f"outside the 84-180 ms measured on this arm — docs/controller-notes.md §1.9a"
             )
     print(
         f"  send spacing : p50 {s.send_p50_ms:.3f}  max {s.send_max_ms:.3f} ms   "

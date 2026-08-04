@@ -10,7 +10,9 @@ DriverPolicy(config=DriverConfig(profile=RobotProfile(...)))
 - **`DriverConfig`** — the facts: endpoints, the profile, timing, RT hygiene.
 - **`DriverPolicy`** — the behaviour: retries, recovery, the ARM gate, peripherals.
 
-Every default below is what you get by writing nothing.
+Every default below is what you get by writing nothing. A live driver reads the whole nest
+back as `driver.policy`, which is how a caller recovers the settle window, the gripper
+protocol or `itp_s` without being handed them separately.
 
 ---
 

@@ -50,7 +50,9 @@ Faults split two ways, and the difference is who decelerates the arm:
 **DEGRADED** — the controller is handling the stop itself; the driver waits it out. Note that
 `CONTACT_STOP`'s place in this table is an **assumption, not a measurement**: a contact stop has
 never been triggered on hardware, and if the controller in fact latches it as an error then the
-classification is wrong and it belongs in the table below.
+classification is wrong and it belongs in the table below. It has stayed untriggered under
+deliberate provocation from the jerk side — a sweep to 360 °/s² at 1080 °/s³ on J6 in a clear cell
+produced none — so what is missing is a real contact, not more speed.
 
 | Fault | What it is | To resume |
 |---|---|---|

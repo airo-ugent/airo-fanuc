@@ -76,9 +76,10 @@ with FanucDriver("192.168.1.100", policy) as driver:
 
 `move_j` plans a jerk-limited point-to-point profile and submits it; `joint_speed` is the
 leading-axis speed in rad/s, and every joint is time-synchronised to land together. It
-requires the arm to be at rest. `move_trajectory(times, q, qd)` takes a fully
-time-parameterised timeline instead — int64 nanoseconds, radians — and the C++ core owns
-playback from submission, so a late Python thread costs nothing. `servo_j(q, duration)` is
+requires the arm to be at rest. `move_trajectory(times, q, qd=None)` takes a fully
+time-parameterised timeline instead — int64 nanoseconds, radians, velocities optional
+(omit them and the driver derives the knot tangents) — and the C++ core owns playback from
+submission, so a late Python thread costs nothing. `servo_j(q, duration)` is
 the replace-not-queue streaming path, best-effort in the sense UR's `servoj` is.
 
 Every motion returns a `MotionHandle` immediately. `.wait(timeout)` blocks and resolves to a

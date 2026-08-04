@@ -31,9 +31,9 @@ Usage — hand-guide the arm, taking each joint you care about to its stop, then
 
 It also records J2 at each J3 extreme, because RMI reports J3 one J2 below the Stream
 Motion value (§1.5, measured at a single J2). Reading only the RMI plane, this script
-cannot confirm that offset — it records the pair. Comparing the reported J3 against the
-pendant's displayed J3 at the same pose does settle a different open question: which
-plane the pendant shows.
+cannot confirm that offset — it records the pair. Which plane the pendant shows is settled
+(§1.5): it shows **both**, as a `J3` field matching the RMI plane and a `J2/J3 interaction`
+field matching Stream Motion, so either can be compared against directly.
 """
 
 from __future__ import annotations

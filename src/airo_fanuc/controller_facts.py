@@ -91,7 +91,14 @@ class MeasuredFacts:
 
     # --- servo tracking lag (first-order) ---
     # Used by: FakeCRX plant τ and the examples' lag reporting. Gates nothing.
-    tracking_lag_s: float = 0.025  # MEASURED: cross-correlation 25 ms (verification runs 20 ms)
+    # MEASURED, and NOT a constant of the controller. Per-tick cross-correlation of q_cmd
+    # against q_meas, same motion every time: 84 ms with the joints rested, 180 ms after
+    # sustained motion, climbing about one interpolation period per successive run and
+    # recovering with idleness. Host load, packet staleness, pose and alarms were each
+    # excluded by measurement. This value is the midpoint of that range, so it is typical
+    # rather than exact — a figure from any single run describes that run's duty state.
+    # docs/controller-notes.md §1.9a carries the series and what was ruled out.
+    tracking_lag_s: float = 0.125
 
     # --- TX-silence backstop — THE go/no-go for host-death safety ---
     # MEASURED: NO-GO. On TX silence the controller does NOT fast-decel within 2-3 ITPs; it
