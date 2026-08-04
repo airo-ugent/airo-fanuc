@@ -1,14 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pytest bootstrap for the airo_fanuc test suite.
 
-Puts the repository's ``src`` directory on ``sys.path`` so ``import airo_fanuc...``
-resolves to the working tree rather than to an installed copy.
+The suite runs against whichever ``airo_fanuc`` is importable, and only falls back to
+the repository's ``src`` directory when none is. That order matters in both directions:
+``uv sync --extra dev`` installs the package editable, so the working tree already *is*
+what gets imported, while cibuildwheel runs this suite against a built wheel with the
+repository mounted beside it — and unconditionally inserting ``src`` there would shadow
+the wheel with a source tree carrying no compiled ``_core``, failing the wheel's own
+test step over a wheel that was fine.
 
 The suite is NOT hardware-free by being pure Python — it needs the built extension.
 ``airo_fanuc/__init__.py`` imports ``._core``, and several test modules import it
-outright, so ``uv sync --extra dev`` (which compiles it) is a precondition for
-collection. What makes the suite hardware-free is ``airo_fanuc.testing``: an
-in-process controller emulation the real C++ core is driven against.
+outright, so an install that compiled it is a precondition for collection. What makes
+the suite hardware-free is ``airo_fanuc.testing``: an in-process controller emulation
+the real C++ core is driven against.
 
 Also defines :data:`TEST_PROFILE`, the arm the suite runs against. The package ships
 no arm profile, so every :class:`~airo_fanuc.config.DriverConfig` in the suite needs
@@ -17,15 +22,17 @@ one; sourcing it from here keeps the whole suite on a single envelope.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 
-# tests/ -> package root -> src/
-_SRC = Path(__file__).resolve().parent.parent / "src"
-if _SRC.is_dir():
-    src_str = str(_SRC)
-    if src_str not in sys.path:
-        sys.path.insert(0, src_str)
+# Nothing installed to import: fall back to the working tree. tests/ -> repo root -> src/.
+if importlib.util.find_spec("airo_fanuc") is None:
+    _SRC = Path(__file__).resolve().parent.parent / "src"
+    if _SRC.is_dir():
+        src_str = str(_SRC)
+        if src_str not in sys.path:
+            sys.path.insert(0, src_str)
 
 from airo_fanuc.robot_profile import RobotProfile  # noqa: E402  (needs the sys.path above)
 
