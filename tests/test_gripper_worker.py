@@ -310,3 +310,29 @@ def test_the_timeout_message_names_the_dispatcher_that_did_not_answer() -> None:
     assert result is not None and result["success"] is False
     assert "VACDISP" in str(result["message"])
     assert "R[40]" in str(result["message"])
+
+
+def test_a_slow_dispatchers_timing_comes_from_its_protocol() -> None:
+    """A tool that strokes for longer than the default 5 s bound has to be configurable.
+
+    Bring-up builds the worker, so there is no moment at which a caller could raise the
+    timeout on the worker itself — without this it would report a spurious timeout on every
+    command and there would be nothing to do about it.
+    """
+    import dataclasses
+
+    slow = dataclasses.replace(_FOREIGN, dispatch_timeout_s=0.9, poll_hz=50.0, trigger_settle_s=0.01)
+    rmi = FakeGripperRmi(clears_after=8, trigger_reg=slow.trigger_reg)
+    with GripperWorker(rmi, protocol=slow) as worker:
+        result = worker.open_gripper_and_wait(timeout=3.0)
+    # 8 polls at 50 Hz is 0.16 s — inside 0.9 s, but well past the 0.3 s a 20 Hz poll would
+    # have spent on them, so the protocol's cadence is what ran.
+    assert result is not None and result["success"] is True
+
+
+def test_an_explicit_argument_still_beats_the_protocols_timing() -> None:
+    rmi = FakeGripperRmi(never_clears=True, trigger_reg=_FOREIGN.trigger_reg)
+    with GripperWorker(rmi, protocol=_FOREIGN, dispatch_timeout_s=0.2) as worker:
+        result = worker.open_gripper_and_wait(timeout=3.0)
+    assert result is not None and result["success"] is False
+    assert "0.2s" in str(result["message"]), "the explicit bound, not the protocol's 5.0s"

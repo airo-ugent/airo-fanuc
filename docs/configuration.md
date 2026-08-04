@@ -146,7 +146,7 @@ check `timing_stats()` rather than assuming.
 | `connect_retries` | 3 | | attempts at the whole ladder. **Leave it at 3 with the gripper enabled** — the attempt that forks the dispatcher can consume itself, and the next adopts the now-running fork |
 | `hold_wait_s` | 3.0 | s | grace for the core to publish HOLD |
 | `bringup_settle_s` | 2.0 | s | how long `motion_possible` must stay asserted before bring-up calls itself done |
-| `preflight_full` | `False` | | add the FTP-based checks: P-level band, option S636, TP programs, profile cross-check. Off the per-connect path because it reads ~650 kB, about 3 s |
+| `preflight_full` | `False` | | add the FTP-based checks: option S636, TP programs, profile cross-check — **and a software-version floor that hard-blocks anything below V9.40P81**, which was chosen for our arm's software line. Read [portability](portability.md#tier-2--the-controller-class) before turning this on for a controller on an older line. Off the per-connect path anyway because it reads ~650 kB, about 3 s |
 
 ### Recovery
 
@@ -164,16 +164,43 @@ check `timing_stats()` rather than assuming.
 
 | Field | Default | |
 |---|---|---|
-| `capture_check` | `None` | your collision check. Receives the exact synthesized splice knots the core will execute and returns whether they are safe. This is the seam for a consumer's world model — the package depends on no collision checker |
+| `capture_check` | `None` | your collision check — signature below |
 | `enable_gripper` | `True` | build the gripper worker at bring-up |
 | `gripper_protocol` | `ROBOTIQ_2F85` | which registers your dispatcher watches — see [gripper](gripper.md) |
 | `publisher` | `None` | a duck-typed state sink for the republisher threads. `None` = no republish, no threads |
+
+### The collision-check hook
+
+`Callable[[np.ndarray, np.ndarray], bool]`:
+
+```python
+import numpy as np
+
+def my_check(q: np.ndarray, qd: np.ndarray) -> bool:
+    """q, qd: (N, 6) float64, rad and rad/s — the synthesized splice knots the core will
+    execute, on the interpolation grid. Return True iff they are safe."""
+    return True
+```
+
+Called synchronously inside `move_trajectory` / `move_j` before submission, so it runs on your
+thread and not the real-time one: a slow check delays the submit, never the loop. Returning
+`False` raises `TrajectoryValidationError`. These are **the exact knots the core will
+execute**, produced by the same function it uses — which is what makes the checked path the
+executed one.
+
+Not called for `servo_j`: there is no hook anywhere on the servo path.
+
+### The state sink
+
+`publisher` is duck-typed to a zenoh session — one method,
+`declare_publisher(topic: str)`, returning a handle with `put(payload: bytes) -> None`. The
+republisher declares once per topic at start-up and reuses each handle.
 
 ### Ownership
 
 | Field | Default | |
 |---|---|---|
-| `enable_ownership` | `True` | take the advisory `flock`. **Leave it on** — one Stream Motion peer per controller is a hardware constraint, not a policy |
+| `enable_ownership` | `True` | take the advisory `flock`. **Leave it on** — one Stream Motion peer per controller is a hardware constraint, not a policy. The lock carries no controller identity, so it means *one driver per host*: a two-arm cell needs a distinct `lock_path` per arm, or the second driver is refused for no real reason |
 | `ownership_mode` | `"control"` | `control` / `receive` / `tool`, recorded in the lock file so a blocked process can say who holds it |
 | `lock_path` | `/run/lock/airo-fanuc/owner.lock` | |
 
@@ -192,11 +219,13 @@ observed and how stale `trajectory_start_mono_ns` can be.
 
 ## What is not configurable
 
-Some values are pinned at the C++ defaults and not reachable from Python: the PLL's lead
-time and gain, the minimum DCS speed-clamp fraction that counts as a clamp, the sustained
-slew-clip threshold, and the brake's own settle epsilon and duration cap. They are
-mechanism, not policy. The joint count is a compile-time constant — see
-[portability](portability.md).
+Three values are settable but **not mirrored** from `DriverConfig`, so in ordinary use they
+stay at the C++ defaults: the PLL's lead time and gain, and the minimum DCS speed-clamp
+fraction that counts as a clamp. Reach them on an `airo_fanuc._core.RtCoreConfig` if you must.
+
+Genuinely unreachable, because they are mechanism rather than policy: the sustained slew-clip
+threshold, and the brake's own settle epsilon and duration cap. The joint count is a
+compile-time constant — see [portability](portability.md).
 
 ---
 

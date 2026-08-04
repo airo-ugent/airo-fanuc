@@ -25,9 +25,9 @@ of `src/airo_fanuc/driver.py`.** Read `examples/README.md` before touching `exam
 | `examples/` | An **ordered hardware validation ladder**, not documentation. See below. |
 | `docs/` | Start at `docs/README.md`. |
 
-Documentation depth lives in `docs/`: `architecture.md`, `api.md`, `configuration.md`,
-`portability.md`, `safety.md`, `gripper.md`, `troubleshooting.md`, `development.md`,
-`invariants.md`, `controller-notes.md`.
+Documentation depth lives in `docs/`, indexed by `docs/README.md`: `architecture.md`,
+`api.md`, `configuration.md`, `portability.md`, `safety.md`, `gripper.md`,
+`troubleshooting.md`, `development.md`, `invariants.md`, `controller-notes.md`.
 
 ---
 
@@ -43,7 +43,8 @@ uv run ruff format --check src tests examples
 uv run mypy
 ```
 
-Those four are the CI gates. All of them must pass.
+Those four are the lint and test gates. CI runs them plus a distribution job and the C++
+suite below; all must pass.
 
 The C++ suite is separate:
 
@@ -54,9 +55,9 @@ cmake --build build/cpp -j && ctest --test-dir build/cpp
 ```
 
 `-DAIRO_FANUC_TSAN=ON` is the data-race gate, with suppressions at `tests/tsan.supp`. That
-file covers three specific functions whose lock-free design ThreadSanitizer cannot model.
-**Anything else it reports is a real finding. Never broaden the suppressions to make a run
-pass.**
+file covers four named symbols whose lock-free design ThreadSanitizer cannot model — two
+version-counter seqlocks and two accepted-torn diagnostic counters. **Anything else it reports
+is a real finding. Never broaden the suppressions to make a run pass.**
 
 ### Two traps that will waste your time
 
@@ -109,7 +110,7 @@ silent:
 | The trajectory clock advances exactly once per tick | Playback runs fast or slow, with nothing reporting it |
 | Getters never raise, never block (one documented exception), and publish the age of anything stale | A stale value reads as fresh; a caller acts on a frozen feed |
 | No numeric force guard on a controller with no force telemetry — typed rejection instead | A force limit is armed that can never trip |
-| One Stream Motion peer per controller, enforced by an advisory lock | A second peer silences the live session mid-motion |
+| One Stream Motion peer per controller (hardware); the advisory lock enforces one driver per host | A second peer silences the live session mid-motion |
 | The 125 Hz loop stays in C++; the RT thread never calls into Python | Missed deadlines; the controller coasts and drops motion capability |
 | No logging or allocation from the RT thread or a signal handler | A latency spike where it matters most |
 | The gripper dispatcher is probed once, then forked at most once | Stacked, un-killable TP tasks on the controller |

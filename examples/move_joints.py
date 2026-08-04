@@ -3,10 +3,10 @@
 """Validation steps 1 and 2: bring-up with no motion (``--no-move``), then one commanded joint.
 
 WRITTEN FOR ONE SPECIFIC ROBOT: a FANUC CRX-10iA/L on an R-30iB-class controller
-negotiating Stream Motion v3 at an 8 ms interpolation period. Six joints, the
-CRX-10iA/L limit defaults out of ``controller_facts``, and J6 as a wrist roll are all
-assumed here, not detected. On a different FANUC, read the table in
-``examples/README.md`` first.
+negotiating Stream Motion v3 at an 8 ms interpolation period. Six joints, the CRX-10iA/L
+limits out of ``examples/crx10ial.py`` (via ``_common``), and J6 as a wrist roll are all
+assumed here, not detected. On a different FANUC, read the table in ``examples/README.md``
+first.
 
 The smallest run that proves the whole stack works end to end — ownership lock,
 RMI bring-up ladder, preflight gate, Stream Motion handshake, the 125 Hz C++ tick

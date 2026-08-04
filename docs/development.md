@@ -18,7 +18,9 @@ pytest. Use `--extra dev`.
 
 ## The gates
 
-These four are what CI runs:
+These four are the lint and test gates CI runs — its `python` job also builds the extension
+and checks the vendored header is present, a `dist` job builds the sdist and wheel and installs
+the sdist into an empty venv, and a `cpp` job runs the C++ suite below:
 
 ```bash
 uv run ruff check src tests examples
@@ -38,8 +40,8 @@ robot — see [`examples/README.md`](../examples/README.md).
 
 ### The C++ suite
 
-Separate, and the wheel build does not compile it (`AIRO_FANUC_BUILD_TESTS=OFF`). For a
-standalone build it defaults to ON:
+Separate, and the *wheel* build does not compile it (`AIRO_FANUC_BUILD_TESTS=OFF`) — CI runs
+it in a job of its own. For a standalone build the option defaults to ON:
 
 ```bash
 cmake -S . -B build/cpp -DAIRO_FANUC_BUILD_TESTS=ON \
@@ -53,10 +55,14 @@ which needs the interpreter's development headers; resolving the venv symlink po
 at the real installation. Drop it if `find_package(Python)` already finds a suitable one.
 
 There is also a ThreadSanitizer variant, `-DAIRO_FANUC_TSAN=ON`, with a suppressions file
-at `tests/tsan.supp`. That file is narrow on purpose — three specific functions whose
-lock-free "racy snapshot" design TSan cannot model. **Everything else must stay TSan-clean;
-a new race outside those three is a real finding, not a false positive.** Do not broaden the
-suppressions to make a run pass.
+at `tests/tsan.supp`. That file is narrow on purpose — four named symbols covering two
+by-design patterns TSan cannot model: the version-counter seqlocks (`Seqlock`,
+`JointsAtRing`), where a reader retries on a torn copy, and the accepted-torn diagnostic
+counters (`Histogram`, `RealtimeCore::timing`), where a torn bucket is a cosmetic percentile
+blip and never a control decision. **Everything else must stay TSan-clean; a race outside
+those four is a real finding, not a false positive.** Do not broaden the suppressions to make
+a run pass — one test that deliberately provokes a benign race skips itself under
+instrumentation instead, and says why in the file.
 
 ### The trap worth internalising
 

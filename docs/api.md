@@ -6,9 +6,10 @@ one object.
 
 Two conventions run through all of it:
 
-- **Getters never raise and never lie.** Every one returns a value or `None`, never an
-  exception, and every value that can be stale is published with its age beside it.
-  Exactly one getter blocks; it is marked below.
+- **Getters never lie about the robot's state.** Every one returns a value or `None` rather
+  than raising because of what the robot is doing, and every value that can be stale is
+  published with its age beside it. (A wrong *argument* type is still a `TypeError` — that is
+  programmer error, not robot state.) Two block, and both are marked below.
 - **Motion outcomes never raise.** A faulted, stopped or rejected motion *resolves* to a
   `MotionResult`. Exceptions are for programmer error and for commands that cannot be
   accepted at all.
@@ -34,8 +35,10 @@ failure it cleans up everything it built and re-raises.
 | `FanucPreflightError` | a preflight gate failed (carries the structured report) |
 | `FanucConnectionError` | unreachable, handshake failed, preroll timed out, or the controller reports a different interpolation period than configured |
 
-`close()` is the counterpart, and `FanucDriver` is a context manager. Both are safe to
-call twice.
+`close()` is the counterpart, and `FanucDriver` is a context manager. Both are safe to call
+twice. `close()` raises `FanucError` if a teardown step exceeded its timeout, naming which —
+the wedged thread is abandoned rather than killing the process, so that report is the only
+signal you get.
 
 Three composed parts are public, for the things the facade does not wrap:
 `driver.core` (the C++ real-time core), `driver.rmi` (the RMI client — `write_register`
@@ -69,10 +72,13 @@ and the first knot must be within the capture window of where the arm currently 
 jerk-limited envelope, then submits it through `move_trajectory`. **It requires the arm to
 be at rest** and refuses a moving one with `TrajectoryValidationError` — call `hold()` or
 `stop_j()` and `wait_until_steady()` first. `joint_speed` is the leading-axis speed in
-rad/s; every joint is time-synchronised to it, so they arrive together.
+**rad/s**; every joint is time-synchronised to it, so they arrive together. `None` resolves to
+a quarter of the profile's *slowest* joint velocity limit — on a fast arm that is not slow, so
+name it explicitly for anything but a nudge.
 
 **`servo_j`** is replace-not-queue: each target supersedes the last, and the core plans a
-fresh profile to it under the servo limits and follows it best-effort. There is **no
+fresh profile to it under the servo limits and follows it best-effort. `duration` is in
+**seconds**, and it is the intended spacing to the next target rather than a tick period. There is **no
 distance rejection** — a far target is chased, not refused — and **no collision check**.
 `qd`/`qdd` are validated for shape and finiteness but **currently ignored** by the core.
 A servo stream has no terminal condition: see `hold()`.
@@ -99,7 +105,11 @@ else clears it — see [safety](safety.md).
 |---|---|
 | `RobotFaultedError` | not STREAMING, or ARM-gated. Carries `reason` and `operator_hint` |
 | `TrajectoryValidationError` | any argument failed validation: shape, finiteness, non-monotonic times, over-limit velocity, a target outside the position limits, a moving arm for `move_j`, an unusable guard value, or a collision-check rejection |
-| `RejectedStartMismatch` | the capture gate refused the first knot. Only when `asynchronous=False`; otherwise the reject resolves on the handle as `MotionResult.REJECTED` |
+| `RejectedStartMismatch` | the capture gate refused the first knot — it sits outside the 5° capture window, or shedding the velocity change would need more travel than the splice has. Only when `asynchronous=False`; otherwise the reject resolves on the handle as `MotionResult.REJECTED` |
+
+A first knot whose `|qd|` exceeds the 15°/s the splice can reach is a
+`TrajectoryValidationError`, not a `RejectedStartMismatch`: it is refused during validation,
+before the capture gate runs at all.
 
 ## `MotionHandle`
 
@@ -130,7 +140,7 @@ rejection is raised at the call or resolved on the handle.
 | Method | Blocks | Returns |
 |---|---|---|
 | `get_state()` | no | `dict` — the whole published state, see below |
-| `get_flange_pose()` | no | `[X, Y, Z, W, P, R]` in **mm and degrees**, faceplate frame; `None` before the first status packet |
+| `get_flange_pose()` | no | `[X, Y, Z, W, P, R]` in **mm and degrees**, faceplate frame; `None` before the first status packet. Whether this field follows the *active* UTOOL is unverified — see [portability](portability.md#open-questions-stated-as-such) |
 | `get_tcp_pose()` | **yes** | the same six numbers at the **tool tip**, with the controller's active UTOOL applied; `None` if the read fails |
 | `get_wrench()` | no | `[fx, fy, fz, mx, my, mz]` in N and Nm; `None` on a controller that streams no force block |
 | `joints_at_wall(t_wall_ns)` | no | joints (rad) nearest a wall-clock stamp — for pairing with a camera shutter; `None` if no match |
@@ -139,9 +149,11 @@ rejection is raised at the call or resolved on the handle.
 | `wait_until_steady(timeout=5.0)` | yes | `bool`; `False` on timeout |
 | `preflight_report` | no | the structured report from bring-up |
 
-`get_tcp_pose()` is the one blocking getter: it is an RMI round trip costing tens of
-milliseconds, because it is the controller's own answer rather than something derived
-here. Everything else is a lock-free read of the last published snapshot. **This package
+`get_tcp_pose()` is the only getter that blocks on I/O: it is an RMI round trip costing tens
+of milliseconds, because it is the controller's own answer rather than something derived here.
+(`wait_until_steady` blocks too, but on a poll loop you asked for.) The core-state reads are
+lock-free against the real-time thread; `get_state()` additionally takes the supervisor's
+mutex for the lifecycle half, which the RT thread never holds. **This package
 does no kinematics** — there is no FK, no IK, no URDF — so these two poses are what the
 controller reports, and nothing more.
 
@@ -189,10 +201,17 @@ block).
 (bool, was there a fresh packet at this publish), `rx_mono_ns` / `tick_mono_ns` (int64 ns,
 `CLOCK_MONOTONIC`), `ctrl_time_stamp_ms`, `rx_seq`, `tx_seq`.
 
+**`rx_age_ms` alone cannot tell a fresh feed from one that never started**: it reads `0.0`
+both when the last packet arrived this tick and when no packet has ever arrived — in which case
+`q_meas` is all zeros. Check `rx_mono_ns > 0` before trusting either. That is what
+`get_flange_pose()` does internally, and why it returns `None` rather than a pose of zeros.
+
 **Motion and lifecycle** — `active_motion_id`, `epoch` (the command epoch; a command
 against a stale one is refused), `total_slew_clips` (diagnostic — non-zero means the core
 trimmed the planned profile, so the executed path was not the planned one),
-`lifecycle_state` (string, decode with `LifecycleState`), `fault_reason` (string, `"none"`
+`lifecycle_state` (string, decode with `LifecycleState`; the values are **lowercase** —
+`"disconnected"`, `"preflight"`, `"rmi_connecting"`, `"tp_launch"`, `"sm_handshake"`,
+`"streaming"`, `"degraded"`, `"faulted"`, `"recovering"`, `"lost"`, `"shutting_down"`), `fault_reason` (string, `"none"`
 when nothing is wrong — never empty), `faulted`, `operator_hint` (the actionable pendant
 instruction, or `None`), `operator_required`, `motion_inhibited` (the ARM gate),
 `recovery_count`, `owner` (`{pid, mode, since}` or `None`).
@@ -241,6 +260,16 @@ A separate, **motion-free** reader for calibration work. It polls joint angles a
 over RMI and never calls `FRC_Initialize`, so it does not take the motion group and does
 not disable hand-guidance. Use it when you want to read the arm while a human moves it —
 not alongside `FanucDriver`, which owns the controller exclusively.
+
+```python
+from airo_fanuc.receive_interface import FanucReceiveInterface
+
+with FanucReceiveInterface(ip="192.168.1.100") as rx:
+    sample = rx.latest_joint_sample()
+```
+
+It builds its own RMI client from `ip` — ports, poll rates and the ownership mode are keyword
+arguments — and the context manager is `start()` / `stop()`.
 
 | Method | Blocks | Returns |
 |---|---|---|

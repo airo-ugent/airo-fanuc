@@ -81,6 +81,21 @@ class RegisterGripperProtocol:
     launcher_program: str
     dispatcher_program: str
 
+    #: How long the dispatcher takes to answer, which is a property of the dispatcher and
+    #: not of this driver. The defaults suit a gripper that strokes in well under a second;
+    #: a tool that takes longer than ``dispatch_timeout_s`` to finish would otherwise report
+    #: a spurious timeout on every command, and bring-up builds the worker, so there is no
+    #: other moment at which a caller could raise it.
+    #:
+    #: * ``trigger_settle_s`` — delay before the first poll, so it cannot read the
+    #:   pre-trigger 0 and report done instantly.
+    #: * ``poll_hz`` — how often the trigger register is read.
+    #: * ``dispatch_timeout_s`` — the bound on one command. Longer than the slowest motion
+    #:   the dispatcher performs, or every command times out.
+    trigger_settle_s: float = 0.1
+    poll_hz: float = 20.0
+    dispatch_timeout_s: float = 5.0
+
     #: For error messages and the bring-up log — the driver never branches on it.
     name: str = "unspecified"
 

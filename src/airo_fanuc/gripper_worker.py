@@ -56,12 +56,12 @@ from airo_fanuc.gripper import ROBOTIQ_2F85, RegisterGripperProtocol
 
 logger = logging.getLogger("airo_fanuc.gripper")
 
-# Gripper protocol timing — the worker defaults for the settle window before the
-# first poll, the poll cadence, and the bound on one dispatch (see the module
-# docstring's sequence).
-GRIPPER_TRIGGER_SETTLE_S = 0.1
-GRIPPER_POLL_HZ = 20.0
-GRIPPER_DISPATCH_TIMEOUT_S = 5.0
+# Gripper protocol timing. How long a dispatcher takes to answer is the DISPATCHER's
+# property, so the values live on the protocol and these are names for the shipped
+# preset's — read from it rather than repeated, so there is one place to change.
+GRIPPER_TRIGGER_SETTLE_S = ROBOTIQ_2F85.trigger_settle_s
+GRIPPER_POLL_HZ = ROBOTIQ_2F85.poll_hz
+GRIPPER_DISPATCH_TIMEOUT_S = ROBOTIQ_2F85.dispatch_timeout_s
 
 #: Result type: dict-or-None ``{"success": bool, "message": str}``.
 GripperResult = dict[str, object]
@@ -99,15 +99,21 @@ class GripperWorker:
         rmi: GripperRmi,
         *,
         protocol: RegisterGripperProtocol = ROBOTIQ_2F85,
-        trigger_settle_s: float = GRIPPER_TRIGGER_SETTLE_S,
-        poll_hz: float = GRIPPER_POLL_HZ,
-        dispatch_timeout_s: float = GRIPPER_DISPATCH_TIMEOUT_S,
+        trigger_settle_s: float | None = None,
+        poll_hz: float | None = None,
+        dispatch_timeout_s: float | None = None,
     ) -> None:
         self._rmi = rmi
         self._proto = protocol
-        self._trigger_settle_s = float(trigger_settle_s)
-        self._poll_period_s = 1.0 / float(poll_hz)
-        self._dispatch_timeout_s = float(dispatch_timeout_s)
+        # The protocol carries the dispatcher's timing; an explicit argument still wins, so a
+        # caller holding a worker can tune one knob without rebuilding a protocol for it.
+        self._trigger_settle_s = float(
+            protocol.trigger_settle_s if trigger_settle_s is None else trigger_settle_s
+        )
+        self._poll_period_s = 1.0 / float(protocol.poll_hz if poll_hz is None else poll_hz)
+        self._dispatch_timeout_s = float(
+            protocol.dispatch_timeout_s if dispatch_timeout_s is None else dispatch_timeout_s
+        )
 
         # Single worker => at most one physical command in flight (serialized).
         self._exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="airo-fanuc-gripper")

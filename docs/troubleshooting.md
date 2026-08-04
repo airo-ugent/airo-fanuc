@@ -23,7 +23,7 @@ controller, and why `connect_retries` defaults to 3. The attempt that forks the 
 dispatcher perturbs the RMI session and can time out; the next attempt adopts the
 now-running fork. A no-gripper session reaches streaming on the first attempt.
 
-**Bring-up hangs, or never reaches streaming** — `docs/controller-notes.md` §2 has the
+**Bring-up hangs, or never reaches streaming** — [`controller-notes.md`](controller-notes.md) §2 has the
 measured recovery procedures, including a Stream Motion daemon wedge that only a controller
 power-cycle clears.
 
@@ -43,11 +43,16 @@ clears faults over RMI instead.
   Recovery succeeded and the driver is waiting for a deliberate `driver.arm()`. This is the
   common surprise after an E-stop: `recover()` returned `True` and motion still refuses.
 
-**`RejectedStartMismatch`** — the trajectory's first knot is too far from where the arm
-currently is (beyond 5°), or needs more velocity at that knot than the splice can reach
-(beyond 15°/s). Both are refusals rather than snap-to-target, because snapping starts a
-motion with an unplanned jump. Anchor your first knot on `get_state()["q_cmd"]`, and start
-from rest.
+**`RejectedStartMismatch`** — the trajectory's first knot is farther than 5° from the last
+*commanded* pose, or shedding the velocity change would need more travel than the splice has. A
+refusal rather than a snap-to-target, because snapping starts a motion with an unplanned jump.
+Anchor your first knot on `get_state()["q_cmd"]`.
+
+**`TrajectoryValidationError: first-knot |qd| exceeds the 15°/s capture envelope`** — a
+different failure with a different exception: the splice that bridges the commanded pose to your
+first knot cannot reach that velocity, so it is refused during validation, before the capture
+gate runs. Start the trajectory at rest, or within the envelope. (A plain sine demands its peak
+velocity at t=0 and is refused for exactly this reason; a raised cosine is not.)
 
 **`TrajectoryValidationError: move_j requires a stationary arm`** — `move_j` plans from the
 commanded state read at the call, and a moving anchor advances while the plan is in flight,
@@ -101,8 +106,8 @@ The loop must put exactly one command packet on the wire every interpolation per
   controller stands roughly 9-15 missed periods before it coasts and drops
   `motion_possible`, so one late tick is not dangerous. A `max` that keeps growing means the
   host is not keeping up.
-- **`cpu_migrations`** — expected to be non-zero. The driver sets no CPU affinity and needs
-  no reserved core. This is here to correlate with a bad `max`, not to be zero.
+- **`cpu_migrations`** — any count is fine. The driver sets no CPU affinity and needs no
+  reserved core; this is here to correlate with a bad `max`, not to be minimised.
 - **`missed_rx_ticks`** — ticks with no fresh status packet. A few percent is normal; the two
   clocks are independent. **`rx_seq_gaps`** counts actually-dropped packets and should be
   zero on a wired link.
@@ -150,5 +155,5 @@ succeeded before believing the result.
 ---
 
 See also: [safety](safety.md), [api](api.md) for what each getter reports, and
-`docs/controller-notes.md` for measured controller behaviour, exact alarm texts and recovery
+[`controller-notes.md`](controller-notes.md) for measured controller behaviour, exact alarm texts and recovery
 procedures.

@@ -74,10 +74,14 @@ Every path through the worker ends in exactly one verdict, and each is bounded:
 
 | Bound | Default | Why it exists |
 |---|---|---|
-| `dispatch_timeout_s` | 5.0 s | The poll loop runs against a monotonic deadline. A dispatcher that never clears the trigger produces a timeout verdict, never a hang. |
+| `dispatch_timeout_s` | 5.0 s | The poll loop runs against a monotonic deadline. A dispatcher that never clears the trigger produces a timeout verdict, never a hang. **Set it on your protocol if your tool strokes for longer than this**, or every command reports a spurious timeout — bring-up builds the worker, so there is no later moment to change it. |
 | `trigger_settle_s` | 0.1 s | Delay before the *first* poll. Without it the first read can observe the pre-trigger 0 and report done instantly. |
 | `poll_hz` | 20 Hz | Poll cadence (0.05 s period). |
-| `wait_gripper_done(timeout=None)` | 6.1 s | `dispatch_timeout_s + trigger_settle_s + 1 s`, so the default wait outlives the worker's own bound and captures its verdict instead of returning a premature `None`. |
+| `open_gripper_and_wait` / `close_gripper_and_wait`, `timeout=None` | 6.1 s | `dispatch_timeout_s + trigger_settle_s + 1 s`, so the wait outlives the worker's own bound and captures its verdict instead of returning a premature `None`. |
+
+`wait_gripper_done(timeout=None)` is the exception: it waits **indefinitely**. The worker's own
+bound still applies, so a dead dispatcher wakes it with a verdict rather than hanging it — but
+if you want the wait itself bounded, pass a timeout.
 | `FanucDriver.close()`'s gripper step | 2.0 s | A wedged worker cannot hang driver shutdown; the step is abandoned and reported. |
 
 Two behaviours worth knowing before you build on this:
@@ -224,7 +228,7 @@ What is configurable and what is not:
 | both action values | that the trigger is written last and cleared by the dispatcher |
 | the accepted modifier values, per verb, and their defaults | that there are exactly two verbs (open, close) |
 | both TP program names | that the launcher forks and returns |
-| `trigger_settle_s`, `poll_hz`, `dispatch_timeout_s` (on `GripperWorker` directly) | polling as the completion signal |
+| `trigger_settle_s`, `poll_hz`, `dispatch_timeout_s`, on the protocol | polling as the completion signal |
 
 The two-verb limit is the real constraint. A tool whose useful commands are not a pair
 (a three-finger hand with named grasps, a tool changer, a multi-stage crimper) does not

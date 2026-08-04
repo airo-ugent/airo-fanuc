@@ -138,17 +138,17 @@ One C++ thread, several Python ones, and a strict rule about what crosses betwee
 
 | Direction | Mechanism | Carries |
 |---|---|---|
-| Python → RT | single-producer ring, 16 slots, **latest wins** | submitted targets (trajectory, servo, brake, hold) |
+| Python → RT | single-producer ring, 16 slots, drained **latest-wins** each tick | submitted targets (trajectory, servo, brake, hold) |
 | RT → Python | **seqlock** | the state snapshot, republished every tick |
 | RT → Python | ring, 1024 slots | events (mode changes, faults, motion terminals) |
 | RT → Python | ring, 64 slots | trajectory buffers to free — allocation never happens on the RT thread |
 | RT → Python | per-slot seqlock ring, 256 deep | joint history, for `joints_at_wall()` |
 
 The seqlock is why getters never block the RT thread and never tear: the writer stamps a
-sequence counter odd before the copy and even after, and a reader that sees an odd or a
-changed counter retries. ThreadSanitizer reports this as a data race by design — it cannot
-model version counters — which is why `tests/tsan.supp` suppresses exactly these three
-surfaces and nothing else.
+sequence counter odd before the copy and even after, and a reader that sees an odd or a changed
+counter retries. ThreadSanitizer reports this as a data race by design — it cannot model
+version counters — which is why `tests/tsan.supp` names it and the joint-history ring, plus
+the two diagnostic counters that are accepted-torn for a different reason, and nothing else.
 
 The GIL is released around precisely the three calls that can block on I/O: starting the
 core, stopping it, and waiting for the handshake. Everything else is O(1) and lock-free.
@@ -177,9 +177,10 @@ Construction runs this in order and returns only at the end of it.
 9. Start the watch and heartbeat threads; build the gripper worker and republisher.
 
 The whole ladder is retried `connect_retries` times (default 3). Lifecycle states along the
-way are `DISCONNECTED → RMI_CONNECTING → TP_LAUNCH → SM_HANDSHAKE → STREAMING`, with
-`DEGRADED`, `FAULTED`, `RECOVERING`, `LOST` and `SHUTTING_DOWN` as the branches.
-**`STREAMING` is the only commandable state.**
+way are `DISCONNECTED → PREFLIGHT → RMI_CONNECTING → TP_LAUNCH → SM_HANDSHAKE → STREAMING`,
+with `DEGRADED`, `FAULTED`, `RECOVERING`, `LOST` and `SHUTTING_DOWN` as the branches.
+**`STREAMING` is the only commandable state.** `get_state()["lifecycle_state"]` publishes these
+as **lowercase** strings — see [the API reference](api.md#get_state).
 
 ---
 

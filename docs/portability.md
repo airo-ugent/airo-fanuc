@@ -33,6 +33,16 @@ limits silently wrong by that ratio. Pass `--itp-ms` in the examples, or `itp_s=
 Also in this tier: the RMI error-code table, the alarm classes preflight treats as hard
 blocks, and the TP program names the External Control Package installs.
 
+**One gate in this tier is not controller-class-generic, and it can refuse your bring-up.**
+`preflight_full=True` bands the controller's software version and **hard-blocks anything below
+V9.40P81**, comparing as `(major, minor, patch)` — so a controller on V8.30 or V9.10 is refused
+outright, with a message telling you to update it. That floor was chosen for a vibration issue
+on *our* arm's software line, and comparing it across major versions says nothing about yours.
+It is not adjustable through `DriverConfig` or `DriverPolicy`; the only escape is
+`preflight_full=False`, which also gives up the profile cross-check that page recommends. If
+your controller is on an older line, run the probe by hand for the cross-check and leave the
+full gate off — and treat the floor as ours, not a statement about your controller.
+
 ## Tier 3 — injected, with no default: the arm
 
 The whole motion envelope. `DriverConfig(profile=...)` is required and the package ships no
@@ -44,8 +54,10 @@ derive one for your arm — most of it comes out of the controller.
 `controller_facts.py` holds this driver's own tuning, and it is worth being exact about
 which parts survive a change of arm unedited:
 
-**Scale factors — genuinely arm-independent**, because they are fractions of *your*
-profile's limits rather than limits:
+**Scale factors — genuinely arm-independent**, because they are fractions of *your* profile's
+limits rather than limits. Five of the six are also `DriverConfig` fields whose *defaults* are
+these constants, so a cell raises them there rather than editing the package;
+`SERVO_LIMIT_SCALE` has no field and is read from the package:
 
 | | |
 |---|---|
@@ -54,8 +66,8 @@ profile's limits rather than limits:
 | `SERVO_LIMIT_SCALE` | the servo path's fraction of your limits |
 | `MOVEJ_LIMIT_SCALE_A` / `_J` | what `move_j` plans under |
 
-**Absolute quantities — this driver's tuning, and not scaled by your profile.** They are
-degrees, degrees per second and milliseconds, so an arm much faster or much slower than a
+**Absolute quantities — this driver's tuning, and not scaled by your profile.** Degrees,
+degrees per second, milliseconds and seconds, so an arm much faster or much slower than a
 CRX-10iA/L may want them revisited:
 
 | | | Consequence if it does not suit your arm |
@@ -165,5 +177,5 @@ displayed angles; then set the flag.
 ---
 
 See also: [configuration](configuration.md), [safety](safety.md), and
-`docs/controller-notes.md` for the measured behaviour of the controller these numbers came
+[`controller-notes.md`](controller-notes.md) for the measured behaviour of the controller these numbers came
 from.

@@ -14,7 +14,7 @@ refuse; too narrow only costs range. So they are worth confirming. There is no
 automated way to do it here:
 
 * this package's RMI client exposes registers, status, error and joint angles — no
-  system-variable read, so ``$MOR_GRP[1].$LOWERLIMS`` and friends are out of reach;
+  system-variable read, so ``$PARAM_GROUP[1].$LOWERLIMS`` and friends are out of reach;
 * driving toward a limit to find it deliberately provokes the servo alarm the guard
   exists to prevent.
 

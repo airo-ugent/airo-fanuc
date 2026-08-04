@@ -37,3 +37,4 @@ foreach(_t pll tick_core epoch modes rt_loopback seqlock
   target_link_libraries(test_${_t} PRIVATE rt_core GTest::gtest_main)
   gtest_discover_tests(test_${_t})
 endforeach()
+
