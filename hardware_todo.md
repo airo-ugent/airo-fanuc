@@ -112,6 +112,20 @@ driver; all of them are things the documentation currently has to hedge about.
       tracks the active tool offset or reports the faceplate regardless. The docstring says
       "open" and `docs/controller-notes.md` §1.10a keeps it open.
       **How:** `verify_tcp_frame.py --move`, with a non-identity UTOOL set on the pendant.
+- [ ] **Does the controller's general override apply to a Stream Motion position stream?**
+      Preflight requires 100% override, so the question has never come up — but it decides
+      whether commissioning at 10% is a real safety measure or a false one. If override *does*
+      scale a streamed position command, the arm lags the stream and may trip the deviation
+      monitor; if it does not, a reduced override buys nothing and the docs should say so.
+      **How:** at a low commanded speed, set override to 50% on the pendant and compare
+      `q_cmd` against `q_meas` for lag and for a deviation fault.
+- [ ] **Does a cold reconnect re-run the gripper liveliness probe?** The probe actuates the
+      gripper's open verb, and `reconnect()` is reached automatically by the recovery ladder.
+      If it re-probes, an unattended recovery after an e-stop can open a gripper that is
+      holding a part. Answerable by reading the ladder, but worth confirming on hardware
+      because the consequence is a dropped workpiece.
+      **How:** with the tool mounted and closed on something, force a recovery escalation and
+      watch whether the gripper opens.
 - [ ] **The capture residue notch.** Whether the sub-tick residue at the seam is visible in
       the measured joint trace at speed.
       **How:** step 3 at the highest validated speed, then look at the logged trace across
